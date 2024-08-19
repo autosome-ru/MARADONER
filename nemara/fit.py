@@ -356,7 +356,7 @@ def fit(project: str, regul: str = None, alpha: float = 0, estimate_motif_vars=F
     res = _fit(data, regul=regul, alpha=alpha, estimate_motif_vars=estimate_motif_vars, tau=tau, 
                groups=groups, verbose=verbose, n_jobs=n_jobs, _means_est=False, U_centerer=None, std_b=std_b)
     n = sum(map(len, groups.values()))
-    res_int = _fit(data, regul=regul, alpha=alpha, estimate_motif_vars=estimate_motif_vars, tau=tau * 0.05, 
+    res_int = _fit(data, regul=regul, alpha=alpha, estimate_motif_vars=estimate_motif_vars, tau=tau, 
                    groups={'all': list(range(n))}, verbose=verbose, n_jobs=n_jobs, _means_est=True, std_b=std_b,
                    U_centerer=(groups, res['U_raw']))
     res['intercept_raw'] = res_int['U_raw']
