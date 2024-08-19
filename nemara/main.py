@@ -18,6 +18,7 @@ from time import time
 from dill import __version__ as dill_version
 import logging
 from .export import export_results
+from .synthetic_tests import generate_dataset
 from . import __version__ as project_version
 import json
 
@@ -167,6 +168,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
           regul: Regularization = Option(Regularization.none, help='Regularization for motif variances estimates. Both regularizaiton types rely on the'
                                         ' motif expression info.'),
           alpha: float = Option(1.0, help='Regularization strength.'),
+          std_b: bool = Option(False, help='Standardize loading matrix across motifs.'),
           n_jobs: int = Option(1, help='Number of jobs to be run at parallel, -1 will use all available threads. [red]Improves performance only if'
                               ' there is a plenty of cores as JAX uses multi-processing by deafult.[/red] Parallelization is done across groups.')):
     """
@@ -185,7 +187,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
     p.add_task(description="Fitting model to the data...", total=None)
     p.start()
     fit(name, regul=regul, alpha=alpha, estimate_motif_vars=motif_variances, tau=tau, clustering=clustering, n_clusters=n_clusters,
-        n_jobs=n_jobs, verbose=False)
+        std_b=std_b, n_jobs=n_jobs, verbose=False)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
@@ -231,6 +233,36 @@ def _export(name: str = Argument(..., help='Project name.'),
     p.start()
     export_results(name, output_folder, std_mode=std_mode.value, alpha=alpha)
     p.stop()
+    dt = time() - t0
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+    
+@app.command('generate', help='Generate synthetic dataset for testing purporses.')
+def _generate(output_folder: Path = Argument(..., help='Output folder.'),
+                p: int = Option(5000, help='Number of promoters.'),
+                m: int = Option(500, help='Number of motifs.'),
+                g: int = Option(10, help='Number of groups.'),
+                min_samples: int = Option(5, help='Minimal number of observations per each group.'),
+                max_samples: int = Option(6, help='Maximal number of observations per each group.'),
+                fraction_significant_motifs: float = Option(0.25, help='Fraction of significant motifs.'),
+                mean_motifs: bool = Option(False, help='Whether motifs activities should have non-zero means.'), 
+                sigma: float = Option(1.0, help='Activities variance. The greater this value relatively to the noise variance, the greater variance activities'
+                                      ' shall explain.'),
+                g_std_a: float = Option(0.5, help='Alpha parameter of the Gamma distribution for sampling group-specific noise variances.'),
+                g_std_b: float = Option(0.5, help='Beta parameter of the Gamma distribution for sampling group-specific noise variances.'),
+                motif_variances: bool = Option(False, help='Whether each motif should have its own variance.'),
+                motif_variances_min: float = Option(0.05, help='Minimal allowed relative variance for each motif.'),
+                motif_variances_scale: float = Option(1.0, help='Variance of motif variances.'),
+                seed: int = Option(1, help='Random seed.')
+            ):
+    t0 = time()
+    pr = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    pr.add_task(description="Generating synthetic dataset...", total=None)
+    pr.start()
+    generate_dataset(folder=output_folder, p=p, m=m, g=g, min_samples=min_samples, max_samples=max_samples,
+                     fraction_significant_motifs=fraction_significant_motifs, mean_motifs=mean_motifs, sigma=sigma, g_std_a=g_std_a, g_std_b=g_std_b,
+                     motif_variances=motif_variances, motif_variances_min=motif_variances_min, motif_variances_scale=motif_variances_scale,
+                     seed=seed)
+    pr.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 

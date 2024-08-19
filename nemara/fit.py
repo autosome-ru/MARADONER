@@ -141,18 +141,17 @@ def transform_data(Y, B, U_mult, std_y=False, std_b=False, b_cutoff=1e-9, weight
     if std_y:
         Y = Y / Y.std(axis=0, keepdims=True)
     n_samples = Y.shape[1]
-    if _means_est:
-        Ym = Y - Y.mean(axis=0, keepdims=True)
-    if n_samples < 3:
-        Y = Y - Y.mean(axis=0, keepdims=True)
-    else:
-        Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
     B = B.copy()
     B[B < b_cutoff] = 0.0
     min_b, max_b = B.min(axis=0, keepdims=True), B.max(axis=0, keepdims=True)
     inds = ((max_b - min_b) > 1e-4).flatten()
     inds[:] = True
     B = B[:, inds]
+    if n_samples < 3 or _means_est:
+        Y = Y - Y.mean(axis=0, keepdims=True)
+    else:
+        Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
+    B -= B.mean(axis=0, keepdims=True)
     min_b = min_b[:, inds]
     max_b = max_b[:, inds]
     U_mult = U_mult[inds]
@@ -163,8 +162,6 @@ def transform_data(Y, B, U_mult, std_y=False, std_b=False, b_cutoff=1e-9, weight
         weights = weights.reshape(-1, 1) ** -0.5
         Y = weights * Y
         B = weights * B
-    if _means_est:
-        Y = (Y, Ym)
     return Y, B, U_mult, inds
 
 def cluster_data(prj, mode=None, num_clusters=200, keep_motifs=False):
@@ -198,13 +195,13 @@ def cluster_data(prj, mode=None, num_clusters=200, keep_motifs=False):
     return prj
     
 
-def preprocess_data(prj, rel_eps=1e-9, inds_train=None):
+def preprocess_data(prj, rel_eps=1e-9, std_b=False, inds_train=None, _means_est=False):
     Y = prj['expression']
     B = prj['loadings']
     U_mult = prj['motif_expression']
     if U_mult is None:
         U_mult = np.ones((B.shape[1], Y.shape[1]), dtype=float)
-    Y, B, U_mult, inds = transform_data(Y, B, U_mult)
+    Y, B, U_mult, inds = transform_data(Y, B, U_mult, std_b=std_b, _means_est=_means_est)
     if inds_train is not None:
         qdv, null = lowrank_decomposition(B[inds_train], rel_eps=rel_eps)
     else:
@@ -274,26 +271,19 @@ def estimate_u_map(t, B_svd, tau=1, aux=None):
     W = p * (1/s).reshape(1,-1)
     U_std = W @ U[-1]
     return {'U_raw': U.flatten(), 'U_std': U_std.flatten(), 'stds': stds}
-    
 
-def fit(project: str, regul: str = None, alpha: float = 0, estimate_motif_vars=False, tau=1,
-        clustering=None, n_clusters=200,
-        verbose=True, dump=True, n_jobs=1):
-    if type(project) is str:
-        filename, fmt = get_init_file(project)
-        with openers[fmt](filename, 'rb') as f:
-            init = dill.load(f)
-    else:
-        init = project
-    groups = init['groups']
-    data = cluster_data(init, mode=clustering, num_clusters=n_clusters)
-    if clustering:
-        clustering = data['clustering']
-    data = preprocess_data(data)
+def _fit(data, regul: str, alpha: float, estimate_motif_vars: bool, tau: float, 
+         groups: dict, std_b: bool, verbose: bool, n_jobs: int, _means_est=False, U_centerer=None):
+    data = preprocess_data(data, _means_est=_means_est, std_b=std_b)
     Y = data['expression']
     U_mults = data['motif_expression']
-    
+
     B = data['loadings']
+    if U_centerer is not None:
+        g, U = U_centerer
+        Y = np.hstack([Y[..., inds].mean(axis=-1, keepdims=True) for inds in g.values()])
+        groups = {'all': list(range(Y.shape[1]))}
+        Y = Y - B @ U
     B_null = data['loadings_null']
     B_svd = data['loadings_svd']
     u_aux = _calc_aux(B_svd)
@@ -348,6 +338,30 @@ def fit(project: str, regul: str = None, alpha: float = 0, estimate_motif_vars=F
     for key, val in d.items():
         d[key] = np.array(val).T
     res.update(d)
+    return res
+    
+
+def fit(project: str, regul: str = None, alpha: float = 0, estimate_motif_vars=False, tau=1,
+        clustering=None, n_clusters=200, std_b=False, verbose=True, dump=True, n_jobs=1):
+    if type(project) is str:
+        filename, fmt = get_init_file(project)
+        with openers[fmt](filename, 'rb') as f:
+            init = dill.load(f)
+    else:
+        init = project
+    groups = init['groups']
+    data = cluster_data(init, mode=clustering, num_clusters=n_clusters)
+    if clustering:
+        clustering = data['clustering']
+    res = _fit(data, regul=regul, alpha=alpha, estimate_motif_vars=estimate_motif_vars, tau=tau, 
+               groups=groups, verbose=verbose, n_jobs=n_jobs, _means_est=False, U_centerer=None, std_b=std_b)
+    n = sum(map(len, groups.values()))
+    res_int = _fit(data, regul=regul, alpha=alpha, estimate_motif_vars=estimate_motif_vars, tau=tau * 0.05, 
+                   groups={'all': list(range(n))}, verbose=verbose, n_jobs=n_jobs, _means_est=True, std_b=std_b,
+                   U_centerer=(groups, res['U_raw']))
+    res['intercept_raw'] = res_int['U_raw']
+    res['intercept_std'] = res_int['U_std']
+    # print(res.keys())
     if clustering is not None:
         res['clustering'] = clustering
     
@@ -384,7 +398,7 @@ def _calc_fov(B_train, B_test, items, Y_test, groups, u):
 
 def cross_validate(project: str, n_splits=4, n_repeats=1, regul: list[str] = None, alpha: list[str] = 1, tau: list[float] = 1,
                    clustering: list[str] = None, n_clusters: list[int] = 200,  estimate_motif_vars: list[bool] = False,
-                   verbose=True, dump=True, seed=1, n_jobs=1):
+                   std_b=False, verbose=True, dump=True, seed=1, n_jobs=1):
     def listconv(x, string=False):
         if type(x) in (str, ) or not np.iterable(x):
             if string:
@@ -428,7 +442,7 @@ def cross_validate(project: str, n_splits=4, n_repeats=1, regul: list[str] = Non
         data = cluster_data(init, mode=cluster_mode, num_clusters=n_clusts)
         for i, (train_inds, test_inds) in enumerate(rkf.split(init['expression'])):
             logger_print(f'[Cluster = {"None" if not cluster_mode else cluster_mode}, n = {n_clusts}] Fold #{i+1}/{n_splits*n_repeats}...', verbose)
-            data = preprocess_data(data, inds_train=train_inds)
+            data = preprocess_data(data, inds_train=train_inds, std_b=std_b)
             Y_train = data['expression'][train_inds]
             Y_test = data['expression'][test_inds]
             U_mults = data['motif_expression']
@@ -495,11 +509,3 @@ def cross_validate(project: str, n_splits=4, n_repeats=1, regul: list[str] = Non
         with open(os.path.join(folder, f'{project_name}.cv.json'), 'w') as f:
             json.dump(res, f)
     return res            
-        
-
-# if __name__ == '__main__':
-#     project = 'syntest'
-#     from time import time
-#     t0 = time()
-#     t = cv(project, n_jobs=1, dump=True)
-#     print(time() - t0)

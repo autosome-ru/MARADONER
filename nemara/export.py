@@ -14,7 +14,6 @@ def export_results(project_name: str, output_folder: str, std_mode='full', alpha
     filename, fmt = get_init_file(project_name)
     with openers[fmt](filename, 'rb') as f:
         init = dill.load(f)
-        promoters = init['promoter_names']
         motifs = init['motif_names']
         group_names = list(init['groups'].keys())
         del init
@@ -60,7 +59,11 @@ def export_results(project_name: str, output_folder: str, std_mode='full', alpha
         DF([fov_train_groups, fov_test_groups], columns=group_names, index=['train', 'test']).to_csv(os.path.join(subfolder, 'FOV_groups.tsv'),
                                                                                                      sep='\t')
         
-    
+    try:
+        DF(fit['intercept_raw'], index=motifs, columns=['mean']).to_csv(os.path.join(output_folder, 'mean_raw.tsv'), sep='\t')
+        DF(fit['intercept_std'], index=motifs, columns=['mean']).to_csv(os.path.join(output_folder, 'mean_std.tsv'), sep='\t')
+    except KeyError:
+        pass
     DF(fit['U_raw'], index=motifs, columns=group_names).to_csv(os.path.join(output_folder, 'activities_raw.tsv'), sep='\t')
     if std_mode == 'full':
         U = fit['U_std']

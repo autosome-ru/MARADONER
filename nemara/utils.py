@@ -7,7 +7,6 @@ import bz2
 import os
 import re
 
-
 openers = {'lzma': lzma.open,
            'gzip': gzip.open,
            'bz2': bz2.open,
@@ -58,33 +57,3 @@ def variance_explained(Y, B, U, groups: list, group_average=True, weights=None, 
     if prom_diffs:
         return 1 - (Yn - B @ U) ** 2 / Yn ** 2
     return 1 - np.sum((Yn - B @ U) ** 2, axis=0) / np.sum(Yn ** 2, axis=0)
-
-
-def generate_data(p: int, m: int, g: int, min_samples: int, max_samples: int, g_std_a=0.5, g_std_b=0.5,
-                  re_per_sample=False, sigma=1, U_mult_noise=0.1):
-    g_samples = [np.random.randint(min_samples, max_samples) for _ in range(g)]
-    g_std = st.gamma.rvs(1, 1, size=g)
-    B = np.random.rand(p, m)
-    K = st.wishart.rvs(df=p, scale=np.identity(m))
-    stds = K.diagonal() ** 0.5
-    stds = 1 / stds
-    K = np.clip(stds.reshape(-1, 1) * K * stds, -1, 1)
-    K = np.identity(len(K))
-    U_exp = np.random.rand(g, m, 1) * 1 + 0.05
-    # U_exp[:] = 1
-    mean_p = st.norm.rvs(size=(p, 1))
-    mean_g = st.norm.rvs(size=(g,))
-    Us = list()
-    Ys = list()
-    inds = list()
-    for i, (n_samples, m_g, std, U_mult) in enumerate(zip(g_samples, mean_g, g_std, U_exp)):
-        sub_inds = np.empty(n_samples, dtype=int)
-        sub_inds = list()
-        for j in range(n_samples):
-            Us.append(st.matrix_normal(rowcov=K, colcov=sigma * np.identity(1)).rvs())
-            Ys.append((st.norm.rvs(loc=0, scale=std, size=(p, 1)) + mean_p + m_g) + B @ (U_mult * Us[-1]))
-            sub_inds.append(len(Ys) - 1)
-        inds.append(sub_inds)
-    Ys = np.concatenate(Ys, axis=1)
-    Us = np.concatenate(Us, axis=1)
-    return K, Ys, B, Us, g_std, (mean_p, mean_g), U_exp[..., 0], inds
