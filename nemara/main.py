@@ -6,24 +6,23 @@ from typer import Typer, Option, Argument
 from typer.core import TyperGroup
 from typing import List
 from rich import print as rprint
-from betanegbinfit import __version__ as bnb_version
 from jax import __version__ as jax_version
 from scipy import __version__ as scipy_version
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from .create import create_project
 from pathlib import Path
-from .fit import fit, cross_validate
+from .fit import fit, Regularization, SigmaStructure, CovarianceMode, ClusteringMode# cross_validate
+from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
 import logging
-from .export import export_results
-from .synthetic_tests import generate_dataset
+from .export import export_results, Standardization
 from . import __version__ as project_version
 import json
 
-logging.getLogger("jax._src.xla_bridge").addFilter(logging.Filter("No GPU/TPU found, falling back to CPU."))
-logging.getLogger("jax._src.xla_bridge").addFilter(logging.Filter("An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu."))
+# logging.getLogger("jax._src.xla_bridge").addFilter(logging.Filter("No GPU/TPU found, falling back to CPU."))
+# logging.getLogger("jax._src.xla_bridge").addFilter(logging.Filter("An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu."))
 
 __all__ = ['main']
 
@@ -37,21 +36,6 @@ class LoadingTransform(str, Enum):
     none = 'none'
     ecdf = 'ecdf'
     esf = 'esf'
-
-class Clustering(str, Enum):
-    none = 'none'
-    kmeans = 'K-Means'
-    nmf = 'NMF'
-
-class Regularization(str, Enum):
-    none = 'none'
-    l2 = 'l2-prior'
-    ranked = 'ranked'
-
-class Standardization(str, Enum):
-    full = 'full'
-    std = 'std'
-
 
 class OrderCommands(TyperGroup):
   def list_commands(self, ctx: Context):
@@ -127,7 +111,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]NeMARA[/bold] wi
                                                   ' tables. All expression values are assumed to be in log2-scale.'),
             sample_groups: Path = Option(None, help='Either a JSON dictionary or a text file with a mapping between groups and sample names they'
                                           ' contain. If a text file, each line must start with a group name followed by space-separated sample names.'),
-            filter_lowexp_w: float = Option(0.95, help='Truncation boundary for filtering out low-expressed promoters. The closer [orange]w[/orange]'
+            filter_lowexp_w: float = Option(0.9, help='Truncation boundary for filtering out low-expressed promoters. The closer [orange]w[/orange]'
                                             ' to 1, the more promoters will be left in the dataset.'),
             filter_plot: Path = Option(None, help='Expression plot with a fitted mixture that is used for filtering.'),
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
@@ -160,65 +144,93 @@ def _create(name: str = Argument(..., help='Project name. [bold]NeMARA[/bold] wi
 
 @app.command('fit', help='Estimate variance parameters and motif activities.')
 def _fit(name: str = Argument(..., help='Project name.'),
-          cv: bool = Option(False, help='Use hyperparameters from the [cyan]cv[/cyan] call.'),
-          clustering: Clustering = Option(Clustering.none, help='Clustering method.'),
-          n_clusters: int = Option(200, help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
-          tau: float = Option(1.0, help='Tau parameter that controls overfitting. The higher it is, the more variance will be explained by the model.'),
-          motif_variances: bool = Option(False, help='Estimate individual motif variances. Takes plenty of time.'),
+          clustering: ClusteringMode = Option(ClusteringMode.none, help='Clustering method.'),
+          num_clusters: int = Option(200, help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
+          sigma_structure: SigmaStructure = Option(SigmaStructure.identity, help='If [orange]diag[/orange], estimates individual variance parameters.'),
+          cov_mode: CovarianceMode = Option(CovarianceMode.posterior, help='Type of covariance matrix estimates to use for standardization'),
+          nu_cv_search: bool = Option(False, help='Try to improve "nu" estimates using CV at the activities estimation stage.'),
+          nu_cv_splits: int = Option(5, help='Number of CV splits.'),
+          nu_cv_repeats: int = Option(1, help='Number of CV repeats'), 
+          nu_search_min: float = Option(0.5, help='Minimal tau multiplier for CV'),
+          nu_search_max: float = Option(3.0, help='Maximal tau multiplier for CV'),
+          nu_search_steps: int = Option(21, help='Number of stems between [cyan]nu_search_min[/cyan] and [cyan]nu_search_max[/cyan]'),
           regul: Regularization = Option(Regularization.none, help='Regularization for motif variances estimates. Both regularizaiton types rely on the'
                                         ' motif expression info.'),
           alpha: float = Option(1.0, help='Regularization strength.'),
-          std_b: bool = Option(False, help='Standardize loading matrix across motifs.'),
-          n_jobs: int = Option(1, help='Number of jobs to be run at parallel, -1 will use all available threads. [red]Improves performance only if'
-                              ' there is a plenty of cores as JAX uses multi-processing by deafult.[/red] Parallelization is done across groups.')):
+          temperature: float = Option(100.0, help='Temperature hyperparameter for [orange]rank[/orange] regularization.'),
+          exact_promoter_means_solver: bool = Option(False, help='Whether to use exact solution via Moore-Penrose inverse or an iterative method.'),
+          gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
+          gpu_decomposition: bool = Option(False, help='Use GPU if available or SVD decomposition.'), 
+          x64: bool = Option(True, help='Use high precision algebra.')):
     """
     Fit a a mixture model parameters to data for the given project.
     """
-    if clustering == Clustering.none:
-        clustering = None
-    else:
-        clustering = clustering.value
-    if regul == Regularization.none:
-        regul = None
-    else:
-        regul = regul.value
+
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Fitting model to the data...", total=None)
     p.start()
-    fit(name, regul=regul, alpha=alpha, estimate_motif_vars=motif_variances, tau=tau, clustering=clustering, n_clusters=n_clusters,
-        std_b=std_b, n_jobs=n_jobs, verbose=False)
+    fit(name, sigma_structure=sigma_structure, clustering=clustering, num_clusters=num_clusters,
+        cov_mode=cov_mode, nu_cv_search=nu_cv_search, nu_cv_splits=nu_cv_splits,
+        nu_cv_repeats=nu_cv_repeats, nu_search_min=nu_search_min, nu_search_max=nu_search_max, nu_search_steps=nu_search_steps,
+        regularization=regul, alpha=alpha, temperature=temperature,
+        exact_promoter_means_solver=exact_promoter_means_solver, gpu=gpu,
+        gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 
-@app.command('cv', help='Cross-validate model hyperparameters.')
-def _cv(name: str = Argument(..., help='Project name.'),
-        n_splits: int = Option(4, help='Number of CV splits.'),
-        n_repeats: int = Option(1, help='Number of CV repeats.'),
-        clustering: List[Clustering] = Option([Clustering.none], '--clustering', '-n',
-                                              help='Clustering method.'),
-        n_clusters: List[int] = Option([200], '--n-clusters', '-n',
-                                       help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
-        tau: list[float] = Option([1.0], '--tau', '-t',
-                                  help='Tau parameter that controls overfitting. The higher it is, the more variance will be explained by the model.'),
-        motif_variances: List[bool] = Option([False], '--motif-variance', '-e',
-                                             help='Estimate individual motif variances. Takes plenty of time.'),
-        regul: List[Regularization] = Option([Regularization.none], '--regul', '-r',
-                                             help='Regularization for motif variances estimates. Both regularizaiton types rely on the'
-                                                 ' motif expression info.'),
-        alpha: List[float] = Option([1.0], '--alpha', '-a', help='Regularization strength.'),
-        n_jobs: int = Option(1, help='Number of jobs to be run at parallel, -1 will use all available threads. [red]Improves performance only if'
-                            ' there is a plenty of cores as JAX uses multi-processing by deafult.[/red] Parallelization is done across groups.')):
-    """
-    Fit a a mixture model parameters to data for the given project.
-    """
+# @app.command('cv', help='Cross-validate model hyperparameters.')
+# def _cv(name: str = Argument(..., help='Project name.'),
+#         n_splits: int = Option(4, help='Number of CV splits.'),
+#         n_repeats: int = Option(1, help='Number of CV repeats.'),
+#         clustering: List[Clustering] = Option([Clustering.none], '--clustering', '-n',
+#                                               help='Clustering method.'),
+#         n_clusters: List[int] = Option([200], '--n-clusters', '-n',
+#                                        help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
+#         tau: list[float] = Option([1.0], '--tau', '-t',
+#                                   help='Tau parameter that controls overfitting. The higher it is, the more variance will be explained by the model.'),
+#         motif_variances: List[bool] = Option([False], '--motif-variance', '-e',
+#                                              help='Estimate individual motif variances. Takes plenty of time.'),
+#         regul: List[Regularization] = Option([Regularization.none], '--regul', '-r',
+#                                              help='Regularization for motif variances estimates. Both regularizaiton types rely on the'
+#                                                  ' motif expression info.'),
+#         alpha: List[float] = Option([1.0], '--alpha', '-a', help='Regularization strength.'),
+#         n_jobs: int = Option(1, help='Number of jobs to be run at parallel, -1 will use all available threads. [red]Improves performance only if'
+#                             ' there is a plenty of cores as JAX uses multi-processing by deafult.[/red] Parallelization is done across groups.')):
+#     """
+#     Fit a a mixture model parameters to data for the given project.
+#     """
+#     t0 = time()
+#     rprint('Starting CV...')
+#     raise NotImplemented
+#     # cross_validate(name, n_splits=n_splits, n_repeats=n_repeats,
+#     #                regul=regul, alpha=alpha, estimate_motif_vars=motif_variances, tau=tau, clustering=clustering, n_clusters=n_clusters,
+#     #                 n_jobs=n_jobs, verbose=True)
+#     dt = time() - t0
+#     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+
+@app.command('generate', help='Generate synthetic dataset for testing purporses.')
+def _generate(output_folder: Path = Argument(..., help='Output folder.'),
+                p: int = Option(2000, help='Number of promoters.'),
+                m: int = Option(500, help='Number of motifs.'),
+                g: int = Option(10, help='Number of groups.'),
+                min_samples: int = Option(5, help='Minimal number of observations per each group.'),
+                max_samples: int = Option(6, help='Maximal number of observations per each group.'),
+                non_signficant_motifs_fraction: float = Option(0.20, help='Fraction of non-significant motifs.'),
+                sigma_rel: float = Option(1e-1, help='Ratio of nu to sigma. The higher this value, the higher is FOV.'),
+                means: bool = Option(True, help='Non-zero groupwise and promoter-wise intercepts'),
+                seed: int = Option(1, help='Random seed.')
+            ):
     t0 = time()
-    rprint('Starting CV...')
-    cross_validate(name, n_splits=n_splits, n_repeats=n_repeats,
-                   regul=regul, alpha=alpha, estimate_motif_vars=motif_variances, tau=tau, clustering=clustering, n_clusters=n_clusters,
-                    n_jobs=n_jobs, verbose=True)
+    pr = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    pr.add_task(description="Generating synthetic dataset...", total=None)
+    pr.start()
+    generate_dataset(folder=output_folder, p=p, m=m, g=g, min_samples=min_samples, max_samples=max_samples,
+                     non_signficant_motifs_fraction=non_signficant_motifs_fraction, sigma_rel=sigma_rel,
+                     means=means,seed=seed)
+    pr.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
@@ -231,38 +243,8 @@ def _export(name: str = Argument(..., help='Project name.'),
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Fitting model to the data...", total=None)
     p.start()
-    export_results(name, output_folder, std_mode=std_mode.value, alpha=alpha)
+    export_results(name, output_folder, std_mode=std_mode, alpha=alpha)
     p.stop()
-    dt = time() - t0
-    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
-    
-@app.command('generate', help='Generate synthetic dataset for testing purporses.')
-def _generate(output_folder: Path = Argument(..., help='Output folder.'),
-                p: int = Option(5000, help='Number of promoters.'),
-                m: int = Option(500, help='Number of motifs.'),
-                g: int = Option(10, help='Number of groups.'),
-                min_samples: int = Option(5, help='Minimal number of observations per each group.'),
-                max_samples: int = Option(6, help='Maximal number of observations per each group.'),
-                fraction_significant_motifs: float = Option(0.25, help='Fraction of significant motifs.'),
-                mean_motifs: bool = Option(False, help='Whether motifs activities should have non-zero means.'), 
-                sigma: float = Option(1.0, help='Activities variance. The greater this value relatively to the noise variance, the greater variance activities'
-                                      ' shall explain.'),
-                g_std_a: float = Option(0.5, help='Alpha parameter of the Gamma distribution for sampling group-specific noise variances.'),
-                g_std_b: float = Option(0.5, help='Beta parameter of the Gamma distribution for sampling group-specific noise variances.'),
-                motif_variances: bool = Option(False, help='Whether each motif should have its own variance.'),
-                motif_variances_min: float = Option(0.05, help='Minimal allowed relative variance for each motif.'),
-                motif_variances_scale: float = Option(1.0, help='Variance of motif variances.'),
-                seed: int = Option(1, help='Random seed.')
-            ):
-    t0 = time()
-    pr = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    pr.add_task(description="Generating synthetic dataset...", total=None)
-    pr.start()
-    generate_dataset(folder=output_folder, p=p, m=m, g=g, min_samples=min_samples, max_samples=max_samples,
-                     fraction_significant_motifs=fraction_significant_motifs, mean_motifs=mean_motifs, sigma=sigma, g_std_a=g_std_a, g_std_b=g_std_b,
-                     motif_variances=motif_variances, motif_variances_min=motif_variances_min, motif_variances_scale=motif_variances_scale,
-                     seed=seed)
-    pr.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 

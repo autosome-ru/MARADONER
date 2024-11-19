@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
-__version__ = '0.3'
+__version__ = '0.4'
 import importlib
 
 
 __min_reqs__ = [
             'pip>=24.0',
-            'typer>=0.6.1',
-            'numpy>=1.21.0',
+            'typer>=0.13',
+            'numpy>=2.1',
             'jax>=0.4.31',
             'jaxlib>=0.4.31',
-            'matplotlib>=3.5.1',
-            'pandas>=2.2.2',
-            'scipy>=1.13',
+            'matplotlib>=3.5',
+            'pandas>=2.2',
+            'scipy>=1.14',
             'statsmodels>=0.14',
             'datatable>=1.0.0' ,
-            'dill>=0.3.8',
+            'dill>=0.3.9',
             'rich>=12.6.0',
            ]
 

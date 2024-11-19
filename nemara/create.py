@@ -67,7 +67,6 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     proms = promoter_expression.index
     sample_names = promoter_expression.columns
     loading_matrices = [dt.fread(f).to_pandas() for f in loading_matrix_filenames]
-    # print(loading_matrices[0])
     loading_matrices = [df.set_index(df.columns[0]).loc[proms] for df in loading_matrices]
     if loading_matrix_transformations is None or type(loading_matrix_transformations) is str:
         loading_matrix_transformations = [loading_matrix_transformations] * len(loading_matrices)
@@ -134,4 +133,3 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
         with openers[compression](f'{project_name}.init.{compression}', 'wb') as f:
             dill.dump(res, f)
     return res
-
