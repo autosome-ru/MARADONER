@@ -74,15 +74,14 @@ def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, fit_plot_filename=None,
     pdf1 = jnp.exp(logpdf1)
     pdf2 = jnp.exp(logpdf2)
     ws = np.array(pdf1 / ((w * pdf1 + (1-w)*pdf2)) * w)
-    # _inds = ws >= 0.5
-    # if np.sum(pdf1 * x) >= np.sum(pdf2 * x):
-    #     ws = 1 - ws
+    if x[ws >= 0.5].mean() < x[ws < 0.5].mean():
+        ws = 1 - ws
     j = np.argmax(ws)
-    ws[:j] = 1.0
     l = np.argmin(ws)
-    ws[l:] = 0.0
-    for k in range(j, len(ws)):
-        if ws[k] < cutoff:
+    ws[j:] = 1.0
+    ws[:l] = 0.0
+    for k in range(len(ws)):
+        if ws[k] >= 1.0-cutoff:
             break
     if fit_plot_filename:
         import matplotlib.pyplot as plt
@@ -101,10 +100,10 @@ def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, fit_plot_filename=None,
         plt.xlabel('Standardized expression')
         plt.tight_layout()
         plt.savefig(fit_plot_filename)
-    
     ws = ws[inds_inv]
-    inds = np.zeros(len(expression), dtype=bool)
-    inds[k:] = True
+    inds = np.ones(len(expression), dtype=bool)
+    inds[:k] = False
+    # print(inds)
     # inds[:] = 1
     inds = inds[inds_inv]
-    return inds, 1.0 - ws
+    return inds, ws

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__version__ = '0.4'
+__version__ = '0.5'
 import importlib
 
 
@@ -7,8 +7,8 @@ __min_reqs__ = [
             'pip>=24.0',
             'typer>=0.13',
             'numpy>=2.1',
-            'jax>=0.4.31',
-            'jaxlib>=0.4.31',
+            'jax<0.5',
+            'jaxlib<0.5',
             'matplotlib>=3.5',
             'pandas>=2.2',
             'scipy>=1.14',

@@ -12,12 +12,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from .create import create_project
 from pathlib import Path
-from .fit import fit, Regularization, SigmaStructure, CovarianceMode, ClusteringMode# cross_validate
+from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode
 from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
-import logging
-from .export import export_results, Standardization
+from .export import export_results, Standardization, ANOVAType
 from . import __version__ as project_version
 import json
 
@@ -55,7 +54,7 @@ def update_history(name: str, command: str, **kwargs):
     if command == 'create':
         d.clear()
         d['jax'] = jax_version
-        d['nemara'] = project_version
+        d['maradoner'] = project_version
         d['scipy'] = scipy_version
         d['dill'] = dill_version
         d['name'] = name
@@ -71,11 +70,11 @@ def update_history(name: str, command: str, **kwargs):
         json.dump(d, f, indent=4)
     
 doc = f'''
-[bold]NeMARA[/bold] version {project_version}: Placeholder Name 
+[bold]MARADONER[/bold] version {project_version}: [bold]M[/bold]otif [bold]A[/bold]ctivity [bold]R[/bold]esponse [bold]A[/bold]nalaysis [bold]Done R[/bold]ight 
 \b\n
 \b\n
-A typical [bold]NeMARA[/bold] session consists of sequential runs of [bold cyan]create[/bold cyan], [bold cyan]fit[/bold cyan],  and, finally, \
-[bold cyan]export[/bold cyan] commands. [bold]NeMARA[/bold] accepts files in the tabular format (.tsv or .csv, they also can come in gzipped-flavours), \
+A typical [bold]MARADONER[/bold] session consists of sequential runs of [bold cyan]create[/bold cyan], [bold cyan]fit[/bold cyan],  and, finally, \
+[bold cyan]export[/bold cyan] commands. [bold]MARADONER[/bold] accepts files in the tabular format (.tsv or .csv, they also can come in gzipped-flavours), \
 and requires the following inputs:
 [bold orange]•[/bold orange] Promoter expression table of shape [blue]p[/blue] x [blue]s[/blue], where [blue]p[/blue] is a number of promoters and \
 [blue]s[/blue] is a number of samples;
@@ -87,19 +86,18 @@ each sample is a group of its own).
 [red]Note:[/red] all tabular files must have named rows and columns.
 All of the input files are supplied once at the [cyan]create[/cyan] stage. All of the commands are very customizable via numerous options, more \
 details can be found in their respective helps, e.g.:
-[magenta]>[/magenta] [cyan]nemara fit --help[/cyan]
-The [cyan]fit[/cyan] is especially option-heavy, many of which impact the power of the [bold]NeMARA[/bold]. To asses which set of hyperparameters is \
-the most suitable, [bold]NeMARA[/bold] allows to do cross-validation via the [cyan]cv[/cyan] command. 
+[magenta]>[/magenta] [cyan]maradoner fit --help[/cyan]
+
 \b\n
 If you found a bug or have any questions, feel free to contact us via
-a) e-mail: [blue]iam@georgy.top[/blue] b) issue-tracker at [blue]github.com/autosome-ru/neMARA[/blue]
+a) e-mail: [blue]iam@georgy.top[/blue] b) issue-tracker at [blue]github.com/autosome-ru/maradoner[/blue]
 '''
 app = Typer(rich_markup_mode='rich', cls=OrderCommands, add_completion=False, help=doc)
 
-help_str = 'Initialize [bold]NeMARA[/bold] project initial files: do parsing and filtering of the input data.'
+help_str = 'Initialize [bold]MARADONER[/bold] project initial files: do parsing and filtering of the input data.'
 
 @app.command('create', help=help_str)
-def _create(name: str = Argument(..., help='Project name. [bold]NeMARA[/bold] will produce files for internal usage that start with [cyan]'
+def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold] will produce files for internal usage that start with [cyan]'
                                             'name[/cyan].'),
             expression: Path = Argument(..., help='A path to the promoter expression table. Expression values are assumed to be in a log-scale.'),
             loading: List[Path] = Argument(..., help='A list (if applicable, separated by space) of filenames containing loading matrices. '),
@@ -146,19 +144,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]NeMARA[/bold] wi
 def _fit(name: str = Argument(..., help='Project name.'),
           clustering: ClusteringMode = Option(ClusteringMode.none, help='Clustering method.'),
           num_clusters: int = Option(200, help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
-          sigma_structure: SigmaStructure = Option(SigmaStructure.identity, help='If [orange]diag[/orange], estimates individual variance parameters.'),
-          cov_mode: CovarianceMode = Option(CovarianceMode.posterior, help='Type of covariance matrix estimates to use for standardization'),
-          nu_cv_search: bool = Option(False, help='Try to improve "nu" estimates using CV at the activities estimation stage.'),
-          nu_cv_splits: int = Option(5, help='Number of CV splits.'),
-          nu_cv_repeats: int = Option(1, help='Number of CV repeats'), 
-          nu_search_min: float = Option(0.5, help='Minimal tau multiplier for CV'),
-          nu_search_max: float = Option(3.0, help='Maximal tau multiplier for CV'),
-          nu_search_steps: int = Option(21, help='Number of stems between [cyan]nu_search_min[/cyan] and [cyan]nu_search_max[/cyan]'),
-          regul: Regularization = Option(Regularization.none, help='Regularization for motif variances estimates. Both regularizaiton types rely on the'
-                                        ' motif expression info.'),
-          alpha: float = Option(1.0, help='Regularization strength.'),
-          temperature: float = Option(100.0, help='Temperature hyperparameter for [orange]rank[/orange] regularization.'),
-          exact_promoter_means_solver: bool = Option(False, help='Whether to use exact solution via Moore-Penrose inverse or an iterative method.'),
+          test_chromosomes: List[str] = Option(None, '--test-chromosomes', '-t', help='Test chromosomes'),
           gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
           gpu_decomposition: bool = Option(False, help='Use GPU if available or SVD decomposition.'), 
           x64: bool = Option(True, help='Use high precision algebra.')):
@@ -170,46 +156,76 @@ def _fit(name: str = Argument(..., help='Project name.'),
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Fitting model to the data...", total=None)
     p.start()
-    fit(name, sigma_structure=sigma_structure, clustering=clustering, num_clusters=num_clusters,
-        cov_mode=cov_mode, nu_cv_search=nu_cv_search, nu_cv_splits=nu_cv_splits,
-        nu_cv_repeats=nu_cv_repeats, nu_search_min=nu_search_min, nu_search_max=nu_search_max, nu_search_steps=nu_search_steps,
-        regularization=regul, alpha=alpha, temperature=temperature,
-        exact_promoter_means_solver=exact_promoter_means_solver, gpu=gpu,
+    fit(name, clustering=clustering, num_clusters=num_clusters,
+        gpu=gpu, test_chromosomes=test_chromosomes,
         gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
+@app.command('gof', help='Estimate GOFs given test/train data split. Provides test info only if [orange]test-chromosomes[/orange] is not None in [cyan]fit[/cyan].')
+def _gof(name: str = Argument(..., help='Project name.'),
+         use_groups: bool = Option(False, help='Compute statistic for sammples aggragated across groups.'), 
+         stat_type: GOFStat = Option(GOFStat.fov, help='Statistic type to compute'),
+         stat_mode: GOFStatMode = Option(GOFStatMode.residual, help='Whether to compute stats for residuals or accumulate their effects'),
+         gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
+         x64: bool = Option(True, help='Use high precision algebra.')):
+    """
+    Fit a a mixture model parameters to data for the given project.
+    """
 
-# @app.command('cv', help='Cross-validate model hyperparameters.')
-# def _cv(name: str = Argument(..., help='Project name.'),
-#         n_splits: int = Option(4, help='Number of CV splits.'),
-#         n_repeats: int = Option(1, help='Number of CV repeats.'),
-#         clustering: List[Clustering] = Option([Clustering.none], '--clustering', '-n',
-#                                               help='Clustering method.'),
-#         n_clusters: List[int] = Option([200], '--n-clusters', '-n',
-#                                        help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
-#         tau: list[float] = Option([1.0], '--tau', '-t',
-#                                   help='Tau parameter that controls overfitting. The higher it is, the more variance will be explained by the model.'),
-#         motif_variances: List[bool] = Option([False], '--motif-variance', '-e',
-#                                              help='Estimate individual motif variances. Takes plenty of time.'),
-#         regul: List[Regularization] = Option([Regularization.none], '--regul', '-r',
-#                                              help='Regularization for motif variances estimates. Both regularizaiton types rely on the'
-#                                                  ' motif expression info.'),
-#         alpha: List[float] = Option([1.0], '--alpha', '-a', help='Regularization strength.'),
-#         n_jobs: int = Option(1, help='Number of jobs to be run at parallel, -1 will use all available threads. [red]Improves performance only if'
-#                             ' there is a plenty of cores as JAX uses multi-processing by deafult.[/red] Parallelization is done across groups.')):
-#     """
-#     Fit a a mixture model parameters to data for the given project.
-#     """
-#     t0 = time()
-#     rprint('Starting CV...')
-#     raise NotImplemented
-#     # cross_validate(name, n_splits=n_splits, n_repeats=n_repeats,
-#     #                regul=regul, alpha=alpha, estimate_motif_vars=motif_variances, tau=tau, clustering=clustering, n_clusters=n_clusters,
-#     #                 n_jobs=n_jobs, verbose=True)
-#     dt = time() - t0
-#     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Calculating FOVs...", total=None)
+    p.start()
+    res = calculate_fov(name, stat_mode=stat_mode, stat_type=stat_type, use_groups=use_groups, gpu=gpu, x64=x64)
+    if stat_type == GOFStat.corr:
+        title = 'Pearson correlation'
+    else:
+        title = 'Fraction of variance explained'
+    if stat_mode == GOFStatMode.residual:
+        title += ' (Residual)'
+    else:
+        title += ' (Total)'
+    t = Table('Set', 'null', 'intercepts', 'motif_mean',
+              title=title)
+    row = [f'{t.total:.3f}' for t in res.train]
+    t.add_row('train', *row)
+    if res.test is not None:
+        row = [f'{t.total:.3f}' for t in res.test]
+        t.add_row('test', *row)
+    p.stop()
+    dt = time() - t0
+    rprint(t)
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+
+@app.command('predict', help='Estimate deviations of motif activities from their means.')
+def _predict(name: str = Argument(..., help='Project name.'),
+         filter_motifs: bool = Option(False, help='Do not predict deviations from motifs whose variance is low.'),
+         filter_order: int = Option(5, help='Motif variance is considered low if it is [orange]filter-order[/orange] orders of magnitude smaller that a median motif variance.'),
+         tau_search: bool = Option(False, help='Search for tau multiplier using CV'),
+         cv_repeats: int = Option(3, help='CV repeats in [orange]RepeatedKFold[/orange]'),
+         cv_splits: int = Option(5, help='CV splits in [orange]RepeatedKFold[/orange]'),
+         tau_left: float = Option(0.1, help='Left bound for tau search'),
+         tau_right: float = Option(1.0, help='Right bound for tau search. Values > 1 imply that we believe that variance could be underestimated'),
+         tau_num: int = Option(10, help='Number of splits in np.linspace(tau_left, tau_right, tau_num)'),
+         pinv: bool = Option(False, help='Use plain Moore-Penrose pseudoinverse with Tikhonov regularization for tau > 1. Applicable for testing purposes'),
+         gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
+         x64: bool = Option(True, help='Use high precision algebra.')):
+    """
+    Fit a a mixture model parameters to data for the given project.
+    """
+
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Predicting motif activities...", total=None)
+    p.start()
+    predict(name, tau_search=tau_search, cv_splits=cv_splits, cv_repeats=cv_repeats,
+            tau_left=tau_left, tau_right=tau_right, tau_num=tau_num, pinv=pinv,
+            filter_motifs=filter_motifs, filter_order=filter_order, gpu=gpu, x64=x64)
+    p.stop()
+    dt = time() - t0
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 @app.command('generate', help='Generate synthetic dataset for testing purporses.')
 def _generate(output_folder: Path = Argument(..., help='Output folder.'),
@@ -229,7 +245,9 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
     pr.start()
     generate_dataset(folder=output_folder, p=p, m=m, g=g, min_samples=min_samples, max_samples=max_samples,
                      non_signficant_motifs_fraction=non_signficant_motifs_fraction, sigma_rel=sigma_rel,
-                     means=means,seed=seed)
+                     means=means, 
+                     B_cor=0, U_cor=0, E_cor=0, motif_cor=0,
+                     seed=seed)
     pr.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
@@ -238,12 +256,15 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
 def _export(name: str = Argument(..., help='Project name.'),
             output_folder: Path = Argument(..., help='Output folder.'),
             std_mode: Standardization = Option(Standardization.full, help='Whether to standardize activities with plain variances or also decorrelate them.'),
+            anova_mode: ANOVAType = Option(ANOVAType.positive, help='If negative, look for non-variative motifs'),
+            corrected_pvalues: bool = Option(False, help='Compute MVN-based FDR correction.'),
             alpha: float = Option(0.05, help='FDR alpha.')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    p.add_task(description="Fitting model to the data...", total=None)
+    p.add_task(description="Exporting results...", total=None)
     p.start()
-    export_results(name, output_folder, std_mode=std_mode, alpha=alpha)
+    export_results(name, output_folder, std_mode=std_mode, anova_mode=anova_mode, alpha=alpha,
+                   compute_corrected_pvalues=corrected_pvalues)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')

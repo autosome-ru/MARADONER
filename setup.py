@@ -7,7 +7,7 @@ with open('README.md', 'r', encoding="utf8") as fh:
     long_description = fh.read()
 
 setup(
-    name='nemara',
+    name='maradoner',
     version=__version__,
     packages=find_packages(),
     include_package_data=True,
@@ -17,7 +17,7 @@ setup(
     long_description_content_type="text/markdown",
     entry_points={
         'console_scripts': [
-            'nemara = nemara.main:main',
+            'maradoner = maradoner.main:main',
         ],
     },
     author='Georgy Meshcheryakov',
@@ -29,6 +29,7 @@ setup(
 	      "Programming Language :: Python :: 3.9",
 	      "Programming Language :: Python :: 3.10",
 	      "Programming Language :: Python :: 3.11",
+	      "Programming Language :: Python :: 3.12",
 	      "Topic :: Scientific/Engineering",
               "Operating System :: OS Independent"]
 

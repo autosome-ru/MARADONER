@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from scipy.stats import Covariance
+from scipy.linalg import cholesky
 import scipy.stats as st
 import numpy as np
 import pandas as pd
@@ -17,29 +19,65 @@ class GeneratedData:
     nu: np.ndarray
     mean_p: np.ndarray
     mean_s: np.ndarray
+    mean_m: np.ndarray
     significant_motifs: np.ndarray
     group_inds: list
 
 def generate_data(p: int, m: int, g: int, min_samples: int, max_samples: int,
                   sigma_rel=1e-1, non_signficant_motifs_fraction=0.25,
-                  means=True) -> GeneratedData:
+                  means=True, B_cor=0, U_cor=0, E_cor=0, motif_cor=0) -> GeneratedData:
     g_samples = [np.random.randint(min_samples, max_samples) for _ in range(g)]
+    U_cor = motif_cor
     g_std = st.gamma.rvs(1, 1, size=g) 
     # g_std[:] = 1
     sigmas = g_std ** 2 * sigma_rel
     B = np.random.rand(p, m)
+    if B_cor or motif_cor:
+        c = np.zeros((m, m))
+        c[:] = B_cor if B_cor else motif_cor
+        np.fill_diagonal(c,1.0)
+        B = st.multivariate_normal(cov=c).rvs(size=p)
+        
     # B /= B.var()
     K = st.wishart.rvs(df=p, scale=np.identity(m))
-    stds = K.diagonal() ** 0.5
-    stds = 1 / stds
-    K = np.clip(stds.reshape(-1, 1) * K * stds, -1, 1)
     K = np.identity(len(K))
-    U_mult = np.random.rand(m, 1) * 1 + 0.05
-    U_mult[:] = 1.0 ###
+    if U_cor:
+        K = np.zeros((m, m))
+        K[:] = U_cor
+        np.fill_diagonal(K, 1.0)
+    # stds = K.diagonal() ** 0.5
+    # stds = 1 / stds
+    # K = np.clip(stds.reshape(-1, 1) * K * stds, -1, 1)
+        # print(U_mult, U_mult.shape)
+    
+        # U_mult = np.abs(st.multivariate_normal(cov=c).rvs() + 1.5).reshape(-1, 1) / 2
+    # U_mult[:] = 1.0 ###
     significant_motifs = np.ones(m, dtype=bool)
     if non_signficant_motifs_fraction:
         significant_motifs[np.random.choice(np.arange(m), size=int(m * non_signficant_motifs_fraction), replace=False)] = False
+        if B_cor or motif_cor:
+            nm = (~significant_motifs).sum()
+            c = np.zeros((nm, nm))
+            c[:] = B_cor if B_cor else motif_cor
+            np.fill_diagonal(c,1.0)
+            B[:, ~significant_motifs] = st.multivariate_normal(cov=c).rvs(size=(p))
     
+    U_mult = np.random.rand(m, 1) * 1 + 0.05
+    if motif_cor or B_cor:
+        if motif_cor:
+            c = np.zeros((m, m))
+            c[:] = motif_cor
+            np.fill_diagonal(c,1.0)
+        else:
+            c = B.T @ B
+            # c = c + np.identity(len(c)) * 1e-6
+            d = 1 / c.diagonal() ** 0.5
+            c = d.reshape(-1, 1) * c * d
+        mvn = st.multivariate_normal(cov=c)
+        U_mult = mvn.rvs().flatten()
+        # print(U_mult)
+        U_mult = st.uniform.ppf(st.norm.cdf(U_mult)) * 1 + 0.05
+        U_mult = U_mult.reshape(-1, 1)
     mean_p = st.norm.rvs(size=(p, 1))
     # mean_m = st.norm.rvs(size=())
     if not means:
@@ -48,7 +86,15 @@ def generate_data(p: int, m: int, g: int, min_samples: int, max_samples: int,
     Ys = list()
     means_g = list()
     inds = list()
-    mean_m = B @ st.norm.rvs(size=(m, 1))
+    mean_motifs = st.norm.rvs(size=(m, 1))
+    mean_m = B @ mean_motifs
+    if E_cor:
+        c = np.zeros((p, p))
+        c[:] = E_cor
+        np.fill_diagonal(c, 1)
+        c = cholesky(c)
+        c = Covariance.from_cholesky(c)
+        mvn_e = st.multivariate_normal(cov=c)
     for i, (n_samples, std, sigma) in enumerate(zip(g_samples, g_std, sigmas)):
         sub_inds = np.empty(n_samples, dtype=int)
         sub_inds = list()
@@ -61,26 +107,33 @@ def generate_data(p: int, m: int, g: int, min_samples: int, max_samples: int,
             U = st.matrix_normal(rowcov=K, colcov=sigma * np.identity(1)).rvs()
             U[~significant_motifs] = 0
             Us.append(U)
-            Ys.append((st.norm.rvs(loc=0, scale=std, size=(p, 1)) + mean_p + mean_m + m_g) + B @ (U_mult * Us[-1]))
+            E = st.norm.rvs(loc=0, scale=std, size=(p, 1))
+            if E_cor:
+                E = mvn_e.rvs().reshape(-1, 1)
+            Ys.append((E + mean_p + mean_m + m_g) + B @ (U_mult * Us[-1]))
             sub_inds.append(len(Ys) - 1)
         inds.append(sub_inds)
     Ys = np.concatenate(Ys, axis=1)
     Us = np.concatenate(Us, axis=1)
     means_g = np.array(means_g)
+    U_mult[~significant_motifs] = 0
     res = GeneratedData(Y=Ys, B=B, Sigma=U_mult[..., 0] ** 2, sigmas=g_std ** 2, nu=sigmas, U = Us,
                         mean_p=mean_p, mean_s=means_g,
+                        mean_m=mean_motifs,
                         significant_motifs=significant_motifs,
                         group_inds=list(map(np.array, inds)))
     return res
 
 def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_samples: int, 
                      non_signficant_motifs_fraction: float, sigma_rel: float,
-                     means: bool, seed: int):
+                     means: bool, B_cor: float, U_cor: float, E_cor:float, 
+                     motif_cor: float, seed: int):
     random.seed(seed)
     np.random.seed(seed)
     res = generate_data(p=p, m=m, g=g, min_samples=min_samples, max_samples=max_samples,
                         non_signficant_motifs_fraction=non_signficant_motifs_fraction, 
-                        sigma_rel=sigma_rel, means=means)
+                        sigma_rel=sigma_rel, means=means, B_cor=B_cor, U_cor=U_cor, E_cor=E_cor,
+                        motif_cor=motif_cor)
     inds = res.group_inds
     Ys = res.Y; B = res.B; Us = res.U; std_g = res.sigmas; Sigma = res.Sigma 
     nu = res.nu
@@ -123,6 +176,8 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
     mean_p.to_csv(os.path.join(folder, 'promoter_means.tsv'), sep='\t')
     mean_s = pd.DataFrame(res.mean_s.flatten(), columns=['mean'], index=sample_names)
     mean_s.to_csv(os.path.join(folder, 'sample_means.tsv'), sep='\t')
+    mean_m = pd.DataFrame(res.mean_m.flatten(), columns=['mean'], index=motifs)
+    mean_m.to_csv(os.path.join(folder, 'motif_means.tsv'), sep='\t')
     
     with open(groups_filename, 'w') as f:
         json.dump(groups, f)
