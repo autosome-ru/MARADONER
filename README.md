@@ -10,5 +10,5 @@ Installation:
 
 # Usage
 ```
->MARADONER --help
+>maradoner --help
 ```
