@@ -1,14 +1,14 @@
 
-**NeMARA - placeholder name**
+**MARADONER**
 # TODO
 Installation:
 ```
-> git clone https://github.com/autosome-ru/NeMARA
-> cd NeMARA
+> git clone https://github.com/autosome-ru/MARADONER
+> cd MARADONER
 > pip3 install .
 ```
 
 # Usage
 ```
->nemara --help
+>MARADONER --help
 ```
