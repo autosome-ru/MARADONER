@@ -1,5 +1,5 @@
 __requires__ = ['pip >= 24.0']
-from nemara import __version__, __min_reqs__
+from maradoner import __version__, __min_reqs__
 from setuptools import setup, find_packages
 import os
 
