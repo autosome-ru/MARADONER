@@ -18,6 +18,7 @@ from time import time
 from dill import __version__ as dill_version
 from .export import export_results, Standardization, ANOVAType
 from . import __version__ as project_version
+from .select import select_motifs_single
 import json
 
 # logging.getLogger("jax._src.xla_bridge").addFilter(logging.Filter("No GPU/TPU found, falling back to CPU."))
@@ -73,7 +74,7 @@ doc = f'''
 [bold]MARADONER[/bold] version {project_version}: [bold]M[/bold]otif [bold]A[/bold]ctivity [bold]R[/bold]esponse [bold]A[/bold]nalaysis [bold]Done R[/bold]ight 
 \b\n
 \b\n
-A typical [bold]MARADONER[/bold] session consists of sequential runs of [bold cyan]create[/bold cyan], [bold cyan]fit[/bold cyan],  and, finally, \
+A typical [bold]MARADONER[/bold] session consists of sequential runs of [bold cyan]create[/bold cyan], [bold cyan]fit[/bold cyan],  [bold cyan]predict[/bold cyan] and, finally, \
 [bold cyan]export[/bold cyan] commands. [bold]MARADONER[/bold] accepts files in the tabular format (.tsv or .csv, they also can come in gzipped-flavours), \
 and requires the following inputs:
 [bold orange]•[/bold orange] Promoter expression table of shape [blue]p[/blue] x [blue]s[/blue], where [blue]p[/blue] is a number of promoters and \
@@ -114,6 +115,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
             filter_plot: Path = Option(None, help='Expression plot with a fitted mixture that is used for filtering.'),
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
                                                 help='String postfixes will be appeneded to the motifs from each of the supplied loading matrices'),
+            motif_filename: Path = Option(None, '--motif-filename', help='If provided, then only motifs with names present in this fill will be kept'),
             compression: Compression = Option(Compression.raw.value, help='Compression method used to store results.')):
     if type(compression) is Compression:
         compression = str(compression.value)
@@ -130,7 +132,9 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                        promoter_filter_lowexp_cutoff=filter_lowexp_w,
                        promoter_filter_plot_filename=filter_plot,                       
                        compression=compression, 
-                       motif_postfixes=loading_postfix, verbose=False)
+                       motif_postfixes=loading_postfix,
+                       motif_names_filename=motif_filename,
+                       verbose=False)
     p.stop()
     dt = time() - t0
     p, s = r['expression'].shape
@@ -167,7 +171,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
 def _gof(name: str = Argument(..., help='Project name.'),
          use_groups: bool = Option(False, help='Compute statistic for sammples aggragated across groups.'), 
          stat_type: GOFStat = Option(GOFStat.fov, help='Statistic type to compute'),
-         stat_mode: GOFStatMode = Option(GOFStatMode.residual, help='Whether to compute stats for residuals or accumulate their effects'),
+         stat_mode: GOFStatMode = Option(GOFStatMode.total, help='Whether to compute stats for residuals or accumulate their effects'),
          gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
          x64: bool = Option(True, help='Use high precision algebra.')):
     """
@@ -189,10 +193,10 @@ def _gof(name: str = Argument(..., help='Project name.'),
         title += ' (Total)'
     t = Table('Set', 'null', 'intercepts', 'motif_mean',
               title=title)
-    row = [f'{t.total:.3f}' for t in res.train]
+    row = [f'{t.total:.6f}' for t in res.train]
     t.add_row('train', *row)
     if res.test is not None:
-        row = [f'{t.total:.3f}' for t in res.test]
+        row = [f'{t.total:.6f}' for t in res.test]
         t.add_row('test', *row)
     p.stop()
     dt = time() - t0
@@ -269,6 +273,23 @@ def _export(name: str = Argument(..., help='Project name.'),
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
+
+__select_motif_doc = 'Selects best motif variants when the project was created from multiple loading matrices, each with an unique postfix.'\
+                     'Best motif variant is select by comparing their standardized contribution/z-score of both intercepts and deviations.'\
+                     'The resulting list of motif names with the appropriate postfixes will be then stored in [orange]filename[/orange].'\
+                     'It''s assumed that [orange]filename[/orange] will be supplied as [orange]motif_filename[/orange] to the [bold cyan]create[/bold cyan].'
+@app.command('select-motifs',
+             help=__select_motif_doc)
+def _select_motifs(name: str = Argument(..., help='Project name'),
+                   filename: Path = Argument(..., help='Filename where a list of best motif variants will be stored')):
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Exporting results...", total=None)
+    p.start()
+    select_motifs_single(name, filename)
+    p.stop()
+    dt = time() - t0
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 def main():
     check_packages()

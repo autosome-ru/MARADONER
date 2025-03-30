@@ -26,7 +26,7 @@ class OptimizerResult:
         
 
 class MetaOptimizer():
-    def __init__(self, fun, grad, init_method='SLSQP', methods=('SLSQP', 'L-BFGS-B'), num_steps_momentum=40,
+    def __init__(self, fun, grad, init_method='SLSQP', methods=('SLSQP', 'L-BFGS-B'), num_steps_momentum=60,
                  reparam='square', scaling_set=None, 
                  momentum_lrs=(1e-2, 1e-3, 1e-4)):
         self.init_method = init_method
@@ -79,7 +79,7 @@ class MetaOptimizer():
                            x0=self._inverse_reparam(x0, param_scalers=self.param_scalers),
                            method=method, jac=grad, 
                            options={'maxiter': max_iter})
-            if best_sol is None or best_sol.fun > sol.fun:
+            if best_sol is None or np.isnan(best_sol.fun) or best_sol.fun > sol.fun:
                 best_sol = sol
         best_sol.x = self._reparam(best_sol.x, param_scalers=self.param_scalers)
         best_sol.fun /= self.fun_scale
@@ -95,6 +95,7 @@ class MetaOptimizer():
         best_fun = fun(x)
         if self.num_steps_momentum <= 0:
             return x0, best_fun / self.fun_scale
+        print('MOMENTUM start', best_fun / self.fun_scale)
         for j, lr in enumerate(lrs):
             opt_init, opt_update, get_params = rmsprop(lr)
             opt_state = opt_init(x)
@@ -132,7 +133,7 @@ class MetaOptimizer():
         best_fun = start_loglik
         for scale in (1.0, 1e1, 1e2, 1e3):
             self.fun_scale = np.abs(1 / start_loglik  * scale)
-            sol = self.scipy_optimize(x0, self.scipy_methods, max_iter=20)
+            sol = self.scipy_optimize(x0, self.scipy_methods, max_iter=10)
             if sol is None:
                 continue
             if np.isfinite(sol.fun) and sol.fun < best_fun:
@@ -142,8 +143,14 @@ class MetaOptimizer():
         if best_sol is None:
             raise ValueError('Numerical error in optimization')
         
-        init_loglik = best_sol.fun
-        x = best_sol.x
+        if best_fun > start_loglik:
+            x = x0
+            self.fun_scale = 1
+            best_scale = 1
+            init_loglik = start_loglik
+        else:
+            init_loglik = best_sol.fun
+            x = best_sol.x
         if not self.scaling_set:
             self.param_scalers = np.abs(x).mean()
         else:
@@ -152,6 +159,8 @@ class MetaOptimizer():
                 self.param_scalers[slc] = np.max(np.abs(x)[slc])
         self.fun_scale = np.abs(1 / init_loglik * best_scale)
         x, momentum_loglik = self.momentum_optimize(x)
+        xm = x.copy()
+        print('MOMENTUM, after', momentum_loglik)
         self.fun_scale = np.abs(1 / momentum_loglik * best_scale)
         if not self.scaling_set:
             self.param_scalers = np.abs(x).mean()
@@ -160,8 +169,13 @@ class MetaOptimizer():
             for slc in self.scaling_set:
                 self.param_scalers[slc] = np.max(np.abs(x)[slc])
         sol = self.scipy_optimize(x, methods=self.scipy_methods)
+        if np.isnan(sol.fun) or sol.fun > momentum_loglik:
+            sol.fun = momentum_loglik
+            sol.x = xm
+            print('Eggog')
         grad_norm = np.linalg.norm(sol.jac)
         loglik = sol.fun
+        x = sol.x
         return OptimizerResult(start_loglik, init_loglik, momentum_loglik, loglik , grad_norm, x)
         
         

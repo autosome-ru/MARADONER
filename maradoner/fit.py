@@ -21,7 +21,7 @@ class GOFStat(str, Enum):
 
 class GOFStatMode(str, Enum):
     residual = 'residual'
-    cummulative = 'cummulative'
+    total = 'total'
 
 
 @dataclass(frozen=True)
@@ -31,12 +31,13 @@ class LowrankDecomposition:
     V: np.ndarray
     null_Q: np.ndarray
 
-@dataclass(frozen=True)
+@dataclass
 class TransformedData:
     Y: np.ndarray
     B: np.ndarray
     group_inds: list
     group_inds_inv: np.ndarray
+    K : np.ndarray = None
     
 @dataclass(frozen=True)
 class ErrorVarianceEstimates:
@@ -326,6 +327,7 @@ def estimate_promoter_mean(data: TransformedData,
                             B_decomposition: LowrankDecomposition,
                             error_variance: ErrorVarianceEstimates,
                             verbose=False) -> PromoterMeanEstimates:
+    
     D = error_variance.variance[data.group_inds_inv]
     Y = jnp.array(data.Y)
     F_p = jnp.array(ones_nullspace(len(Y) + 1))
@@ -362,7 +364,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                       G_fix_ind=j, G_fix_val=fix)
         fun = jax.jit(fun)
         grad = jax.jit(grad)
-        opt = MetaOptimizer(fun, grad, num_steps_momentum=50,
+        opt = MetaOptimizer(fun, grad, num_steps_momentum=60,
                             # scaling_set=(slice(len(BTB)), slice(len(BTB), None))
                             )
         try:
@@ -477,19 +479,16 @@ class ActivitiesPrediction:
     stds: np.ndarray
     filtered_motifs: np.ndarray
     tau_groups: dict
+    clustering: tuple[np.ndarray, np.ndarray] = None
 
 def predict_activities(data: TransformedData, fit: FitResult,
-                       filter_motifs=True,
-                       filter_order=5,
-                       tau_search=True,
-                       cv_repeats=3,
-                       cv_splits=5,
-                       tau_left=0.1,
-                       tau_right=1.0,
-                       tau_num=15,
+                       filter_motifs=True, filter_order=5,
+                       tau_search=True, tau_left=0.1,  tau_right=1.0, tau_num=15,
+                       clustering_search=False, k_min=0.1, k_max=0.9, k_num=6, 
+                       cv_repeats=3, cv_splits=5,
                        pinv=False) -> ActivitiesPrediction:
 
-    def _sol(BT_Y_sum, BT_B, sigma, nu, n: int, standardize=False, tau_mult=1.0):
+    def _sol(BT_Y_sum, BT_B, Sigma, sigma, nu, n: int, standardize=False, tau_mult=1.0):
         tau = nu / sigma * tau_mult
         Sigma_hat = Sigma * tau
         Z = n * BT_B
@@ -516,14 +515,15 @@ def predict_activities(data: TransformedData, fit: FitResult,
     Sigma = fit.motif_variance.motif
     G = fit.motif_variance.group
     D = fit.error_variance.variance
+    group_inds = data.group_inds
+    
     mu_p = fit.promoter_mean.mean.reshape(-1, 1)
     mu_m = fit.motif_mean.mean.reshape(-1, 1)
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
     B = data.B
     Y = data.Y
     Y = Y - mu_p - B @ mu_m - mu_s.T
-    group_inds = data.group_inds
-    
+    # print(B.shape, Y.shape)
     if filter_motifs:
         inds = np.log10(Sigma) >= (np.median(np.log10(Sigma)) - filter_order)
         B = B[:, inds]
@@ -532,6 +532,43 @@ def predict_activities(data: TransformedData, fit: FitResult,
         filtered_motifs = np.where(~inds)[0]
     else:
         filtered_motifs = list()
+    # print(B.shape, Y.shape)
+    clusters = defaultdict(list)
+    if clustering_search:
+        from tqdm import tqdm
+        for n_cluster in tqdm([10, 25, 50, 75, 100, 150, 200, 500, B.shape[1]]):
+            if n_cluster == B.shape[1]:
+                Bc = B
+                Sigma_c = Sigma
+            else:
+                Bc, c = cluster_data(B, mode=ClusteringMode.KMeans, num_clusters=n_cluster)
+                Sigma_c = c * Sigma @ c.T 
+                Sigma_c = Sigma_c.diagonal()
+            rkf = RepeatedKFold(n_repeats=cv_repeats, random_state=1, n_splits=cv_splits)
+            for train_inds, test_inds in rkf.split(Y):
+                B_train = Bc[train_inds]
+                B_test = Bc[test_inds]
+                Y_train = Y[train_inds]
+                Y_test = Y[test_inds]
+                BT_B = B_train.T @ B_train
+                BT_Y = B_train.T @ Y_train
+                for i, (inds, sigma, nu) in enumerate(zip(group_inds, D, G)):
+                    BT_Y_sub = BT_Y[:, inds]
+                    U = _sol(BT_Y_sub, BT_B, Sigma_c, sigma, nu, 1, tau_mult=1)
+                    diff = ((Y_test[:, inds] - B_test @ U[:, np.argsort(inds)]) ** 2).mean()
+                    clusters[n_cluster].append(diff)
+        clusters = {n: np.mean(v) for n, v in clusters.items()}
+    else:
+        clusters = {B.shape[1]: 0} 
+    print(clusters, B.shape)
+    best_clust = min(clusters, key=lambda x: clusters[x])
+    if best_clust == B.shape[1]:
+        clust = None
+        pass
+    else:
+        B, clust = cluster_data(B, mode=ClusteringMode.KMeans, num_clusters=best_clust)
+        Sigma = c * Sigma @ c.T
+        Sigma = Sigma.diagonal()
     tau_groups = defaultdict(lambda: defaultdict(list))
     if tau_search:
         from tqdm import tqdm
@@ -549,7 +586,7 @@ def predict_activities(data: TransformedData, fit: FitResult,
                 for i, (inds, sigma, nu) in enumerate(zip(group_inds, D, G)):
                     # all_inds.extend(inds)
                     BT_Y_sub = BT_Y[:, inds]
-                    U = _sol(BT_Y_sub, BT_B, sigma, nu, 1, tau_mult=tau)
+                    U = _sol(BT_Y_sub, BT_B, Sigma, sigma, nu, 1, tau_mult=tau)
                     diff = ((Y_test[:, inds] - B_test @ U[:, np.argsort(inds)]) ** 2).mean()
                     tau_groups[i][tau].append(diff)
         tau_groups = {g: min(v, key=lambda x: np.mean(v[x])) for g, v in tau_groups.items()}
@@ -567,9 +604,9 @@ def predict_activities(data: TransformedData, fit: FitResult,
         tau = tau_groups[i]
         all_inds.extend(inds)
         BT_Y_sub = BT_Y[:, inds]
-        U_pred, U_decor, std = _sol(BT_Y_sub.sum(axis=-1, keepdims=True), BT_B,
+        U_pred, U_decor, std = _sol(BT_Y_sub.sum(axis=-1, keepdims=True), BT_B, Sigma,
                                     sigma, nu, len(inds), standardize=True, tau_mult=tau)
-        U1 = _sol(BT_Y_sub, BT_B, sigma, nu, 1, tau_mult=tau)
+        U1 = _sol(BT_Y_sub, BT_B, Sigma, sigma, nu, 1, tau_mult=tau)
         # U1 = pi @ Y[:, inds]
         U0.append(U1)
         U.append(U_pred)
@@ -582,14 +619,15 @@ def predict_activities(data: TransformedData, fit: FitResult,
     return ActivitiesPrediction(U, U_decor=U_independent, U_o=U0,
                                 stds=U_stds,
                                 filtered_motifs=filtered_motifs,
-                                tau_groups=tau_groups)
+                                tau_groups=tau_groups,
+                                clustering=(B, clust) if clust is not None else None)
 
 class ClusteringMode(str, Enum):
     none = 'none'
     KMeans = 'KMeans'
     NMF = 'NMF'
 
-def cluster_data(data: ProjectData, mode=ClusteringMode.none, num_clusters=200,
+def cluster_data(B: np.ndarray, mode=ClusteringMode.none, num_clusters=200,
                  keep_motifs=False)->ProjectData:
     def trs(B, labels, n):
         mx = np.zeros((n, B.shape[1]))
@@ -597,29 +635,23 @@ def cluster_data(data: ProjectData, mode=ClusteringMode.none, num_clusters=200,
             mx[v, i] = 1
         return mx
     if mode == ClusteringMode.none:
-        return data, None
-    loadings = data.B
-    motif_expression = data.K
+        return B, None
     if mode == ClusteringMode.KMeans:
         km = KMeans(n_clusters=num_clusters, n_init=10)
-        km = km.fit(loadings.T)
+        km = km.fit(B.T)
         W = km.cluster_centers_.T 
-        H = trs(loadings, km.labels_, num_clusters); 
+        H = trs(B, km.labels_, num_clusters); 
     else:
         model = NMF(n_components=num_clusters, max_iter=1000)
-        W = model.fit_transform(loadings)
+        W = model.fit_transform(B)
         H = model.components_
     if not keep_motifs:
-        loadings = W
-        if motif_expression is not None:
-            data.K = H @ motif_expression
+        B = W
         clustering = H
     else:
-        loadings = W @ H
+        B = W @ H
         clustering = None
-    data.B = loadings
-    data.K = motif_expression
-    return data, clustering
+    return B, clustering
 
 def fit(project: str, clustering: ClusteringMode,
         num_clusters: int, test_chromosomes: list,
@@ -632,8 +664,8 @@ def fit(project: str, clustering: ClusteringMode,
     group_names = data.group_names
     if clustering != clustering.none:
         logger_print('Clustering data...', verbose)
-    data, clustering = cluster_data(data, mode=clustering, 
-                                    num_clusters=num_clusters)
+    data.B, clustering = cluster_data(data.B, mode=clustering, 
+                                      num_clusters=num_clusters)
     if test_chromosomes:
         test_chromosomes = tuple([c + '_' for c in test_chromosomes])
         promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) if p.startswith(test_chromosomes)]
@@ -658,7 +690,7 @@ def fit(project: str, clustering: ClusteringMode,
     else:
         device = jax.devices('cpu')
     device = next(iter(device))
-
+    # print(data.B.shape, data_orig.B.shape)
     with jax.default_device(device):
 
         logger_print('Estimating error variances...', verbose)
@@ -667,7 +699,7 @@ def fit(project: str, clustering: ClusteringMode,
         
         logger_print('Estimating promoter-wise means...', verbose)
         promoter_mean = estimate_promoter_mean(data, B_decomposition,
-                                                error_variance=error_variance)
+                                               error_variance=error_variance)
         
         logger_print('Estimating variances of motif activities...', verbose)
         motif_variance = estimate_motif_variance(data, B_decomposition,
@@ -707,10 +739,12 @@ def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]
     data_d = ProjectData(Y=Y_d, B=B_d, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names_d,
+                         motif_postfixes=data.motif_postfixes,
                          fmt=data.fmt)
     data = ProjectData(Y=Y, B=B, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names,
+                         motif_postfixes=data.motif_postfixes,
                          fmt=data.fmt)
     return data_d, data
 
@@ -814,7 +848,7 @@ def _cor(a, b, axis=1):
 
 def calculate_fov(project: str, use_groups: bool, gpu: bool, 
                   stat_type: GOFStat, stat_mode: GOFStatMode, x64=True,
-        verbose=True, dump=True):
+                  verbose=True, dump=True):
     def calc_fov(data: TransformedData, fit: FitResult,
                  activities: ActivitiesPrediction, mu_p=None) -> tuple[FOVResult]:
         def sub(Y, effects) -> FOVResult:
@@ -853,12 +887,15 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
             d2 = _groupify(d2, groups)
         else:
             U = activities.U_o
-        d3 = np.delete(B, drops, axis=1) @ U
+        if activities.clustering is not None:
+            d3 = activities.clustering[0] @ U
+        else:
+            d3 = np.delete(B, drops, axis=1) @ U
         if stat_mode == stat_mode.residual:
             stat_0 = sub(Y, d1 + d2 + d3)
             stat_1 = sub(Y - d1, d2 + d3)
             stat_2 = sub(Y - d1 - d2, d3)
-        elif stat_mode == stat_mode.cummulative:
+        elif stat_mode == stat_mode.total:
             stat_0 = sub(Y, d1)
             stat_1 = sub(Y, d1 + d2)
             stat_2 = sub(Y, d1 + d2 + d3)

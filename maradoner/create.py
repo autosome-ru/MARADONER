@@ -37,8 +37,8 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None):
 
 def create_project(project_name: str, promoter_expression_filename: str, loading_matrix_filenames: list[str],
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
-                   promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None, compression='raw',
-                   dump=True, verbose=True):
+                   promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None,
+                   motif_names_filename=None, compression='raw', dump=True, verbose=True):
     if not os.path.isfile(promoter_expression_filename):
         raise FileNotFoundError(f'Promoter expression file {promoter_expression_filename} not found.')
     if type(loading_matrix_filenames) is str:
@@ -61,6 +61,16 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
                 for line in f:
                     items = line.split()
                     sample_groups[items[0]] = items[1:]
+    if motif_names_filename is not None:
+        with open(motif_names_filename, 'r') as f:
+            motif_names = list()
+            for line in f:
+                line = line.strip().split()
+                for item in line:
+                    if item:
+                        motif_names.append(item)
+    else:
+        motif_names = None
     logger_print('Reading dataset...', verbose)
     promoter_expression = dt.fread(promoter_expression_filename).to_pandas()
     promoter_expression = promoter_expression.set_index(promoter_expression.columns[0])
@@ -104,9 +114,11 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     else:
         motif_expression = None
     loading_matrices = pd.concat(loading_matrices, axis=1)
+    if motif_names is not None:
+        loading_matrices = loading_matrices[motif_names]
     proms = list(promoter_expression.index)
     sample_names = list(promoter_expression.columns)
-    motifs = list(loading_matrices.columns)
+    motif_names = list(loading_matrices.columns)
     loading_matrices = loading_matrices.values
     promoter_expression = promoter_expression.values
     if motif_expression is not None:
@@ -118,9 +130,10 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     res = {'expression': promoter_expression, 
            'loadings': loading_matrices,
            'motif_expression': motif_expression,
+           'motif_postfixes': motif_postfixes,
            'promoter_names': proms,
            'sample_names': sample_names,
-           'motif_names': motifs,
+           'motif_names': motif_names,
            'weights': weights,
            'groups': sample_groups}
     if dump:

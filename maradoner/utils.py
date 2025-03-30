@@ -71,6 +71,7 @@ class ProjectData:
     group_names: list
     motif_names: list
     promoter_names: list
+    motif_postfixes: list
     fmt: str
 
 def read_init(project_name: str) -> ProjectData:
@@ -92,6 +93,7 @@ def read_init(project_name: str) -> ProjectData:
         weights=init.get('weights', None),
         motif_names=init['motif_names'],
         promoter_names=init['promoter_names'],
+        motif_postfixes=init['motif_postfixes'],
         group_names=group_names,
         group_inds=group_inds,
         fmt=fmt

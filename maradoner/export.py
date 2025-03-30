@@ -280,6 +280,8 @@ def export_results(project_name: str, output_folder: str,
                                                           sep='\t')
     folder = os.path.join(folder, 'correlations')
     os.makedirs(folder, exist_ok=True)
+    DF(fit.sample_mean.mean).to_csv(os.path.join(folder, 'sample_means.tsv'),
+                                                                      sep='\t')
     DF(motif_mean_fim.correlation(), index=motif_names, columns=motif_names).to_csv(os.path.join(folder, 'motif_means.tsv'),
                                                                       sep='\t')
     DF(motif_variance_fim.correlation(), index=motif_names, columns=motif_names).to_csv(os.path.join(folder, 'motif_variances.tsv'),
