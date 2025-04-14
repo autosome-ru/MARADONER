@@ -3,7 +3,7 @@
 from pandas import DataFrame as DF
 # add dot
 from .utils import read_init, openers
-from .fit import FOVResult
+from .fit import FOVResult, ActivitiesPrediction, FitResult
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from scipy.linalg import eigh, lapack, cholesky, solve
 from statsmodels.stats import multitest
@@ -13,6 +13,8 @@ from tqdm import tqdm
 import multiprocessing as mp
 from functools import partial
 from scipy.integrate import quad
+import math
+import time
 import dill
 import os
 
@@ -58,7 +60,11 @@ def chol_inv(x: np.array):
 class Information():
     eps = 1e-10
     
-    def __init__(self, fim: np.ndarray, slc=None, use_preconditioner=False):
+    def __init__(self, fim: np.ndarray, slc=None, use_preconditioner=False, filter_items=None):
+        self.filter_items = filter_items
+        if filter_items is not None:
+            fim = np.delete(fim, filter_items, axis=0)
+            fim = np.delete(fim, filter_items, axis=1)
         self.square_root_inv = self._square_root_inv(fim, slc, corr=True)
         precond = 1 / fim.diagonal() ** 0.5
         if not use_preconditioner:
@@ -69,11 +75,17 @@ class Information():
         self.slice = slice(None, None) if slc is None else slc
     
     def _inv(self, x: np.ndarray):
+        x = np.array(x)
+        # t = np.linalg.eigh(x)
         try:
             x = chol_inv(x)
         except:
             print('alarm')
+            # print(x.diagonal().min())
+            assert np.allclose(x, x.T), x - x.T
             x = np.linalg.eigh(x)
+            print(x[0].min(), x[0].max())
+            # x = np.linalg.pinv(x, hermitian=True)
             x = x[1] * (1/np.clip(x[0], self.eps, float('inf'))) @ x[1].T
         return x
     
@@ -94,6 +106,8 @@ class Information():
     def standardize(self, x: np.ndarray, 
                     mode: Standardization=Standardization.std,
                     return_std=True):
+        if self.filter_items is not None:
+            x = np.delete(x, self.filter_items)
         x = x / self.precond[self.slice]
         cov = self._inv(self.fim)
         cov = cov[self.slice, self.slice]
@@ -127,59 +141,6 @@ class Information():
         
 
 
-def _corrected_numerical(x, mvn, n: int):
-    x = np.abs(x)
-    return 1.0 - mvn.cdf(np.repeat(x, n), lower_limit=-x)
-
-def _corrected_sampled(x, information: Information, num_samples: int, m: int,
-                       num_repeats=1):
-    x = np.abs(x)
-    c = 0
-    n = 0
-    for _ in range(num_repeats):
-        t = np.abs(information.cholesky_transform(norm.rvs(size=(m, num_samples))))
-        c += np.any(t > x, axis=0).sum()
-        n += num_samples
-    return c / n
-
-def corrected_z_test(stat: np.ndarray, information: Information,
-                     numerical: bool, num_samples: int,
-                     n_jobs: int) -> np.ndarray:
-    if numerical:
-        raise NotImplementedError
-    
-    num_samples = int(num_samples)
-    f = partial(_corrected_sampled, information=information, num_samples=num_samples,
-                m=len(stat), num_repeats=1)
-    
-    if n_jobs > 1:
-        with mp.Pool(n_jobs) as p:
-            corrected = np.array(list(p.map(f , stat)))
-    else:
-        corrected = np.array(list(map(f, stat)))
-    return corrected
-
-
-def weird_test(mu, shift=0, eps=1e-12, std=None):
-    if std is None:
-        std = np.ones_like(mu)
-    
-    def log_integrand(u, mu, mu_k, std, std_k):
-        return norm.logpdf(u, loc=mu_k, scale=std_k) + norm.logcdf((u - mu) / std_k).sum()
-    
-    def integrand(u, mu, mu_k, std, std_k):
-        return np.exp(log_integrand(u, mu, mu_k, std, std_k) + shift)
-    
-    argmax = np.zeros_like(mu, dtype=float)
-    for k in tqdm(list(range(len(mu)))):
-        argmax[k] = quad(lambda x: integrand(x, np.delete(mu, k), mu[k], np.delete(std, k), std[k]), 
-                         -np.inf, np.inf, epsabs=eps, epsrel=eps)[0]
-    result = np.zeros_like(argmax)
-    inds = np.arange(len(result), dtype=int)
-    return argmax
-    for k in range(len(mu)):
-        result[k] = argmax[np.delete(inds, k)].sum()
-    return result * np.exp(-shift)
 
 def export_fov(fovs: tuple[FOVResult], folder: str,
                promoter_names: list[str], sample_names: list[str]):
@@ -194,6 +155,55 @@ def export_fov(fovs: tuple[FOVResult], folder: str,
     samples = [fov_null.sample[:, None], fov_means.sample[:, None], fov_motif_means.sample[:, None]]
     samples = np.concatenate(samples, axis=-1)
     DF(samples, index=sample_names, columns=cols).to_csv(os.path.join(folder, 'samples.tsv'), sep='\t')
+    
+
+
+def posterior_anova(activities: ActivitiesPrediction, fit: FitResult, 
+                    B: np.ndarray, corr_stat=False):
+    precs = list()
+    istds = list()
+    covs = list()
+    mean = 0.0
+    bad_inds = np.zeros(activities.U.shape[0], dtype=bool)
+    # for cov, U, nu in zip(activities.cov(), activities.U.T, fit.motif_variance.group):
+    #     mot = fit.motif_variance.motif
+    #     mot = np.delete(mot, activities.filtered_motifs)
+    #     ind = mot * nu < cov.diagonal() + 1e-9
+    #     bad_inds[ind] = True
+
+    for cov, U, nu in zip(activities.cov(), activities.U.T, fit.motif_variance.group):
+        mot = fit.motif_variance.motif
+        mot = np.delete(mot, activities.filtered_motifs)[~bad_inds]
+        # cov = cov[~bad_inds, ~bad_inds]
+        cov = cov[..., ~bad_inds]
+        cov = cov[~bad_inds]
+        covs.append(cov)
+        U = U[~bad_inds]
+        # prec = np.linalg.inv(np.diag(mot * nu) - cov)
+        prec = np.linalg.inv(cov)
+        mean += prec @ U
+        precs.append(prec)
+    print(bad_inds.sum())
+    total_prec = sum(precs)
+    total_cov = np.linalg.inv(total_prec)
+    mean = total_cov @ mean
+    stats = activities.U[~bad_inds] - mean.reshape(-1, 1)
+    # if corr_stat:
+    #     istd = 1 / total_cov.diagonal() ** 0.5
+    #     total_cor = istd.reshape(-1, 1) * total_cov * istd
+    #     stats = total_cor @ stats
+    #     total_cov = total_cor @ total_cov @ total_cor
+    # stats = (1 / total_cov.diagonal().reshape(-1, 1)) ** 0.5 * stats
+    istds = [1 / c.diagonal() ** 0.5 for c in covs]
+    istds = np.array(istds).T 
+    stats = stats * istds
+    stats = stats ** 2
+    stats = stats.sum(axis=-1)
+    pvalues = chi2.sf(stats, len(precs) - 1)
+    fdr = multitest.multipletests(pvalues, alpha=0.05, method='fdr_by')[1] 
+    return stats, pvalues, fdr, bad_inds
+    
+    
     
     
 
@@ -221,12 +231,12 @@ def export_results(project_name: str, output_folder: str,
     prom_names = data.promoter_names
     # del data
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
-        fit = dill.load(f)
+        fit: FitResult = dill.load(f)
     if fit.promoter_inds_to_drop:
         prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
     group_names = fit.group_names
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
-        act = dill.load(f)
+        act: ActivitiesPrediction = dill.load(f)
     if act.filtered_motifs is not None:
         motif_names_filtered = np.delete(motif_names, act.filtered_motifs)
     else:
@@ -240,13 +250,13 @@ def export_results(project_name: str, output_folder: str,
                                                                              mode=Standardization.std)
     
     motif_variance = fit.motif_variance.motif
-    motif_variance_fim = Information(fit.motif_variance.fim, slice(None, len(motif_names)))
+    motif_variance_fim = Information(fit.motif_variance.fim, slice(None, len(motif_names_filtered)), 
+                                     filter_items=act.filtered_motifs)
     motif_variance_stat, motif_variance_std = motif_variance_fim.standardize(motif_variance, 
                                                                              mode=Standardization.std)
     
     motif_group_variance = fit.motif_variance.group
     excluded_motif_group = fit.motif_variance.fixed_group
-    
     motif_group_variance_fim = Information(fit.motif_variance.fim, slice(len(motif_names), None))
     motif_group_variance_std = motif_group_variance_fim.covariance().diagonal() ** 0.5
     
@@ -254,7 +264,7 @@ def export_results(project_name: str, output_folder: str,
     motif_mean = fit.motif_mean.mean.flatten()
     motif_mean_fim = Information(fit.motif_mean.fim)
     motif_mean_stat, motif_mean_std = motif_mean_fim.standardize(motif_mean,
-                                                 mode=Standardization.std)
+                                                                 mode=Standardization.std)
     
     promoter_mean = fit.promoter_mean.mean.flatten()
     # del fit
@@ -264,6 +274,7 @@ def export_results(project_name: str, output_folder: str,
     os.makedirs(folder, exist_ok=True)
     if excluded_motif_group is not None:
         motif_group_variance_std = np.insert(motif_group_variance_std, excluded_motif_group, np.nan)
+    print(error_variance.shape, error_variance_std.shape,   motif_group_variance.shape, motif_group_variance_std.shape)
     DF(np.array([error_variance, error_variance_std, motif_group_variance, motif_group_variance_std]).T,
                 index=group_names,
                 columns=['sigma', 'sigma_std', 'nu', 'nu_std']).to_csv(os.path.join(folder, 'group_variances.tsv'),
@@ -284,67 +295,41 @@ def export_results(project_name: str, output_folder: str,
                                                                       sep='\t')
     DF(motif_mean_fim.correlation(), index=motif_names, columns=motif_names).to_csv(os.path.join(folder, 'motif_means.tsv'),
                                                                       sep='\t')
-    DF(motif_variance_fim.correlation(), index=motif_names, columns=motif_names).to_csv(os.path.join(folder, 'motif_variances.tsv'),
+    DF(motif_variance_fim.correlation(), index=motif_names_filtered, columns=motif_names_filtered).to_csv(os.path.join(folder, 'motif_variances.tsv'),
                                                                       sep='\t')
     _group_names = group_names
     if excluded_motif_group is not None:
         _group_names = np.delete(_group_names, excluded_motif_group)
     DF(motif_group_variance_fim.correlation(), index=_group_names, columns=_group_names).to_csv(os.path.join(folder, 'motif_group_variances.tsv'),
                                                                       sep='\t')
-    # DF(motif_cor_cross, index=motif_names, columns=_group_names).to_csv(os.path.join(folder, 'motif_cross.tsv'),
-    #                                                                   sep='\t')
+
     DF(error_variance_fim.correlation(), index=group_names, columns=group_names).to_csv(os.path.join(folder, 'error_variances.tsv'),
                                                                       sep='\t')
     
     
     folder = output_folder
-    U_raw, U_decor, stds = act.U, act.U_decor, act.stds
 
-    if std_mode == Standardization.full:
-        U = U_decor
-    else:
-        U = U_raw / stds
-    folder = os.path.join(output_folder, 'activities')
-    os.makedirs(folder, exist_ok=True)
-    DF(U_raw, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_raw.tsv'), sep='\t')
-    DF(U, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity.tsv'), sep='\t')
-    DF(stds, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_stds.tsv'), sep='\t')
-    
     folder = os.path.join(output_folder, 'tests', 'prediction_based')
     os.makedirs(folder, exist_ok=True)
-    z_test = 2 * norm.sf(np.abs(U))#calc_z_test(U)
-    z_test_fdr = [multitest.multipletests(z_test[:, i], alpha=alpha, method='fdr_bh')[1] for i in range(z_test.shape[1])]
-    z_test_fdr = np.array(z_test_fdr).T
-    z_test = DF(z_test, index=motif_names_filtered, columns=group_names)
-    z_test.to_csv(os.path.join(folder, 'z_test.tsv'), sep='\t')
-    z_test = DF(z_test_fdr, index=motif_names_filtered, columns=group_names)
-    z_test.to_csv(os.path.join(folder, 'z_test_fdr.tsv'), sep='\t')
-    stat = (U ** 2).sum(axis=1)
-    anova = chi2.sf(stat, df=U.shape[1])
-    fdrs = multitest.multipletests(anova, alpha=0.05, method='fdr_bh')[1]
-    anova = DF([stat, anova, fdrs], columns=motif_names_filtered, index=['stat', 'p-value', 'FDR']).T
+
+    stat, pvalue, fdr, bad_inds = posterior_anova(act, fit, B=data.B)
+    motif_names_filtered = np.array(motif_names_filtered)[~bad_inds]
+    anova = DF([stat, pvalue, fdr], columns=motif_names_filtered, index=['stat', 'p-value', 'FDR']).T
     anova.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
-    stat = (U ** 2).min(axis=1)
-    off_test = -np.expm1(U.shape[1]*chi2.logsf(stat, df=1))
-    fdrs = multitest.multipletests(off_test, alpha=0.05, method='fdr_bh')[1]
-    off_test = DF([stat, off_test, fdrs], columns=motif_names_filtered, index=['stat', 'p-value', 'FDR']).T
-    off_test.to_csv(os.path.join(folder, 'off_test.tsv'), sep='\t')
-    
+
     folder = os.path.join(output_folder, 'tests', 'asymptotics_based')
     os.makedirs(folder, exist_ok=True)
     
     anova_ass = motif_variance_stat
     pval = calc_z_test(anova_ass)
-    # anova_ass = motif_variance_stat * motif_variance_std 
-    # pval = weird_test(anova_ass, std=motif_variance_std)
+
     fdrs = multitest.multipletests(pval, alpha=0.05, method='fdr_bh')[1]
-    if compute_corrected_pvalues:
-        corrected_pval = corrected_z_test(anova_ass, motif_variance_fim, numerical=corrected_numerical,
-                                          num_samples=corrected_num_samples,
-                                          n_jobs=n_jobs)
-        anova_ass = DF(np.array([anova_ass, pval, fdrs, corrected_pval]).T, index=motif_names, columns=['stat', 'p-value', 'FDR', 'corrected-p-value'])
-    else:
-        anova_ass = DF(np.array([anova_ass, pval, fdrs]).T, index=motif_names, columns=['stat', 'p-value', 'FDR'])
+    lrt = 2 * fit.motif_variance.logratios
+    lrt_pvalues = chi2.sf(lrt, 1)
+    lrt_fdr = multitest.multipletests(lrt_pvalues, alpha=0.05, method='fdr_bh')[1]
+    anova_ass = DF(np.array([anova_ass, pval, fdrs, lrt, lrt_pvalues, lrt_fdr]).T, index=motif_names_filtered,
+                   columns=['stat', 'p-value', 'FDR',
+                            'logratio', 'lrt_p-value', 'lrt_FDR'])
     anova_ass.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
     
     sign = motif_mean.flatten() / motif_mean_std
@@ -376,7 +361,10 @@ def export_results(project_name: str, output_folder: str,
                 name = data.group_names[i]
                 for k, j in enumerate(inds):
                     sample_names[j] = f'{name}_{k+1}'
-        promoter_names_train = np.delete(data.promoter_names, fit.promoter_inds_to_drop)
+        if fit.promoter_inds_to_drop:
+            promoter_names_train = np.delete(data.promoter_names, fit.promoter_inds_to_drop)
+        else:
+            promoter_names_train = data.promoter_names
         export_fov(train, os.path.join(folder, 'train'), promoter_names=promoter_names_train,
                    sample_names=sample_names)
         if test is not None:
@@ -386,5 +374,5 @@ def export_results(project_name: str, output_folder: str,
         
             
     
-    return {'z-test': z_test, 'anova': anova, 'off_test': off_test,
-            'anova_ass': anova_ass, 'sign_ass': sign_ass}
+    # return {'z-test': z_test, 'anova': anova, 'off_test': off_test,
+    #         'anova_ass': anova_ass, 'sign_ass': sign_ass}

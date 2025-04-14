@@ -9,8 +9,6 @@ from .meta_optimizer import MetaOptimizer
 from sklearn.model_selection import RepeatedKFold
 from collections import defaultdict
 from enum import Enum
-from scipy.sparse.linalg import LinearOperator, lsmr
-from scipy.linalg import pinvh as pinvh_scp
 from .utils import read_init, ProjectData, logger_print, openers
 import dill
 
@@ -54,6 +52,7 @@ class MotifVarianceEstimates:
     fixed_group: int
     loglik: float
     loglik_start: float
+    logratios: np.ndarray
 
 @dataclass(frozen=True)
 class MotifMeanEstimates:
@@ -88,7 +87,7 @@ def ones_nullspace(n: int):
         res[i - 1, i] = 1 / norm
     return res
 
-def lowrank_decomposition(X: np.ndarray, rel_eps=1e-9) -> LowrankDecomposition:
+def lowrank_decomposition(X: np.ndarray, rel_eps=1e-12) -> LowrankDecomposition:
     svd = jnp.linalg.svd
     q, s, v = [np.array(t) for t in svd(X)]
     max_sv = max(s)
@@ -160,8 +159,10 @@ def loglik_error_grad(d: jnp.ndarray, Qn_Y: jnp.ndarray, group_inds_inv: jnp.nda
 
 def loglik_motifs(x: jnp.ndarray, Z: jnp.ndarray, BTB: jnp.ndarray,
                   D_product_inv: jnp.ndarray, group_inds_inv: jnp.ndarray,
-                  G_fix_ind=None, G_fix_val=1.0) -> float:
+                  G_fix_ind=None, G_fix_val=1.0, _motif_zero=None) -> float:
     Sigma = x.at[:len(BTB)].get() ** 0.5
+    if _motif_zero is not None:
+        Sigma = Sigma.at[_motif_zero].set(0)
     G = x.at[len(BTB):].get()
     if G_fix_ind is not None:
         G = jnp.insert(G, G_fix_ind, G_fix_val)
@@ -178,10 +179,12 @@ def loglik_motifs(x: jnp.ndarray, Z: jnp.ndarray, BTB: jnp.ndarray,
     return loglik 
 
 def loglik_motifs_naive(x: jnp.ndarray, Y_Fn: jnp.ndarray, B, BTB, FDF, Fn,
-                        group_inds_inv):
+                        group_inds_inv, fix_group, fix_val):
+    x = jnp.array(x)
     Sigma = x.at[:len(BTB)].get() 
     G = x.at[len(BTB):].get() 
-    G = G.at[-1].set(1.0)
+    if fix_group is not None:
+        G = jnp.insert(G, fix_group, fix_val)
     G = G.at[group_inds_inv].get()
     mx = jnp.kron(Fn * G @ Fn.T, B * Sigma @ B.T)
     mx = mx + jnp.kron(FDF, jnp.identity(len(B)))
@@ -190,8 +193,11 @@ def loglik_motifs_naive(x: jnp.ndarray, Y_Fn: jnp.ndarray, B, BTB, FDF, Fn,
 
 def loglik_motifs_grad(x: jnp.ndarray, Z: jnp.ndarray, BTB: jnp.ndarray,
                   D_product_inv: jnp.ndarray, group_inds_inv: jnp.ndarray,
-                  group_inds: jnp.ndarray, G_fix_ind=None, G_fix_val=1.0) -> float:
+                  group_inds: jnp.ndarray, G_fix_ind=None, G_fix_val=1.0,
+                  _motif_zero=None) -> float:
     Sigma = x.at[:len(BTB)].get() ** 0.5
+    if _motif_zero is not None:
+        Sigma = Sigma.at[_motif_zero].set(0)
     G = x.at[len(BTB):].get()
     if G_fix_ind is not None:
         G = jnp.insert(G, G_fix_ind, G_fix_val)
@@ -221,8 +227,39 @@ def loglik_motifs_grad(x: jnp.ndarray, Z: jnp.ndarray, BTB: jnp.ndarray,
     if G_fix_ind is not None:
         grad_nu = jnp.delete(grad_nu, G_fix_ind)
     grad = jnp.append(grad_tau, grad_nu)
+    if _motif_zero is not None:
+        grad = grad.at[_motif_zero].set(0)
     return grad 
 
+def loglik_motifs_fim_naive(x: jnp.ndarray, B: jnp.ndarray, 
+                      D: jnp.ndarray, group_inds_inv: jnp.ndarray,
+                      group_inds: jnp.ndarray, G_fix_ind=None, G_fix_val=1.0):
+    def cov(x):
+        Sigma = x.at[:B.shape[1]].get() 
+        G = x.at[B.shape[1]:].get()
+        if G_fix_ind is not None:
+            G = jnp.insert(G, G_fix_ind, G_fix_val)
+        G = G.at[group_inds_inv].get()
+        tD = D.at[group_inds_inv].get()
+        H = ones_nullspace(len(tD))
+        L = jnp.linalg.cholesky(H * tD @ H.T)
+        L = jnp.linalg.inv(L)
+        A = L @ H * G @ H.T @ L.T
+        C = B * Sigma @ B.T
+        S_hat = jnp.kron(A, C)
+        S_hat = S_hat + np.identity(len(S_hat))
+        return S_hat
+    S_hat = cov(x)
+    S_hat = np.linalg.inv(S_hat)
+    grad = jax.jacrev(cov)(x)
+    fim = np.zeros((len(x), len(x)), dtype=float)
+    vec = S_hat @ grad
+    for i in range(len(x)):
+        for j in range(i, len(x)):
+            fim[i, j] = jnp.trace(vec[..., i] @ vec[..., j]) / 2
+            fim[j, i] = fim[i, j]
+    return fim
+        
 
 def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray, 
                       D_product_inv: jnp.ndarray, group_inds_inv: jnp.ndarray,
@@ -239,7 +276,8 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
     D_B = jnp.where(D_B > 0, D_B, 0.0)
     s = 1 / (jnp.kron(D_A, D_B) + 1)
     indices = jnp.arange(len(s), dtype=int)
-    indices = (indices % len(G)) * len(Sigma) + indices // len(G)
+    # indices = (indices % len(G)) * len(Sigma) + indices // len(G)
+    indices = len(G) * (indices % len(Sigma)) + indices // len(Sigma)
     s_permuted = s.at[indices].get()
     BTCQ = BTB * Sigma @ Q_B
     D_prod_Q = D_product_inv * G @ Q_A
@@ -279,8 +317,8 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
     indices = jnp.array(list(np.ndindex((len(Sigma), len(G)))))
     zeta = s ** 2 * D_A.at[indices_div].get() * D_B.at[indices_mod].get()
     Psi = BTCQ * Q_B
-    Theta = D_prod_Q * Q_A
-    # V = B^TCQ_B, K^T = D_prod_Q
+    K = D_prod_Q
+    Theta = K * Q_A 
 
     @jax.jit
     def f_tau_nu(ind):
@@ -299,6 +337,12 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
         FIM_tau_nu = jnp.delete(FIM_tau_nu, G_fix_ind, axis=1)
     FIM = jnp.block([[FIM_tau, FIM_tau_nu],
                      [FIM_tau_nu.T, FIM_nu]])
+    t = FIM[:len(Sigma), :len(Sigma)]
+    t = jnp.linalg.eigh(t)[0]
+    print('FIM_tau', np.min(t), np.max(t), np.min(np.abs(t)))
+    t = FIM[len(Sigma):, len(Sigma):]
+    t = jnp.linalg.eigh(t)[0]
+    print('FIM_nu', np.min(t), np.max(t), np.min(np.abs(t)))
     return FIM
 
 
@@ -312,7 +356,7 @@ def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecom
                    group_inds=data.group_inds)
     fun = jax.jit(fun)
     grad = jax.jit(grad)
-    opt = MetaOptimizer(fun, grad,  num_steps_momentum=5)
+    opt = MetaOptimizer(fun, grad,  num_steps_momentum=10)
     res = opt.optimize(d0)
     if verbose:
         print('-' * 15)
@@ -364,7 +408,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                       G_fix_ind=j, G_fix_val=fix)
         fun = jax.jit(fun)
         grad = jax.jit(grad)
-        opt = MetaOptimizer(fun, grad, num_steps_momentum=60,
+        opt = MetaOptimizer(fun, grad, num_steps_momentum=80,
                             # scaling_set=(slice(len(BTB)), slice(len(BTB), None))
                             )
         try:
@@ -389,10 +433,48 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
     fim = partial(loglik_motifs_fim, BTB=BTB, D_product_inv=D_product_inv,
                   group_inds_inv=data.group_inds_inv, group_inds=data.group_inds,
                   G_fix_ind=j, G_fix_val=fix)
-    fim = fim(res.x)
-    return MotifVarianceEstimates(np.array(Sigma), np.array(G), np.array(fim),
+    f = fim(res.x)
+    eig = jnp.linalg.eigh(f)[0].min()
+    if eig < 0:
+        eig = list()
+        epsilons =  [1e-15, 1e-12, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3]
+        for eps in epsilons:
+            x = res.x.copy()
+            x = x.at[:len(BTB)].set(jnp.clip(x.at[:len(BTB)].get(), eps, float('inf')))
+            f = fim(x)
+            eig.append(jnp.linalg.eigh(f)[0].min())
+        i = np.argmax(eig)
+        eps = epsilons[i]
+        x = res.x.copy()
+        x = x.at[:len(BTB)].set(jnp.clip(x.at[:len(BTB)].get(), eps, float('inf')))
+        fim = fim(x)
+    else:
+        fim = f
+    print('FIM', eig)
+    logliks = list()
+    from tqdm import tqdm
+    for i in tqdm(list(range(len(BTB)))):
+        x = res.x.copy()
+        x = x.at[i].set(0)
+        subfun = partial(fun, _motif_zero=i)
+        subgrad = partial(grad, _motif_zero=i)
+        opt = MetaOptimizer(subfun, subgrad, num_steps_momentum=5, skip_init=False)
+        logliks.append(opt.optimize(x).fun)
+    logliks = np.array(logliks) - float(res.fun)
+    # fim_naive = partial(loglik_motifs_fim_naive, B=data.B, D=D,
+    #               group_inds_inv=data.group_inds_inv, group_inds=data.group_inds,
+    #               G_fix_ind=j, G_fix_val=fix)
+    # fim_naive = fim_naive(res.x)
+    # print('FIM')
+    # print(fim)
+    # print('Naive')
+    # print(fim_naive)
+    # print(np.abs(fim - fim_naive) / np.abs(fim_naive))
+    # fim = fim_naive
+    # fim = (fim, fim_naive)
+    return MotifVarianceEstimates(motif=np.array(Sigma), group=np.array(G), fim=np.array(fim),
                                   fixed_group=j, loglik_start=res.start_loglik,
-                                  loglik=res.fun)
+                                  loglik=res.fun, logratios=logliks)
 
 def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposition,
                          error_variance: ErrorVarianceEstimates,
@@ -474,12 +556,25 @@ def estimate_sample_mean(data: TransformedData, error_variance: ErrorVarianceEst
 @dataclass(frozen=True)
 class ActivitiesPrediction:
     U: np.ndarray
-    U_decor: np.ndarray
-    U_o: np.ndarray
-    stds: np.ndarray
+    U_raw: np.ndarray
     filtered_motifs: np.ndarray
     tau_groups: dict
     clustering: tuple[np.ndarray, np.ndarray] = None
+    _cov: tuple[np.ndarray, np.ndarray, np.ndarray,
+                np.ndarray, np.ndarray, np.ndarray] = None
+    
+    def cov(self) -> np.ndarray:
+        assert self._cov is not None
+        Q_hat, S, sigma, nu, n, tau_mult = self._cov
+        for sigma, nu, n, tau_mult in zip(sigma, nu, n, tau_mult):
+            tau = nu / sigma * tau_mult
+            D = n * S + 1 / tau
+            D = 1 / D * sigma
+            D = D ** 0.5
+            Q_hat2 = Q_hat * D
+            c = np.array(Q_hat2 @ Q_hat2.T, dtype=float)
+            yield c
+            
 
 def predict_activities(data: TransformedData, fit: FitResult,
                        filter_motifs=True, filter_order=5,
@@ -488,28 +583,16 @@ def predict_activities(data: TransformedData, fit: FitResult,
                        cv_repeats=3, cv_splits=5,
                        pinv=False) -> ActivitiesPrediction:
 
-    def _sol(BT_Y_sum, BT_B, Sigma, sigma, nu, n: int, standardize=False, tau_mult=1.0):
+    # def _sol(BT_Y_sum, BT_B, Sigma, sigma, nu, n: int, tau_mult=1.0):
+    def _sol(BT_Y_sum, Q_hat, S, sigma, nu, n: int, tau_mult=1.0, BT_B=None):
         tau = nu / sigma * tau_mult
-        Sigma_hat = Sigma * tau
-        Z = n * BT_B
-        Z[np.diag_indices_from(Z)] += 1 / Sigma_hat 
-        
         if pinv:
             tau_mult = np.clip(tau_mult - 1, 0.0, a_max=float('inf'))
             sol = jnp.linalg.pinv(BT_B + tau_mult * jnp.identity(len(BT_B))) @ BT_Y_sum
         else:
-            sol = jax.scipy.linalg.solve(Z, BT_Y_sum,
-                                         assume_a='sym')
-        if standardize:
-            Z = np.linalg.pinv(Z, hermitian=True)
-    
-            Z = sigma * Z 
-            D = Z.diagonal() ** (-0.5)
-            C = D.reshape(-1, 1) * Z * D
-            eigh = jnp.linalg.eigh(C)
-            T = D.reshape(-1, 1) * (eigh.eigenvectors * (1 / eigh.eigenvalues ** 0.5) @ eigh.eigenvectors.T)
-            U_decor = T @ sol
-            return sol, U_decor, Z.diagonal() ** 0.5
+            D = ( n * S + 1 / tau) ** (-0.5)
+            Q_hat = Q_hat * D
+            sol = Q_hat @ Q_hat.T @ BT_Y_sum
         return sol
 
     Sigma = fit.motif_variance.motif
@@ -532,7 +615,6 @@ def predict_activities(data: TransformedData, fit: FitResult,
         filtered_motifs = np.where(~inds)[0]
     else:
         filtered_motifs = list()
-    # print(B.shape, Y.shape)
     clusters = defaultdict(list)
     if clustering_search:
         from tqdm import tqdm
@@ -550,17 +632,21 @@ def predict_activities(data: TransformedData, fit: FitResult,
                 B_test = Bc[test_inds]
                 Y_train = Y[train_inds]
                 Y_test = Y[test_inds]
-                BT_B = B_train.T @ B_train
+
                 BT_Y = B_train.T @ Y_train
+                if not pinv:
+                    B_train = B_train * Sigma ** 0.5
+                BT_B = B_train.T @ B_train
+                S, Q_hat = jnp.linalg.eigh(BT_B)
+                Q_hat = (Sigma ** 0.5).reshape(-1, 1) * Q_hat
                 for i, (inds, sigma, nu) in enumerate(zip(group_inds, D, G)):
                     BT_Y_sub = BT_Y[:, inds]
-                    U = _sol(BT_Y_sub, BT_B, Sigma_c, sigma, nu, 1, tau_mult=1)
+                    U = _sol(BT_Y_sub, Q_hat, S, sigma, nu, 1, tau_mult=1, BT_B=BT_B)
                     diff = ((Y_test[:, inds] - B_test @ U[:, np.argsort(inds)]) ** 2).mean()
                     clusters[n_cluster].append(diff)
         clusters = {n: np.mean(v) for n, v in clusters.items()}
     else:
         clusters = {B.shape[1]: 0} 
-    print(clusters, B.shape)
     best_clust = min(clusters, key=lambda x: clusters[x])
     if best_clust == B.shape[1]:
         clust = None
@@ -579,48 +665,53 @@ def predict_activities(data: TransformedData, fit: FitResult,
             B_test = B[test_inds]
             Y_train = Y[train_inds]
             Y_test = Y[test_inds]
-            BT_B = B_train.T @ B_train
             BT_Y = B_train.T @ Y_train
+            if not pinv:
+                B_train = B_train * Sigma ** 0.5
+            BT_B = B_train.T @ B_train
+            S, Q_hat = jnp.linalg.eigh(BT_B)
+            Q_hat = (Sigma ** 0.5).reshape(-1, 1) * Q_hat
             for tau in np.linspace(tau_left, tau_right, num=tau_num):
                 # pi = jnp.linalg.pinv(B)
                 for i, (inds, sigma, nu) in enumerate(zip(group_inds, D, G)):
                     # all_inds.extend(inds)
                     BT_Y_sub = BT_Y[:, inds]
-                    U = _sol(BT_Y_sub, BT_B, Sigma, sigma, nu, 1, tau_mult=tau)
+                    U = _sol(BT_Y_sub, Q_hat, S, sigma, nu, 1, tau_mult=tau, BT_B=BT_B)
                     diff = ((Y_test[:, inds] - B_test @ U[:, np.argsort(inds)]) ** 2).mean()
                     tau_groups[i][tau].append(diff)
         tau_groups = {g: min(v, key=lambda x: np.mean(v[x])) for g, v in tau_groups.items()}
     else:
         tau_groups = {i: 1.0 for i in range(len(group_inds))}
-    BT_B = B.T @ B
     BT_Y = B.T @ Y
+    if not pinv:
+        B = B * Sigma ** 0.5
+    BT_B = B.T @ B
+    S, Q_hat = jnp.linalg.eigh(BT_B)
+    Q_hat = (Sigma ** 0.5).reshape(-1, 1) * Q_hat
+
     U = list()
-    U_independent = list()
-    U_stds = list()
     U0 = list()
-    # pi = jnp.linalg.pinv(B)
+    sizes = list()
     all_inds = list()
+    tau_mults = list()
     for i, (inds, sigma, nu) in enumerate(zip(group_inds, D, G)):
         tau = tau_groups[i]
+        tau_mults.append(tau)
         all_inds.extend(inds)
         BT_Y_sub = BT_Y[:, inds]
-        U_pred, U_decor, std = _sol(BT_Y_sub.sum(axis=-1, keepdims=True), BT_B, Sigma,
-                                    sigma, nu, len(inds), standardize=True, tau_mult=tau)
-        U1 = _sol(BT_Y_sub, BT_B, Sigma, sigma, nu, 1, tau_mult=tau)
-        # U1 = pi @ Y[:, inds]
-        U0.append(U1)
+        sizes.append(len(inds))
+        U_pred = _sol(BT_Y_sub.sum(axis=-1, keepdims=True), Q_hat, S,
+                      sigma, nu, len(inds), tau_mult=tau,
+                      BT_B=BT_B)
         U.append(U_pred)
-        U_independent.append(U_decor)
-        U_stds.append(std.reshape(-1, 1))
+        U0.append(_sol(BT_Y_sub, Q_hat, S, sigma, nu, 1, tau_mult=tau, BT_B=BT_B))
     U = np.concatenate(U, axis=-1)
-    U_independent = np.concatenate(U_independent, axis=-1)
-    U_stds = np.concatenate(U_stds, axis=-1)
     U0 = np.concatenate(U0, axis=-1)[:, np.argsort(all_inds)]
-    return ActivitiesPrediction(U, U_decor=U_independent, U_o=U0,
-                                stds=U_stds,
+    return ActivitiesPrediction(U, U_raw=U0,
                                 filtered_motifs=filtered_motifs,
                                 tau_groups=tau_groups,
-                                clustering=(B, clust) if clust is not None else None)
+                                clustering=(B, clust) if clust is not None else None,
+                                _cov=(Q_hat, S, D, G, sizes, tau_mults))
 
 class ClusteringMode(str, Enum):
     none = 'none'
@@ -886,7 +977,7 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
             d1 = _groupify(d1, groups)
             d2 = _groupify(d2, groups)
         else:
-            U = activities.U_o
+            U = activities.U_raw
         if activities.clustering is not None:
             d3 = activities.clustering[0] @ U
         else:
@@ -921,7 +1012,7 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
 
         if data_test is not None:
             drops = activities.filtered_motifs
-            U = activities.U_o
+            U = activities.U_raw
             U_m = fit.motif_mean.mean.reshape(-1, 1)
             mu_s = fit.sample_mean.mean.reshape(-1, 1)
             Y = data_test.Y - mu_s.T

@@ -69,6 +69,7 @@ class ProjectData:
     weights: np.ndarray
     group_inds: list
     group_names: list
+    sample_names: list
     motif_names: list
     promoter_names: list
     motif_postfixes: list
@@ -95,6 +96,7 @@ def read_init(project_name: str) -> ProjectData:
         promoter_names=init['promoter_names'],
         motif_postfixes=init['motif_postfixes'],
         group_names=group_names,
+        sample_names=init['sample_names'],
         group_inds=group_inds,
         fmt=fmt
         )
