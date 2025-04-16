@@ -88,6 +88,7 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
                             f'{len(loading_matrix_transformations)}.')
     
     logger_print('Filtering promoters of low expression...', verbose)
+    print('aaaaa', len(promoter_expression))
     inds, weights = filter_lowexp(promoter_expression, cutoff=promoter_filter_lowexp_cutoff, fit_plot_filename=promoter_filter_plot_filename)
     promoter_expression = promoter_expression.loc[inds]
     proms = promoter_expression.index
@@ -115,6 +116,7 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
         motif_expression = None
     loading_matrices = pd.concat(loading_matrices, axis=1)
     if motif_names is not None:
+        motif_names = list(set(motif_names) & set(loading_matrices.columns))
         loading_matrices = loading_matrices[motif_names]
     proms = list(promoter_expression.index)
     sample_names = list(promoter_expression.columns)

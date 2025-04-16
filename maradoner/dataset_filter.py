@@ -105,5 +105,6 @@ def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, fit_plot_filename=None,
     inds[:k] = False
     # print(inds)
     # inds[:] = 1
+    print(x[inds].mean(), x[~inds].mean())
     inds = inds[inds_inv]
     return inds, ws

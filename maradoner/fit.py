@@ -1,6 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import jax
+import scipy.linalg.lapack as lapack
 from sklearn.cluster import KMeans
 from sklearn.decomposition import NMF
 from dataclasses import dataclass
@@ -27,7 +28,67 @@ class LowrankDecomposition:
     Q: np.ndarray
     S: np.ndarray
     V: np.ndarray
-    null_Q: np.ndarray
+
+    def null_space_transform(self, Y: np.ndarray) -> np.ndarray:
+        """
+        Compute V^T Y where V is the orthogonal complement to Q, using Householder 
+        transformations via LAPACK's dormqr. Ensures inputs are compatible.
+        
+        Parameters:
+        Q (ndarray): p x r semi-orthogonal matrix where Q^T Q = I_r, r <= p. 
+                     Should be a standard float array (e.g., float64).
+        Y (ndarray): p x n matrix. Will be converted to float64 if necessary.
+        
+        Returns:
+        VT_Y (ndarray): (p - r) x n matrix representing V^T Y (float64).
+        """
+        Y = np.array(Y, order='F', copy=True)
+        Q = np.array(self.Q).astype(np.float64, copy=False)
+        
+        p, r = Q.shape
+
+        if r > p:
+            raise ValueError(f"Number of columns r ({r}) cannot exceed number of rows p ({p}) in Q.")
+            
+        # 1. Compute QR factorization of Q
+        # Need a copy of Q because 'raw' QR might modify it slightly in some versions/backends,
+        # even though documentation often says it doesn't. Using overwrite_a=True below is safer.
+        Q_copy = np.array(Q, order='F', dtype=np.float64) # Fortran order often preferred by LAPACK
+        qr_a, tau, work_qr, info_qr = lapack.dgeqrf(Q_copy, overwrite_a=True)
+        if info_qr != 0:
+            raise RuntimeError(f"LAPACK dgeqrf failed with info = {info_qr}")
+        # qr_a now contains R in upper triangle and reflectors below diagonal (overwritten Q_copy)
+        
+        # 2. Prepare matrix Z (to be modified by dormqr)
+
+        # 3. Apply Q_full^T to Z using dormqr
+        # Workspace query
+        # try:
+        lwork = -1
+        # Use Z's shape here for the query, pass dummy Z
+        _, work_query, _ = lapack.dormqr('L', 'T', qr_a, tau, np.empty_like(Y), lwork=lwork, overwrite_c=True)
+        optimal_lwork = int(work_query[0].real)
+        lwork = max(1, optimal_lwork)
+
+
+        # Actual application
+        q_mult_y, work_actual, info_ormqr = lapack.dormqr('L', 'T', qr_a, tau, Y, 
+                                                          lwork=lwork, overwrite_c=True)
+        
+        if info_ormqr != 0:
+            # Add more debug info if it fails
+            print("--- Debug Info Before dormqr Failure ---")
+            print(f"Q shape: {Q.shape}, dtype: {Q.dtype}")
+            print(f"qr_a shape: {qr_a.shape}, dtype: {qr_a.dtype}, order: {'F' if qr_a.flags.f_contiguous else 'C'}")
+            print(f"tau shape: {tau.shape}, dtype: {tau.dtype}")
+            print(f"Y shape: {Y.shape}, dtype: {Y.dtype}, order: {'F' if Y.flags.f_contiguous else 'C'}")
+            print(f"lwork: {lwork}")
+            print("--- End Debug Info ---")
+            raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr}")
+
+        VT_Y = q_mult_y[r:, :] 
+        return VT_Y
+    #null_Q: np.ndarray
 
 @dataclass
 class TransformedData:
@@ -52,7 +113,6 @@ class MotifVarianceEstimates:
     fixed_group: int
     loglik: float
     loglik_start: float
-    logratios: np.ndarray
 
 @dataclass(frozen=True)
 class MotifMeanEstimates:
@@ -87,9 +147,60 @@ def ones_nullspace(n: int):
         res[i - 1, i] = 1 / norm
     return res
 
+def ones_nullspace_transform(x):
+    n, m = x.shape
+    if n <= 1:
+        return np.zeros((0, m), dtype=x.dtype)
+
+    Y = np.zeros((n - 1, m), dtype=float) 
+    current_sum = x[0, :].astype(float)
+
+    for r in range(n - 1): 
+        i = r + 1 
+        sqrt_i_i_plus_1 = np.sqrt(i * (i + 1)) 
+        
+        # Coefficients for row r of Y (which uses row i-1 = r of H)
+        coeff1 = -1.0 / sqrt_i_i_plus_1
+        coeff2 = np.sqrt(i / (i + 1))
+        Y[r, :] = coeff1 * current_sum + coeff2 * x[r + 1, :]
+
+        # Update current_sum for the next iteration (to become sum_{k=0}^{r+1} X[k,:])
+        if r < n - 2: # Avoid adding beyond X's bounds on the last iteration
+             current_sum += x[r + 1, :]
+    return Y
+
+def ones_nullspace_transform_transpose(X: np.ndarray) -> np.ndarray:
+    n, m = X.shape
+    n = n + 1 
+
+    if n == 1:
+         output_dtype = X.dtype if np.issubdtype(X.dtype, np.floating) else float
+         return np.zeros((1, m), dtype=output_dtype)
+
+    output_dtype = X.dtype if np.issubdtype(X.dtype, np.floating) else float
+    Y = np.zeros((n, m), dtype=output_dtype)
+
+    current_suffix_sum = np.zeros(m, dtype=output_dtype)
+
+    for k in range(n - 2, -1, -1):
+        i = k + 1.0 
+
+        sqrt_term_i_ip1 = np.sqrt(i * (i + 1.0))
+        coeff_pos = i / sqrt_term_i_ip1
+        coeff_neg = -1.0 / sqrt_term_i_ip1
+
+
+        Y[k + 1, :] = coeff_pos * X[k, :] + current_suffix_sum
+
+        current_suffix_sum += coeff_neg * X[k, :]
+
+    Y[0, :] = current_suffix_sum
+
+    return Y
+
 def lowrank_decomposition(X: np.ndarray, rel_eps=1e-12) -> LowrankDecomposition:
     svd = jnp.linalg.svd
-    q, s, v = [np.array(t) for t in svd(X)]
+    q, s, v = [np.array(t) for t in svd(X, full_matrices=False)]
     max_sv = max(s)
     n = len(s)
     for r in range(n):
@@ -98,10 +209,9 @@ def lowrank_decomposition(X: np.ndarray, rel_eps=1e-12) -> LowrankDecomposition:
             break
     r += 1
     s = s[:r]
-    null_q = q[:, r:]
     q = q[:, :r]
     v = v[:r]
-    return LowrankDecomposition(q, s, v, null_q)
+    return LowrankDecomposition(q, s, v)
 
 def transform_data(data, std_y=False, std_b=False, helmert=True) -> TransformedData:
     try:
@@ -115,9 +225,11 @@ def transform_data(data, std_y=False, std_b=False, helmert=True) -> TransformedD
     if std_b:
         B /= B.std(axis=0, keepdims=True)
     if helmert:
-        F_p = ones_nullspace(len(Y))
-        Y = F_p @ Y
-        B = F_p @ B
+        # F_p = ones_nullspace(len(Y))
+        # Y = F_p @ Y
+        # B = F_p @ B
+        Y = ones_nullspace_transform(Y)
+        B = ones_nullspace_transform(B)
     group_inds_inv = list()
     d = dict()
     for i, items in enumerate(group_inds):
@@ -346,9 +458,24 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
     return FIM
 
 
+def calc_error_variance_fim(data: TransformedData, error_variance: jnp.ndarray):
+    d = 1 / jnp.array(error_variance).at[data.group_inds_inv].get()
+    d = d / d.sum() ** 0.5
+    D_product_inv = jnp.outer(-d, d)
+    D_product_inv = jnp.fill_diagonal(D_product_inv,
+                                      D_product_inv.diagonal() + d * d.sum(),
+                                      inplace=False )
+    fim = D_product_inv * D_product_inv.T / 2
+    group_inds = data.group_inds
+    group_loadings = np.zeros((len(d), len(group_inds)), dtype=int)
+    for i, indices in enumerate(group_inds):
+        group_loadings[indices, i] = 1
+    group_loadings = jnp.array(group_loadings)
+    return group_loadings.T @ fim @ group_loadings
+
 def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
                              verbose=False) -> ErrorVarianceEstimates:
-    Y = B_decomposition.null_Q.T @ data.Y
+    Y = B_decomposition.null_space_transform(data.Y)
     d0 = jnp.array([np.var(Y[:, inds]) for inds in data.group_inds])
 
     fun = partial(loglik_error, Qn_Y=Y, group_inds_inv=data.group_inds_inv)
@@ -362,7 +489,8 @@ def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecom
         print('-' * 15)
         print(res)
         print('-' * 15)
-    fim = jax.jacrev(grad)(res.x)
+    
+    fim = calc_error_variance_fim(data, res.x)
     return ErrorVarianceEstimates(np.array(res.x), np.array(fim),
                                   loglik_start=res.start_loglik,
                                   loglik=res.fun)
@@ -374,13 +502,16 @@ def estimate_promoter_mean(data: TransformedData,
     
     D = error_variance.variance[data.group_inds_inv]
     Y = jnp.array(data.Y)
-    F_p = jnp.array(ones_nullspace(len(Y) + 1))
-    Q_N = jnp.array(B_decomposition.null_Q)
+    # F_p = jnp.array(ones_nullspace(len(Y) + 1))
+    # Q_N = jnp.array(B_decomposition.null_Q)
+    Q_C = jnp.array(B_decomposition.Q)
     w = (1 / D).sum()
     mean = Y @ (1 / D.reshape(-1, 1))
-    mean = Q_N.T @ mean
-    mean = Q_N @ mean
-    mean = F_p.T @ mean
+    mean = mean - Q_C @ (Q_C.T @ mean)
+    # mean = Q_N.T @ mean
+    # mean = Q_N @ mean
+    # mean = F_p.T @ mean
+    mean = ones_nullspace_transform_transpose(mean)
     mean = mean / w
     return PromoterMeanEstimates(mean)
 
@@ -437,12 +568,14 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
     eig = jnp.linalg.eigh(f)[0].min()
     if eig < 0:
         eig = list()
-        epsilons =  [1e-15, 1e-12, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3]
+        epsilons =  [1e-23, 1e-15, 1e-12, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3]
         for eps in epsilons:
             x = res.x.copy()
             x = x.at[:len(BTB)].set(jnp.clip(x.at[:len(BTB)].get(), eps, float('inf')))
             f = fim(x)
             eig.append(jnp.linalg.eigh(f)[0].min())
+            if eig[-1] > 0:
+                break
         i = np.argmax(eig)
         eps = epsilons[i]
         x = res.x.copy()
@@ -450,31 +583,9 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
         fim = fim(x)
     else:
         fim = f
-    print('FIM', eig)
-    logliks = list()
-    from tqdm import tqdm
-    for i in tqdm(list(range(len(BTB)))):
-        x = res.x.copy()
-        x = x.at[i].set(0)
-        subfun = partial(fun, _motif_zero=i)
-        subgrad = partial(grad, _motif_zero=i)
-        opt = MetaOptimizer(subfun, subgrad, num_steps_momentum=5, skip_init=False)
-        logliks.append(opt.optimize(x).fun)
-    logliks = np.array(logliks) - float(res.fun)
-    # fim_naive = partial(loglik_motifs_fim_naive, B=data.B, D=D,
-    #               group_inds_inv=data.group_inds_inv, group_inds=data.group_inds,
-    #               G_fix_ind=j, G_fix_val=fix)
-    # fim_naive = fim_naive(res.x)
-    # print('FIM')
-    # print(fim)
-    # print('Naive')
-    # print(fim_naive)
-    # print(np.abs(fim - fim_naive) / np.abs(fim_naive))
-    # fim = fim_naive
-    # fim = (fim, fim_naive)
     return MotifVarianceEstimates(motif=np.array(Sigma), group=np.array(G), fim=np.array(fim),
                                   fixed_group=j, loglik_start=res.start_loglik,
-                                  loglik=res.fun, logratios=logliks)
+                                  loglik=res.fun)
 
 def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposition,
                          error_variance: ErrorVarianceEstimates,
@@ -494,8 +605,9 @@ def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposi
 
     BTB = B_decomposition.V.T * B_decomposition.S ** 2 @ B_decomposition.V
     A = jnp.sqrt(Sigma).reshape(-1, 1) * BTB
-    Fp = ones_nullspace(len(data.Y) + 1)
-    Y_tilde = (data.Y - Fp @ mu_p.reshape(-1, 1)) / d
+    # Fp = ones_nullspace(len(data.Y) + 1)
+    # Y_tilde = (data.Y - Fp @ mu_p.reshape(-1, 1)) / d
+    Y_tilde = (data.Y - ones_nullspace_transform(mu_p.reshape(-1, 1))) / d
     Y_hat = jnp.sqrt(Sigma).reshape(-1,1) *  data.B.T @ Y_tilde * g / d
     D_B, Q_B = jnp.linalg.eigh(jnp.sqrt(Sigma).reshape(-1, 1) * BTB * jnp.sqrt(Sigma))
     At_QB = A.T @ Q_B

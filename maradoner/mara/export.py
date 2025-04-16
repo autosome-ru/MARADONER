@@ -62,6 +62,8 @@ def export_results(project_name: str, output_folder: str):
 
     U = act.U
     U_var = act.variance
+    
+    U = U / U_var ** 0.5
 
     # U_grouped = list()
     # U_var_grouped = list()
@@ -74,21 +76,18 @@ def export_results(project_name: str, output_folder: str):
     os.makedirs(output_folder, exist_ok=True)
     DF(np.array([error_variance, motif_variance]).T, index=sample_names, 
        columns=['sigma', 'tau']).to_csv(os.path.join(output_folder, 'params.tsv'), sep='\t')
-    act = U / U_var ** 0.5
-    U_total = act.sum(axis=1, keepdims=True) / (1 / U_var ** 0.5).sum(axis=1, keepdims=True)
-    act = np.hstack((U_total, act))
+    U_total = U.mean(axis=1, keepdims=True) # / (1 / U_var ** 0.5).sum(axis=1, keepdims=True)
+    act = np.hstack((U_total, U))
     DF(act, index=motif_names, 
        columns=['overall'] + list(sample_names)).to_csv(os.path.join(output_folder, 'activities.tsv'), 
                                     sep='\t')
     
-    z = U / U_var ** 0.5
-    z = z ** 2
+    z = U ** 2
     U_total = z.mean(axis=1, keepdims=True) #/ (1 / U_var ** 0.5).sum(axis=1, keepdims=True)
     z = np.hstack((U_total, z))
     z = z ** 0.5
     DF(z, index=motif_names, 
        columns=['overall'] + list(sample_names)).to_csv(os.path.join(output_folder, 'z_scores.tsv'), 
                                     sep='\t')
-    
     
 

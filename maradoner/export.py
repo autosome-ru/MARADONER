@@ -159,7 +159,7 @@ def export_fov(fovs: tuple[FOVResult], folder: str,
 
 
 def posterior_anova(activities: ActivitiesPrediction, fit: FitResult, 
-                    B: np.ndarray, corr_stat=False):
+                    B: np.ndarray, corr_stat=False, map_cov=False):
     precs = list()
     istds = list()
     covs = list()
@@ -170,20 +170,28 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     #     mot = np.delete(mot, activities.filtered_motifs)
     #     ind = mot * nu < cov.diagonal() + 1e-9
     #     bad_inds[ind] = True
-
-    for cov, U, nu in zip(activities.cov(), activities.U.T, fit.motif_variance.group):
-        mot = fit.motif_variance.motif
-        mot = np.delete(mot, activities.filtered_motifs)[~bad_inds]
+    # mot = fit.motif_variance.motif
+    # mot = np.delete(mot, activities.filtered_motifs)[~bad_inds]
+    if map_cov:
+        # fit.motif_variance.m
+        BTB = B.T @ B
+        BTB_s = BTB * fit.motif_variance.motif ** 0.5
+        BTB_s = BTB_s @ BTB_s.T
+    for cov, U, sigma, n, nu in zip(activities.cov(), activities.U.T, 
+                          activities._cov[-2], 
+                          fit.error_variance.variance, fit.motif_variance.group):
         # cov = cov[~bad_inds, ~bad_inds]
-        cov = cov[..., ~bad_inds]
-        cov = cov[~bad_inds]
+        # cov = cov[..., ~bad_inds]
+        # cov = cov[~bad_inds]
+        if map_cov:
+            D = BTB_s * nu  + np.identity(len(BTB)) * sigma
+            cov = cov @ D @ cov.T * n / sigma ** 2 
         covs.append(cov)
-        U = U[~bad_inds]
+        # U = U[~bad_inds]
         # prec = np.linalg.inv(np.diag(mot * nu) - cov)
         prec = np.linalg.inv(cov)
         mean += prec @ U
         precs.append(prec)
-    print(bad_inds.sum())
     total_prec = sum(precs)
     total_cov = np.linalg.inv(total_prec)
     mean = total_cov @ mean
@@ -210,9 +218,7 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
 def export_results(project_name: str, output_folder: str,
                    std_mode: Standardization, 
                    anova_mode: ANOVAType=ANOVAType.positive,
-                   compute_corrected_pvalues=False,
-                   corrected_numerical=False,
-                   corrected_num_samples=1e5,
+                   weighted_zscore=False,
                    alpha=0.05,
                    n_jobs=6):
     
@@ -324,12 +330,11 @@ def export_results(project_name: str, output_folder: str,
     pval = calc_z_test(anova_ass)
 
     fdrs = multitest.multipletests(pval, alpha=0.05, method='fdr_bh')[1]
-    lrt = 2 * fit.motif_variance.logratios
-    lrt_pvalues = chi2.sf(lrt, 1)
-    lrt_fdr = multitest.multipletests(lrt_pvalues, alpha=0.05, method='fdr_bh')[1]
-    anova_ass = DF(np.array([anova_ass, pval, fdrs, lrt, lrt_pvalues, lrt_fdr]).T, index=motif_names_filtered,
-                   columns=['stat', 'p-value', 'FDR',
-                            'logratio', 'lrt_p-value', 'lrt_FDR'])
+    # lrt = 2 * fit.motif_variance.logratios
+    # lrt_pvalues = chi2.sf(lrt, 1)
+    # lrt_fdr = multitest.multipletests(lrt_pvalues, alpha=0.05, method='fdr_bh')[1]
+    anova_ass = DF(np.array([anova_ass, pval, fdrs]).T, index=motif_names_filtered,
+                   columns=['stat', 'p-value', 'FDR'])
     anova_ass.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
     
     sign = motif_mean.flatten() / motif_mean_std
@@ -346,6 +351,28 @@ def export_results(project_name: str, output_folder: str,
                                                                                            'pvalue_pos', 'fdr_pos'],
                   index=motif_names)
     sign_ass.to_csv(os.path.join(folder, 'sign.tsv'), sep='\t')
+    
+    folder = os.path.join(output_folder, 'activities')
+    os.makedirs(folder, exist_ok=True)
+    U = list()
+    stds = list()
+    for u, cov in zip(act.U.T, act.cov()):
+        std = cov.diagonal() ** 0.5
+        u = u / std
+        U.append(u)
+        stds.append(std)
+    U = np.array(U).T
+    DF(U, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity.tsv'), sep='\t')
+    U = U ** 2
+    if weighted_zscore:
+        U_total = U.sum(axis=1, keepdims=True) / (1 / np.array(stds).T ** 2).sum(axis=1, keepdims=True)
+    else:
+        U_total = U.mean(axis=1, keepdims=True)
+    
+    U = np.hstack((U_total, U)) ** 0.5
+    DF(U, index=motif_names_filtered,
+       columns=['overall'] + list(group_names)).to_csv(os.path.join(folder, 'z_score.tsv'), sep='\t')
+    DF(act.U_raw, index=motif_names_filtered, columns=data.sample_names).to_csv(os.path.join(folder, 'activity_raw.tsv'), sep='\t')
     
     if os.path.isfile(f'{project_name}.fov.{fmt}'):
         with open(f'{project_name}.fov.{fmt}', 'rb') as f:

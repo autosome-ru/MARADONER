@@ -51,6 +51,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
 @app_old.command('gof', help='Estimate GOFs given test/train data split. Provides test info only if [orange]test-chromosomes[/orange] is not None in [cyan]fit[/cyan].')
 def _gof(name: str = Argument(..., help='Project name.'),
          # use_groups: bool = Option(False, help='Compute statistic for sammples aggragated across groups.'), 
+         keep_motifs: Path = Option(None, help='Table with 2 columns: motif and status'),
          stat_type: GOFStat = Option(GOFStat.fov, help='Statistic type to compute'),
          gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
          x64: bool = Option(True, help='Use high precision algebra.')):
@@ -62,21 +63,25 @@ def _gof(name: str = Argument(..., help='Project name.'),
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Calculating FOVs...", total=None)
     p.start()
-    res = calculate_fov(name, stat_type=stat_type, gpu=gpu, x64=x64)
-    if stat_type == GOFStat.corr:
-        title = 'Pearson correlation'
-    else:
-        title = 'Fraction of variance explained'
-    t = Table('Set', 'stat',
-              title=title)
-    row = [f'{t.total:.6f}' for t in res.train]
-    t.add_row('train', *row)
-    if res.test is not None:
-        row = [f'{t.total:.6f}' for t in res.test]
-        t.add_row('test', *row)
+    res = calculate_fov(name, stat_type=stat_type, keep_motifs=keep_motifs, gpu=gpu, x64=x64)
+    for name, res in res:
+        print(name)
+        if stat_type == GOFStat.corr:
+            title = 'Pearson correlation'
+        else:
+            title = 'Fraction of variance explained'
+        if name:
+            title = f'({name}) {title}'
+        t = Table('Set', 'stat',
+                  title=title)
+        row = [f'{t.total:.6f}' for t in res.train]
+        t.add_row('train', *row)
+        if res.test is not None:
+            row = [f'{t.total:.6f}' for t in res.test]
+            t.add_row('test', *row)
+        rprint(t)
     p.stop()
     dt = time() - t0
-    rprint(t)
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 @app_old.command('predict', help='Estimate deviations of motif activities from their means.')

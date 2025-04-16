@@ -44,6 +44,7 @@ class MotifVarianceEstimates:
 class FitResult:
     error_variance: ErrorVarianceEstimates
     motif_variance: MotifVarianceEstimates
+    B_decomposition: LowrankDecomposition
     group_names: list
     clustering: np.ndarray = None
     clustered_B: np.ndarray = None
@@ -70,7 +71,8 @@ def transform_data(data, std_y=False, std_b=False, helmert=True) -> TransformedD
 
 def estimate_error_variance(data: TransformedData,
                             B_decomposition: LowrankDecomposition) -> ErrorVarianceEstimates:
-    Y = B_decomposition.null_Q.T @ data.Y
+    # Y = B_decomposition.null_Q.T @ data.Y
+    Y = B_decomposition.null_space_transform(data.Y)
     variance = (Y ** 2).mean(axis=0)
     return ErrorVarianceEstimates(variance)
 
@@ -79,7 +81,7 @@ def calc_tau(tau: float, error_variance: np.ndarray, mode: TauMode):
     if mode == mode.mara:
         taus = tau * np.ones_like(error_variance)
     else:
-        taus = tau / (error_variance + tau)
+        taus = tau / error_variance
     return taus
 
 def loglik_tau(tau: float, Sigma: np.ndarray, Y_hat: np.ndarray,
@@ -88,10 +90,10 @@ def loglik_tau(tau: float, Sigma: np.ndarray, Y_hat: np.ndarray,
     logdet = 0
     taus = calc_tau(tau, error_variance, mode)
     for sigma, tau, y in zip(error_variance, taus, Y_hat.T):
-        S = tau * Sigma + sigma
-        vec += (y ** 2 * S).sum()
+        S = tau / sigma * Sigma + 1
+        vec += (y ** 2 / S).sum() * (tau / sigma ** 2)
         logdet += S.sum()
-    return vec + logdet
+    return -vec + logdet
         
 def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
                             error_variance: ErrorVarianceEstimates,
@@ -106,7 +108,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
     Y_hat = Q.T @ data.B.T @ data.Y
     fun = partial(loglik_tau, Sigma=Sigma, Y_hat=Y_hat, error_variance=error_variance.variance,
                   mode=mode)
-    tau = calc_tau(minimize_scalar(fun, bounds=(0.0, 5.0)).x, error_variance.variance, mode)
+    tau = calc_tau(minimize_scalar(fun, bounds=(0.0, error_variance.variance.max() * 10)).x, error_variance.variance, mode)
     return MotifVarianceEstimates(tau)
     
 
@@ -118,18 +120,11 @@ class ActivitiesPrediction:
             
 
 def predict_activities(data: TransformedData, fit: FitResult, 
-                       gpu_decomposition=False, gpu=False, verbose=True) -> ActivitiesPrediction:
+                       gpu=False, verbose=True) -> ActivitiesPrediction:
     U = list()
     variance = list()
-    if gpu_decomposition:
-        device = jax.devices()
-    else:
-        device = jax.devices('cpu')
-    device = next(iter(device))
 
-    logger_print('Computing low-rank decompositions of the loading matrix...', verbose)
-    with jax.default_device(device):
-        B_decomposition = lowrank_decomposition(data.B)
+    B_decomposition = fit.B_decomposition
     if gpu:
         device = jax.devices()
     else:
@@ -200,7 +195,7 @@ def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
         
     
     res = FitResult(error_variance=error_variance, motif_variance=motif_variance,
-                    clustering=clustering,
+                    clustering=clustering, B_decomposition=B_decomposition,
                     group_names=group_names, promoter_inds_to_drop=promoter_inds_to_drop)    
     if dump:
         with openers[fmt](f'{project}.old.fit.{fmt}', 'wb') as f:
@@ -257,10 +252,10 @@ def _cor(a, b, axis=1):
     return numerator / denominator
 
 def calculate_fov(project: str, gpu: bool, 
-                  stat_type: GOFStat, x64=True,
+                  stat_type: GOFStat, keep_motifs: str, x64=True,
                   verbose=True, dump=True):
     def calc_fov(data: TransformedData, fit: FitResult,
-                 activities: ActivitiesPrediction) -> tuple[FOVResult]:
+                 activities: ActivitiesPrediction, keep_motifs=None) -> tuple[FOVResult]:
         def sub(Y, effects) -> FOVResult:
             if stat_type == stat_type.fov:
                 Y1 = Y - effects
@@ -277,17 +272,33 @@ def calculate_fov(project: str, gpu: bool,
                 sample = _cor(Y, effects, axis=0)
             return FOVResult(total, prom, sample)
         data = transform_data(data)
-        B = data.B
+        B = data.B if activities.clustering is None else activities.clustering[0]
         Y = data.Y
         U = activities.U
-        if activities.clustering is not None:
-            d = activities.clustering[0] @ U
-        else:
-            d = B @ U
+        if keep_motifs is not None:
+            B = B[:, keep_motifs]
+            U = U[keep_motifs]
+        d = B @ U
         stat_0 = sub(Y, d)
         return stat_0,
     data = read_init(project)
     fmt = data.fmt
+    motif_names = data.motif_names
+    if keep_motifs:
+        import datatable as dt
+        df = dt.fread(keep_motifs).to_pandas().groupby('status')
+        keep_motifs = list()
+        for name, motifs in df:
+            inds = list()
+            for mot in motifs.iloc[:, 0]:
+                try:
+                    i = motif_names.index(mot)
+                    inds.append(i)
+                except ValueError:
+                    print(f'Motif {mot} not found in the project.')
+            keep_motifs.append((name, np.array(inds, dtype=int)))
+    else:
+        keep_motifs = [(None, None)]
     with openers[fmt](f'{project}.old.fit.{fmt}', 'rb') as f:
         fit = dill.load(f)
     with openers[fmt](f'{project}.old.predict.{fmt}', 'rb') as f:
@@ -303,17 +314,23 @@ def calculate_fov(project: str, gpu: bool,
     else:
         device = jax.devices('cpu')
     device = next(iter(device))
-    with jax.default_device(device):
-
-        if data_test is not None:
-            test_FOV = calc_fov(data=data_test, fit=fit, activities=activities)
-        train_FOV = calc_fov(data=data, fit=fit, activities=activities)
-    if data_test is None:
-        test_FOV = None
-    res = TestResult(train_FOV, test_FOV, grouped=False)
+    results = list()
+    for status_name, motifs in keep_motifs:
+        if status_name:
+            status_name = f'{status_name} ({len(motifs)})'
+        print(status_name)
+        with jax.default_device(device):
+    
+            if data_test is not None:
+                test_FOV = calc_fov(data=data_test, fit=fit, activities=activities, keep_motifs=motifs)
+            train_FOV = calc_fov(data=data, fit=fit, activities=activities, keep_motifs=motifs)
+        if data_test is None:
+            test_FOV = None
+        res = TestResult(train_FOV, test_FOV, grouped=False)
+        results.append((status_name, res))
     with openers[fmt](f'{project}.old.fov.{fmt}', 'wb') as f:
-        dill.dump(res, f)
-    return res
+        dill.dump(results, f)
+    return results
         
         
         

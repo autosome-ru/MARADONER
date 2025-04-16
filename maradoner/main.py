@@ -264,14 +264,14 @@ def _export(name: str = Argument(..., help='Project name.'),
             output_folder: Path = Argument(..., help='Output folder.'),
             std_mode: Standardization = Option(Standardization.full, help='Whether to standardize activities with plain variances or also decorrelate them.'),
             anova_mode: ANOVAType = Option(ANOVAType.positive, help='If negative, look for non-variative motifs'),
-            corrected_pvalues: bool = Option(False, help='Compute MVN-based FDR correction.'),
+            weighted_zscore: bool = Option(False, help='Reciprocal variance weighted Z-scores'),
             alpha: float = Option(0.05, help='FDR alpha.')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Exporting results...", total=None)
     p.start()
     export_results(name, output_folder, std_mode=std_mode, anova_mode=anova_mode, alpha=alpha,
-                   compute_corrected_pvalues=corrected_pvalues)
+                   weighted_zscore=weighted_zscore)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
