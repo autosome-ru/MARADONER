@@ -51,7 +51,7 @@ class FitResult:
     promoter_inds_to_drop: list = None
 
 
-def transform_data(data, std_y=False, std_b=False, helmert=True) -> TransformedData:
+def transform_data(data, std_y=False, std_b=False) -> TransformedData:
     Y = data.Y - (data.Y.mean(axis=0, keepdims=True) + data.Y.mean(axis=1, keepdims=True) - data.Y.mean())
     B = data.B - data.B.mean(axis=0, keepdims=True)
     group_inds_inv = list()
@@ -159,8 +159,12 @@ def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
     data.B, clustering = cluster_data(data.B, mode=clustering, 
                                       num_clusters=num_clusters)
     if test_chromosomes:
-        test_chromosomes = tuple([c + '_' for c in test_chromosomes])
-        promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) if p.startswith(test_chromosomes)]
+        import re
+        pattern = re.compile(r'chr([0-9XYM]+|\d+)')
+        
+        test_chromosomes = set(test_chromosomes)
+        promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) 
+                                 if pattern.search(p).group() in test_chromosomes]
         data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
         data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
     else:
@@ -214,12 +218,12 @@ def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]
     data_d = ProjectData(Y=Y_d, B=B_d, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names_d,
-                         motif_postfixes=data.motif_postfixes,
+                         motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
                          fmt=data.fmt)
     data = ProjectData(Y=Y, B=B, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names,
-                         motif_postfixes=data.motif_postfixes,
+                         motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
                          fmt=data.fmt)
     return data_d, data
 
@@ -255,7 +259,7 @@ def calculate_fov(project: str, gpu: bool,
                   stat_type: GOFStat, keep_motifs: str, x64=True,
                   verbose=True, dump=True):
     def calc_fov(data: TransformedData, fit: FitResult,
-                 activities: ActivitiesPrediction, keep_motifs=None) -> tuple[FOVResult]:
+                 activities: ActivitiesPrediction, keep_motifs=None, Bs=None) -> tuple[FOVResult]:
         def sub(Y, effects) -> FOVResult:
             if stat_type == stat_type.fov:
                 Y1 = Y - effects
@@ -271,10 +275,16 @@ def calculate_fov(project: str, gpu: bool,
                 prom = _cor(Y, effects, axis=1)
                 sample = _cor(Y, effects, axis=0)
             return FOVResult(total, prom, sample)
-        data = transform_data(data)
-        B = data.B if activities.clustering is None else activities.clustering[0]
-        Y = data.Y
-        U = activities.U
+        if Bs is None:
+            data = transform_data(data)
+            B = data.B if activities.clustering is None else activities.clustering[0]
+            Y = data.Y
+            U = activities.U
+        else:
+            B = data.B
+            Y = data.Y
+            B = np.hstack((B, np.ones((len(B), 1))))
+            U = np.linalg.pinv(np.hstack((Bs[0], np.ones((len(Bs[0]), 1))))) @ Bs[1]
         if keep_motifs is not None:
             B = B[:, keep_motifs]
             U = U[keep_motifs]
@@ -306,9 +316,9 @@ def calculate_fov(project: str, gpu: bool,
     data, data_test = split_data(data, fit.promoter_inds_to_drop)
     if x64:
         jax.config.update("jax_enable_x64", True)
-    data = transform_data(data, helmert=False)
-    if data_test is not None:
-        data_test = transform_data(data_test, helmert=False)
+    # data = transform_data(data, helmert=False)
+    # if data_test is not None:
+    #     data_test = transform_data(data_test, helmert=False)
     if gpu:
         device = jax.devices()
     else:
@@ -318,12 +328,15 @@ def calculate_fov(project: str, gpu: bool,
     for status_name, motifs in keep_motifs:
         if status_name:
             status_name = f'{status_name} ({len(motifs)})'
-        print(status_name)
         with jax.default_device(device):
     
             if data_test is not None:
-                test_FOV = calc_fov(data=data_test, fit=fit, activities=activities, keep_motifs=motifs)
-            train_FOV = calc_fov(data=data, fit=fit, activities=activities, keep_motifs=motifs)
+                test_FOV = calc_fov(data=data_test, fit=fit, activities=activities, keep_motifs=motifs,
+                                    Bs=(data.B, data.Y)
+                                    )
+            train_FOV = calc_fov(data=data, fit=fit, activities=activities, keep_motifs=motifs,
+                                 Bs=(data.B, data.Y)
+                                 )
         if data_test is None:
             test_FOV = None
         res = TestResult(train_FOV, test_FOV, grouped=False)

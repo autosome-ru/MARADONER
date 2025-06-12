@@ -75,6 +75,7 @@ class ProjectData:
     motif_postfixes: list
     fmt: str
 
+
 def read_init(project_name: str) -> ProjectData:
     if type(project_name) is str:
         filename, fmt = get_init_file(project_name)
@@ -86,7 +87,6 @@ def read_init(project_name: str) -> ProjectData:
     group_inds = list()
     for name in group_names:
         group_inds.append(np.array(init['groups'][name]))
-    
     r = ProjectData(
         Y=init['expression'],
         B=init['loadings'],

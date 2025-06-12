@@ -65,7 +65,8 @@ def _gof(name: str = Argument(..., help='Project name.'),
     p.start()
     res = calculate_fov(name, stat_type=stat_type, keep_motifs=keep_motifs, gpu=gpu, x64=x64)
     for name, res in res:
-        print(name)
+        if name:
+            print(name)
         if stat_type == GOFStat.corr:
             title = 'Pearson correlation'
         else:

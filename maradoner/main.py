@@ -13,10 +13,11 @@ from rich.table import Table
 from .create import create_project
 from pathlib import Path
 from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode
+from .grn import estimate_promoter_variance, grn
 from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
-from .export import export_results, Standardization, ANOVAType
+from .export import export_results, export_loadings_product, Standardization, ANOVAType
 from . import __version__ as project_version
 from .select import select_motifs_single
 import json
@@ -105,7 +106,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                                             'name[/cyan].'),
             expression: Path = Argument(..., help='A path to the promoter expression table. Expression values are assumed to be in a log-scale.'),
             loading: List[Path] = Argument(..., help='A list (if applicable, separated by space) of filenames containing loading matrices. '),
-            loading_transform: List[LoadingTransform] = Option([LoadingTransform.none], '--loading-transform', '-t',
+            loading_transform: List[LoadingTransform] = Option([LoadingTransform.esf], '--loading-transform', '-t',
                                                                help='A type of transformation to apply to loading '
                                                                 'matrices. [orange]ecdf[/orange] substitutes values in the table with empricical CDF,'
                                                                 ' [orange]esf[/orange] with negative logarithm of the empirical survival function.'),
@@ -115,6 +116,8 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                                           ' contain. If a text file, each line must start with a group name followed by space-separated sample names.'),
             filter_lowexp_w: float = Option(0.9, help='Truncation boundary for filtering out low-expressed promoters. The closer [orange]w[/orange]'
                                             ' to 1, the more promoters will be left in the dataset.'),
+            filter_max_mode: bool = Option(True, help='Use max-mode of filtering. Max-mode keeps promoters that are active at least for some samples.'
+                                                       ' If disabled, filtration using GMM on the averages will be ran instead.'),
             filter_plot: Path = Option(None, help='Expression plot with a fitted mixture that is used for filtering.'),
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
                                                 help='String postfixes will be appeneded to the motifs from each of the supplied loading matrices'),
@@ -133,7 +136,8 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
     r = create_project(name, expression, loading_matrix_filenames=loading, motif_expression_filenames=motif_expression, 
                        loading_matrix_transformations=loading_transform, sample_groups=sample_groups, 
                        promoter_filter_lowexp_cutoff=filter_lowexp_w,
-                       promoter_filter_plot_filename=filter_plot,                       
+                       promoter_filter_plot_filename=filter_plot,               
+                       promoter_filter_max=filter_max_mode,
                        compression=compression, 
                        motif_postfixes=loading_postfix,
                        motif_names_filename=motif_filename,
@@ -265,7 +269,11 @@ def _export(name: str = Argument(..., help='Project name.'),
             std_mode: Standardization = Option(Standardization.full, help='Whether to standardize activities with plain variances or also decorrelate them.'),
             anova_mode: ANOVAType = Option(ANOVAType.positive, help='If negative, look for non-variative motifs'),
             weighted_zscore: bool = Option(False, help='Reciprocal variance weighted Z-scores'),
-            alpha: float = Option(0.05, help='FDR alpha.')):
+            alpha: float = Option(0.05, help='FDR alpha.'),
+            loadings_product: bool = Option(False, help='Export loading matrix-acitvity 3D tensor. This will produce num_of_groups tabular files.'),
+            lp_hdf: bool = Option(True, help='Each loadings-product table will be stored in hdf format (occupies much less space than plain tsv) using float16 precision.'),
+            lp_intercepts: bool = Option(True, help='Include motif means in the 3D tensor.'),
+            lp_tsv_truncation: int = Option(4, help='Number of digits after a floating point to truncate. Decreases the output size of a tabular if [orange]lp-hdf[/orange] is disabled.')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Exporting results...", total=None)
@@ -273,8 +281,17 @@ def _export(name: str = Argument(..., help='Project name.'),
     export_results(name, output_folder, std_mode=std_mode, anova_mode=anova_mode, alpha=alpha,
                    weighted_zscore=weighted_zscore)
     p.stop()
+    
+    if loadings_product:
+        p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+        p.add_task(description="Exporting results...", total=None)
+        p.start()
+        export_loadings_product(name, output_folder, use_hdf=lp_hdf, intercepts=lp_intercepts)
+        p.stop()
+    
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+    
 
 
 __select_motif_doc = 'Selects best motif variants when the project was created from multiple loading matrices, each with an unique postfix.'\
@@ -287,9 +304,47 @@ def _select_motifs(name: str = Argument(..., help='Project name'),
                    filename: Path = Argument(..., help='Filename where a list of best motif variants will be stored')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    p.add_task(description="Exporting results...", total=None)
+    p.add_task(description="Selecting motifs...", total=None)
     p.start()
     select_motifs_single(name, filename)
+    p.stop()
+    dt = time() - t0
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+
+
+__grn_doc = 'Tests each promoter against each motif per each group. Some people call it GRN.'
+@app.command('grn',
+             help=__select_motif_doc)
+def _grn(name: str = Argument(..., help='Project name'),
+         folder: Path = Argument(..., help='Output folder where results will be stored. In total, expect number_of_groups tables of size'
+                                           ' comparable to the expression file size.'),
+         hdf: bool = Option(True, help='Use HDF format instead of tar.gz files. Typically eats much less space'),
+         stat: bool = Option(True, help='Save statistics alongside probabilities.'),
+         prior_h1: float = Option(1/10, help='Prior belief on the expected fraction of motifs active per promoter.')):
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Building GRN...", total=None)
+    p.start()
+    grn(name, output=folder, use_hdf=hdf, save_stat=stat, prior_h1=prior_h1)
+    p.stop()
+    dt = time() - t0
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+    
+__estimate_promvar_doc = 'Estimates each promoter variance for each group using empirical Bayesian shrinkage.'\
+                         ' A necessary step before computing GRN.'
+@app.command('estimate-promoter-variance',
+             help=__estimate_promvar_doc)
+def _estimate_promoter_variance(name: str = Argument(..., help='Project name'),
+                                prior_top: float = Option(0.90,
+                                                          help='The fraction from the bottom as ranked by sample'
+                                                          ' variance of promoters to be used for estimating global group-wise variance.'
+                                                          ' Higher values result in higher prior variance and weaken the prior.'
+                                                          )):
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Estimating each promoter's variance...", total=None)
+    p.start()
+    estimate_promoter_variance(name, prior_top=prior_top)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')

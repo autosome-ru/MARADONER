@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 from pandas import DataFrame as DF
 # add dot
-from .utils import read_init, openers
+from .utils import read_init, openers, ProjectData
 from .fit import FOVResult, ActivitiesPrediction, FitResult
+from .grn import grn
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from scipy.linalg import eigh, lapack, cholesky, solve
 from statsmodels.stats import multitest
@@ -80,7 +81,9 @@ class Information():
         try:
             x = chol_inv(x)
         except:
-            print('alarm')
+            print('Failed to compute inverse using Cholesky decomposition. ')
+            print('This can be a sign of a numerical errors during parameters estimation.')
+            print('Will use pseudo-inverse now. The minimal and maximal eigenvalues are:')
             # print(x.diagonal().min())
             assert np.allclose(x, x.T), x - x.T
             x = np.linalg.eigh(x)
@@ -155,7 +158,8 @@ def export_fov(fovs: tuple[FOVResult], folder: str,
     samples = [fov_null.sample[:, None], fov_means.sample[:, None], fov_motif_means.sample[:, None]]
     samples = np.concatenate(samples, axis=-1)
     DF(samples, index=sample_names, columns=cols).to_csv(os.path.join(folder, 'samples.tsv'), sep='\t')
-    
+
+
 
 
 def posterior_anova(activities: ActivitiesPrediction, fit: FitResult, 
@@ -172,12 +176,17 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     #     bad_inds[ind] = True
     # mot = fit.motif_variance.motif
     # mot = np.delete(mot, activities.filtered_motifs)[~bad_inds]
+    motif_variance = fit.motif_variance.motif
+    if activities.filtered_motifs is not None:
+        motif_variance = np.delete(motif_variance, activities.filtered_motifs)
+        B = np.delete(B, activities.filtered_motifs, axis=1)
+    U = activities.U
     if map_cov:
         # fit.motif_variance.m
         BTB = B.T @ B
-        BTB_s = BTB * fit.motif_variance.motif ** 0.5
+        BTB_s = BTB * motif_variance ** 0.5
         BTB_s = BTB_s @ BTB_s.T
-    for cov, U, sigma, n, nu in zip(activities.cov(), activities.U.T, 
+    for cov, U, sigma, n, nu in zip(activities.cov(), U.T, 
                           activities._cov[-2], 
                           fit.error_variance.variance, fit.motif_variance.group):
         # cov = cov[~bad_inds, ~bad_inds]
@@ -189,11 +198,11 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
         covs.append(cov)
         # U = U[~bad_inds]
         # prec = np.linalg.inv(np.diag(mot * nu) - cov)
-        prec = np.linalg.inv(cov)
+        prec = np.linalg.pinv(cov, hermitian=True)
         mean += prec @ U
         precs.append(prec)
     total_prec = sum(precs)
-    total_cov = np.linalg.inv(total_prec)
+    total_cov = np.linalg.pinv(total_prec, hermitian=True)
     mean = total_cov @ mean
     stats = activities.U[~bad_inds] - mean.reshape(-1, 1)
     # if corr_stat:
@@ -210,9 +219,6 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     pvalues = chi2.sf(stats, len(precs) - 1)
     fdr = multitest.multipletests(pvalues, alpha=0.05, method='fdr_by')[1] 
     return stats, pvalues, fdr, bad_inds
-    
-    
-    
     
 
 def export_results(project_name: str, output_folder: str,
@@ -249,7 +255,7 @@ def export_results(project_name: str, output_folder: str,
         motif_names_filtered = motif_names
     
     os.makedirs(output_folder, exist_ok=True)
-    
+    # grn(data, act, fit, os.path.join(output_folder, 'grn'))
     error_variance = fit.error_variance.variance
     error_variance_fim = Information(fit.error_variance.fim)
     error_variance_stat, error_variance_std = error_variance_fim.standardize(error_variance, 
@@ -278,9 +284,12 @@ def export_results(project_name: str, output_folder: str,
     
     folder = os.path.join(output_folder, 'params')
     os.makedirs(folder, exist_ok=True)
+    if os.path.isfile(f'{project_name}.promvar.{fmt}'):
+        with openers[fmt](f'{project_name}.promvar.{fmt}', 'rb') as f:
+            promvar: np.ndarray = dill.load(f)
+        DF(promvar, index=prom_names, columns=group_names).to_csv(os.path.join(folder, 'promoter_variances.tsv'), sep='\t')
     if excluded_motif_group is not None:
         motif_group_variance_std = np.insert(motif_group_variance_std, excluded_motif_group, np.nan)
-    print(error_variance.shape, error_variance_std.shape,   motif_group_variance.shape, motif_group_variance_std.shape)
     DF(np.array([error_variance, error_variance_std, motif_group_variance, motif_group_variance_std]).T,
                 index=group_names,
                 columns=['sigma', 'sigma_std', 'nu', 'nu_std']).to_csv(os.path.join(folder, 'group_variances.tsv'),
@@ -400,6 +409,48 @@ def export_results(project_name: str, output_folder: str,
                        sample_names=sample_names)
         
             
+def export_loadings_product(project_name: str, output_folder: str,
+                            use_hdf: bool = True, intercepts: bool = True,
+                            tsv_truncation=4):
     
-    # return {'z-test': z_test, 'anova': anova, 'off_test': off_test,
-    #         'anova_ass': anova_ass, 'sign_ass': sign_ass}
+
+    data = read_init(project_name)
+    fmt = data.fmt
+    motif_names = data.motif_names
+    prom_names = data.promoter_names
+    # del data
+    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
+        fit: FitResult = dill.load(f)
+    if fit.promoter_inds_to_drop:
+        prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
+    group_names = fit.group_names
+    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
+        act: ActivitiesPrediction = dill.load(f)
+    
+    output_folder = os.path.join(output_folder, 'loadings-product')
+    os.makedirs(output_folder, exist_ok=True)
+    
+    U = act.U
+    B = data.B
+    mu = fit.motif_mean.mean 
+    
+    if act.filtered_motifs is not None:
+        motif_names = np.delete(motif_names, act.filtered_motifs)
+        B = np.delete(B, act.filtered_motifs, axis=1)
+        mu = np.delete(mu, act.filtered_motifs)
+    BM = B * mu
+    for name, U in zip(group_names, U.T):
+        effect = B * U
+        if intercepts:
+            effect += BM
+        if use_hdf:
+            effect = effect.astype(np.half)
+            filename = os.path.join(output_folder, f'{name}.hdf')
+            DF(data=effect, index=prom_names, columns=motif_names).to_hdf(filename, key='lrt', mode='w', complevel=4)
+        else:
+            filename = os.path.join(output_folder, f'{name}.tsv')
+            DF(data=effect, index=prom_names, columns=motif_names).to_csv(filename, sep='\t',
+                                                                          float_format=f'%.{tsv_truncation}f')  
+        
+        
+    

@@ -37,7 +37,7 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None):
 
 def create_project(project_name: str, promoter_expression_filename: str, loading_matrix_filenames: list[str],
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
-                   promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None,
+                   promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None, promoter_filter_max=True,
                    motif_names_filename=None, compression='raw', dump=True, verbose=True):
     if not os.path.isfile(promoter_expression_filename):
         raise FileNotFoundError(f'Promoter expression file {promoter_expression_filename} not found.')
@@ -88,8 +88,8 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
                             f'{len(loading_matrix_transformations)}.')
     
     logger_print('Filtering promoters of low expression...', verbose)
-    print('aaaaa', len(promoter_expression))
-    inds, weights = filter_lowexp(promoter_expression, cutoff=promoter_filter_lowexp_cutoff, fit_plot_filename=promoter_filter_plot_filename)
+    inds, weights = filter_lowexp(promoter_expression, cutoff=promoter_filter_lowexp_cutoff, fit_plot_filename=promoter_filter_plot_filename,
+                                  max_mode=promoter_filter_max)
     promoter_expression = promoter_expression.loc[inds]
     proms = promoter_expression.index
     loading_matrices = [transform_loadings(df, mode, prom_inds=inds) for df, mode in zip(loading_matrices, loading_matrix_transformations)]

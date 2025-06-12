@@ -198,7 +198,7 @@ def ones_nullspace_transform_transpose(X: np.ndarray) -> np.ndarray:
 
     return Y
 
-def lowrank_decomposition(X: np.ndarray, rel_eps=1e-12) -> LowrankDecomposition:
+def lowrank_decomposition(X: np.ndarray, rel_eps=1e-15) -> LowrankDecomposition:
     svd = jnp.linalg.svd
     q, s, v = [np.array(t) for t in svd(X, full_matrices=False)]
     max_sv = max(s)
@@ -449,12 +449,6 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
         FIM_tau_nu = jnp.delete(FIM_tau_nu, G_fix_ind, axis=1)
     FIM = jnp.block([[FIM_tau, FIM_tau_nu],
                      [FIM_tau_nu.T, FIM_nu]])
-    t = FIM[:len(Sigma), :len(Sigma)]
-    t = jnp.linalg.eigh(t)[0]
-    print('FIM_tau', np.min(t), np.max(t), np.min(np.abs(t)))
-    t = FIM[len(Sigma):, len(Sigma):]
-    t = jnp.linalg.eigh(t)[0]
-    print('FIM_nu', np.min(t), np.max(t), np.min(np.abs(t)))
     return FIM
 
 
@@ -483,7 +477,7 @@ def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecom
                    group_inds=data.group_inds)
     fun = jax.jit(fun)
     grad = jax.jit(grad)
-    opt = MetaOptimizer(fun, grad,  num_steps_momentum=10)
+    opt = MetaOptimizer(fun, grad,  num_steps_momentum=15)
     res = opt.optimize(d0)
     if verbose:
         print('-' * 15)
@@ -539,9 +533,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                       G_fix_ind=j, G_fix_val=fix)
         fun = jax.jit(fun)
         grad = jax.jit(grad)
-        opt = MetaOptimizer(fun, grad, num_steps_momentum=80,
-                            # scaling_set=(slice(len(BTB)), slice(len(BTB), None))
-                            )
+        opt = MetaOptimizer(fun, grad, num_steps_momentum=50)
         try:
             res = opt.optimize(x0)
         except ValueError as E:
@@ -566,14 +558,17 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                   G_fix_ind=j, G_fix_val=fix)
     f = fim(res.x)
     eig = jnp.linalg.eigh(f)[0].min()
+    print('FIM min eig', eig)
     if eig < 0:
         eig = list()
-        epsilons =  [1e-23, 1e-15, 1e-12, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3]
+        epsilons =  [1e-23, 1e-18, 1e-15, 1e-12, 1e-9, 1e-8,
+                     1e-7, 1e-6, 1e-5, 1e-4, 1e-3]
         for eps in epsilons:
             x = res.x.copy()
             x = x.at[:len(BTB)].set(jnp.clip(x.at[:len(BTB)].get(), eps, float('inf')))
             f = fim(x)
             eig.append(jnp.linalg.eigh(f)[0].min())
+            print(eps, eig[-1])
             if eig[-1] > 0:
                 break
         i = np.argmax(eig)
@@ -870,8 +865,12 @@ def fit(project: str, clustering: ClusteringMode,
     data.B, clustering = cluster_data(data.B, mode=clustering, 
                                       num_clusters=num_clusters)
     if test_chromosomes:
-        test_chromosomes = tuple([c + '_' for c in test_chromosomes])
-        promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) if p.startswith(test_chromosomes)]
+        import re
+        pattern = re.compile(r'chr([0-9XYM]+|\d+)')
+        
+        test_chromosomes = set(test_chromosomes)
+        promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) 
+                                 if pattern.search(p).group() in test_chromosomes]
         data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
         data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
     else:
@@ -942,12 +941,12 @@ def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]
     data_d = ProjectData(Y=Y_d, B=B_d, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names_d,
-                         motif_postfixes=data.motif_postfixes,
+                         motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
                          fmt=data.fmt)
     data = ProjectData(Y=Y, B=B, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names,
-                         motif_postfixes=data.motif_postfixes,
+                         motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
                          fmt=data.fmt)
     return data_d, data
 

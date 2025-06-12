@@ -6,7 +6,19 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import minimize
 from functools import partial
+from sklearn.mixture import GaussianMixture
 
+def compute_leftmost_probability(Y):
+    Y = Y.reshape(-1, 1)
+    gmm = GaussianMixture(n_components=2, random_state=0)
+    gmm.fit(Y)
+    
+    means = gmm.means_.flatten()
+    leftmost_component_index = np.argmin(means)
+    probas = gmm.predict_proba(Y)
+    leftmost_probs = probas[:, leftmost_component_index]
+    
+    return leftmost_probs, gmm
 
 def normax_logpdf(x: jnp.ndarray, mu: float, sigma: float, n: int):
     x = (x - mu) / sigma
@@ -39,9 +51,33 @@ def loglik(params: jnp.ndarray, x: jnp.ndarray, n: int):
     w = params[-1]
     return -logmixture(x, mu, sigma, w, n).sum()
 
-def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, fit_plot_filename=None, plot_dpi=200):
+def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, max_mode=True, 
+                  fit_plot_filename=None, plot_dpi=200):
     expression = (expression - expression.mean()) / expression.std()
-    
+    if not max_mode:
+        expression = expression.mean(axis=1).values
+        probs, gmm = compute_leftmost_probability(expression)
+        inds = probs < (1-cutoff)
+        if fit_plot_filename:
+            import matplotlib.pyplot as plt
+            from matplotlib.collections import LineCollection
+            import seaborn as sns
+            x = np.array(sorted(expression))
+            pdf = np.exp(gmm.score_samples(expression[:, None]))
+            points = np.array([x, pdf]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+            plt.figure(dpi=plot_dpi, )
+            sns.histplot(expression, stat='density', color='grey')
+            lc = LineCollection(segments, cmap='winter')
+            lc.set_array(probs)
+            lc.set_linewidth(3)
+            line = plt.gca().add_collection(lc)
+            plt.colorbar(line)
+            plt.xlabel('Standardized expression')
+            plt.tight_layout()
+            plt.savefig(fit_plot_filename)
+        return inds, probs
+        
     expression_max = expression.max(axis=1).values
     
     mu = [-1.0, 0.0]
