@@ -74,6 +74,14 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     logger_print('Reading dataset...', verbose)
     promoter_expression = dt.fread(promoter_expression_filename).to_pandas()
     promoter_expression = promoter_expression.set_index(promoter_expression.columns[0])
+    
+    if sample_groups:
+        cols = set()
+        for vals in sample_groups.values():
+            cols.update(vals)
+        cols = list(cols)
+        promoter_expression = promoter_expression[cols]
+    
     proms = promoter_expression.index
     sample_names = promoter_expression.columns
     loading_matrices = [dt.fread(f).to_pandas() for f in loading_matrix_filenames]

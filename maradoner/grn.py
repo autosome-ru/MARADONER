@@ -79,7 +79,7 @@ def estimate_promoter_variance(project_name: str, prior_top=0.90):
     
 
 def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
-        prior_h1=1/100):
+        fdr_alpha=0.05, prior_h1=1/100):
     data = read_init(project_name)
     fmt = data.fmt
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
@@ -153,10 +153,20 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         lr = lr[inds]
         belief = belief[inds]
         belief = belief.astype(np.half)
+        sorted_beliefs = np.sort(belief)
+        cumulative_fdr = np.cumsum(sorted_beliefs) / (np.arange(len(sorted_beliefs)) + 1)
+        try:
+            k = np.max(np.where(cumulative_fdr <= fdr_alpha)[0])
+            fdr_threshold = sorted_beliefs[k-1]
+        except ValueError:
+            fdr_threshold = 1.0
+        filename = os.path.join(folder_belief, f'{name}.txt')
+        with open(filename, 'w') as f:
+            f.write(f'{fdr_threshold}')
+
+        
         
         proms = list(np.array(prom_names)[inds])
-        
-        # pvalue = n.sf(lr) * (theta > 0) + n.cdf(lr) * (theta <= 0)
         if use_hdf:
             if save_stat:
                 lr = lr.astype(np.half)
