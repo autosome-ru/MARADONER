@@ -153,7 +153,7 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         lr = lr[inds]
         belief = belief[inds]
         belief = belief.astype(np.half)
-        sorted_beliefs = np.sort(belief)
+        sorted_beliefs = np.sort(belief.flatten())
         cumulative_fdr = np.cumsum(sorted_beliefs) / (np.arange(len(sorted_beliefs)) + 1)
         try:
             k = np.max(np.where(cumulative_fdr <= fdr_alpha)[0])
