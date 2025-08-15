@@ -13,7 +13,7 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None):
         df[df < zero_cutoff] = 0
         df = (df - df.min(axis=None)) / (df.max(axis=None) - df.min(axis=None))
     stds = df.std()
-    drop_inds = (stds < 1e-16) | np.isnan(stds)
+    drop_inds = (stds == 0) | np.isnan(stds)
     if prom_inds is not None:
         df = df.loc[prom_inds, ~drop_inds]
     else:

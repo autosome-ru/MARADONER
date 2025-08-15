@@ -331,7 +331,7 @@ def _grn(name: str = Argument(..., help='Project name'),
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
     
 __estimate_promvar_doc = 'Estimates each promoter variance for each group using empirical Bayesian shrinkage.'\
-                         ' A necessary step before computing GRN.'
+                         ' A very recommended step before computing GRN.'
 @app.command('estimate-promoter-variance',
              help=__estimate_promvar_doc)
 def _estimate_promoter_variance(name: str = Argument(..., help='Project name'),

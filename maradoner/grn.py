@@ -3,12 +3,11 @@ import numpy as np
 import jax.numpy as jnp
 import jax 
 from .utils import read_init, openers, ProjectData
-from .fit import FOVResult, ActivitiesPrediction, FitResult
-from scipy.optimize import minimize_scalar, minimize
+from .fit import ActivitiesPrediction, FitResult
+from scipy.optimize import minimize
 import os
 import dill
 from pandas import DataFrame as DF
-from scipy.stats import norm
 from functools import partial
 from tqdm import tqdm
 
@@ -20,6 +19,8 @@ def estimate_promoter_prior_variance(data: ProjectData, activities: ActivitiesPr
     group_inds = data.group_inds
     Y = Y - fit.promoter_mean.mean.reshape(-1, 1) - fit.sample_mean.mean.reshape(1, -1)
     Y = Y -  B @ fit.motif_mean.mean.reshape(-1, 1)
+    if activities.filtered_motifs is not None and len(activities.filtered_motifs):
+        B = np.delete(B, activities.filtered_motifs, axis=1)
     Y = np.concatenate([Y[:, inds].mean(axis=1, keepdims=True) - B @ U.reshape(-1, 1)
                         for inds, U in zip(group_inds, activities.U.T)],
                        axis=1)
@@ -53,7 +54,6 @@ def estimate_promoter_variance(project_name: str, prior_top=0.90):
                                                  top=prior_top)
     print('Piror standard deviation:', prior_var ** 0.5)
     prior_means = fit.error_variance.variance
-    
     Y = Y - fit.promoter_mean.mean.reshape(-1, 1) - fit.sample_mean.mean.reshape(1, -1)
     Y = Y - B @ fit.motif_mean.mean.reshape(-1, 1)
     Y = Y ** 2
@@ -77,6 +77,47 @@ def estimate_promoter_variance(project_name: str, prior_top=0.90):
         dill.dump(var, f)
     return var
     
+
+def bayesian_fdr_control(p0, alpha=0.05):
+    """
+    Control Bayesian FDR using sorted posterior probabilities of H0.
+    
+    Args:
+        p0: Array of posterior probabilities P(H0|X) for each hypothesis.
+        alpha: Target FDR level (e.g., 0.05).
+    
+    Returns:
+        discoveries: Boolean array (True = reject H0).
+        threshold: Rejection threshold for P(H0|X).
+    """
+    p0 = np.asarray(p0)
+    if p0.size == 0:
+        return np.zeros_like(p0, dtype=bool), -np.inf
+    
+    # Sort in ascending order
+    sorted_p0 = np.sort(p0)
+    m = len(sorted_p0)
+    
+    # Compute cumulative FDR = (sum_{i=1}^k p_i) / k
+    cum_sum = np.cumsum(sorted_p0)
+    fdr_k = cum_sum / np.arange(1, m + 1)
+    
+    # Find largest k where FDR(k) <= alpha
+    valid_indices = np.where(fdr_k <= alpha)[0]  # 0-based indices
+    if len(valid_indices) == 0:
+        k = 0
+    else:
+        k = valid_indices[-1] + 1  # Convert to 1-based index
+    
+    # Set threshold and discover
+    if k > 0:
+        threshold = sorted_p0[k - 1]  # k-th element (0-indexed at k-1)
+        discoveries = p0 <= threshold
+    else:
+        threshold = -np.inf
+        discoveries = np.zeros_like(p0, dtype=bool)
+    
+    return discoveries, threshold
 
 def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         fdr_alpha=0.05, prior_h1=1/100):
@@ -153,11 +194,20 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         lr = lr[inds]
         belief = belief[inds]
         belief = belief.astype(np.half)
-        sorted_beliefs = np.sort(belief.flatten())
-        cumulative_fdr = np.cumsum(sorted_beliefs) / (np.arange(len(sorted_beliefs)) + 1)
+        # fdr_threshold = bayesian_fdr_control(belief.flatten(), fdr_alpha)
+        # print(fdr_threshold[0].mean(), fdr_threshold[1])
+        # fdr_threshold = fdr_threshold[1]
+        sorted_beliefs = belief.flatten() 
+        sorted_beliefs = sorted_beliefs[sorted_beliefs > 0.5]
+        sorted_beliefs = np.sort(sorted_beliefs)[::-1]
+        sorted_inbeliefs = 1 - sorted_beliefs
+        
+        cumulative_fdr = np.cumsum(sorted_inbeliefs) / (np.arange(len(sorted_inbeliefs)) + 1)
+        # print(fdr_alpha)
         try:
-            k = np.max(np.where(cumulative_fdr <= fdr_alpha)[0])
-            fdr_threshold = sorted_beliefs[k-1]
+            k = np.min(np.where(cumulative_fdr <= fdr_alpha)[0])
+            fdr_threshold = sorted_beliefs[k]
+            print(k, fdr_threshold)
         except ValueError:
             fdr_threshold = 1.0
         filename = os.path.join(folder_belief, f'{name}.txt')
