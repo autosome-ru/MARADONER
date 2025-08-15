@@ -60,6 +60,8 @@ def estimate_promoter_variance(project_name: str, prior_top=0.90):
     B_hat = B ** 2 * fit.motif_variance.motif
     B_hat = B_hat.sum(axis=1)
     var = list()
+    jax.config.update('jax_enable_x64', True)
+    jax.config.update('jax_platform_name', 'cpu') 
     for inds, prior_mean, nu in tqdm(list(zip(group_inds, prior_means, fit.motif_variance.group))):
         Yt = Y[:, inds].sum(axis=1)
         s = len(inds)

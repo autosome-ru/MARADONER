@@ -314,7 +314,7 @@ def _select_motifs(name: str = Argument(..., help='Project name'),
 
 __grn_doc = 'Tests each promoter against each motif per each group. Some people call it GRN.'
 @app.command('grn',
-             help=__select_motif_doc)
+             help=__grn_doc)
 def _grn(name: str = Argument(..., help='Project name'),
          folder: Path = Argument(..., help='Output folder where results will be stored. In total, expect number_of_groups tables of size'
                                            ' comparable to the expression file size.'),
