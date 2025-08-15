@@ -17,7 +17,7 @@ __min_reqs__ = [
             'dill>=0.3.9',
             'rich>=12.6.0',
             'tqdm>=4.0',
-            'scikit-learn>=1.6'
+            'scikit-learn>=1.6',
             'tables>=3.10'
            ]
 
