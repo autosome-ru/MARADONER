@@ -122,7 +122,7 @@ def bayesian_fdr_control(p0, alpha=0.05):
     return discoveries, threshold
 
 def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
-        fdr_alpha=0.05, prior_h1=1/100):
+        fdr_alpha=0.05, prior_h1=1/100, include_mean: bool = True):
     data = read_init(project_name)
     fmt = data.fmt
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
@@ -178,13 +178,16 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         os.makedirs(folder_stat, exist_ok=True)
     os.makedirs(folder_belief, exist_ok=True)
     for sigma, nu, name, inds in zip(promvar.T[..., None], nus,  group_names, group_inds):
-        # if name != 'anconeus':
-        #     continue
         print(name)
         var = (B_hat * nu + sigma)
-        Y_ = Y[:, inds][..., None, :] + BM
-        # theta = U[:, inds][..., None, :] + BM
-        theta = B[..., None] * U[:, inds] + BM
+        
+        Y_ = Y[:, inds][..., None, :] 
+        theta = B[..., None] * U[:, inds] 
+        if include_mean:
+            Y_ = Y_ + BM
+            theta = theta + BM
+            
+        
         loglr = 2 * B * (Y_ * theta).sum(axis=-1) - B_pow * (theta ** 2).sum(axis=-1)
         del Y_
         del theta
