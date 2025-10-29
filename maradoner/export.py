@@ -407,7 +407,45 @@ def export_results(project_name: str, output_folder: str,
             promoter_names_test = np.array(data.promoter_names)[fit.promoter_inds_to_drop]
             export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
                        sample_names=sample_names)
-        
+
+def export_pairwise_test(project_name: str,  output_folder: str,
+                         group_a: str, group_b: str):
+    data = read_init(project_name)
+    fmt = data.fmt
+    motif_names = data.motif_names
+    prom_names = data.promoter_names
+    del data
+    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
+        fit: FitResult = dill.load(f)
+    if fit.promoter_inds_to_drop:
+        prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
+    group_names = fit.group_names
+    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
+        act: ActivitiesPrediction = dill.load(f)
+    if act.filtered_motifs is not None:
+        motif_names_filtered = np.delete(motif_names, act.filtered_motifs)
+    else:
+        motif_names_filtered = motif_names
+    i = group_names.index(group_a)
+    j = group_names.index(group_b)
+    variances_a = None
+    variances_b = None
+    for k, cov in enumerate(act.cov()):
+        if k == i:
+            variances_a = cov.diagonal()
+        elif k == j:
+            variances_b = cov.diagonal()
+    U = act.U
+    U_a = U[:, i]
+    U_b = U[:, j]
+    z_stat =  (U_b - U_a) / (variances_a + variances_b) ** 0.5
+    pval = 2 * norm.sf(np.abs(z_stat))
+    fdr = multitest.multipletests(pval, alpha=0.05, method='fdr_by')[1]
+    data = np.array([z_stat, pval, fdr]).T
+    filename = os.path.join(output_folder, f'{group_a}_vs_{group_b}.tsv')
+    os.makedirs(output_folder, exist_ok=True)
+    DF(data, columns=['z_stat', 'pval', 'fdr'],
+       index=motif_names_filtered).to_csv(filename, sep='\t')
             
 def export_loadings_product(project_name: str, output_folder: str,
                             use_hdf: bool = True, intercepts: bool = True,
