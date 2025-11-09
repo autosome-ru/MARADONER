@@ -26,7 +26,7 @@ class OptimizerResult:
         
 
 class MetaOptimizer():
-    def __init__(self, fun, grad, init_method='L-BFGS-B', methods=('L-BFGS-B'), num_steps_momentum=60,
+    def __init__(self, fun, grad, init_method='L-BFGS-B', methods=('TNC'), num_steps_momentum=60,
                  reparam='square', scaling_set=None,  skip_init=False,
                  momentum_lrs=(1e-2, 1e-3, 1e-4)):
         self.init_method = init_method
@@ -175,6 +175,7 @@ class MetaOptimizer():
             sol.fun = momentum_loglik
             sol.x = xm
             print('Eggog')
+            print(sol)
         grad_norm = np.linalg.norm(sol.jac)
         loglik = sol.fun
         x = sol.x

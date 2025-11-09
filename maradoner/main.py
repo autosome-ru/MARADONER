@@ -12,7 +12,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from .create import create_project
 from pathlib import Path
-from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode
+from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode, GLSRefinement
 from .grn import estimate_promoter_variance, grn
 from .synthetic_data import generate_dataset
 from time import time
@@ -36,8 +36,10 @@ class Compression(str, Enum):
 
 class LoadingTransform(str, Enum):
     none = 'none'
+    scale = 'scale'
     ecdf = 'ecdf'
     esf = 'esf'
+
 
 class OrderCommands(TyperGroup):
   def list_commands(self, ctx: Context):
@@ -110,7 +112,8 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
             loading_transform: List[LoadingTransform] = Option([LoadingTransform.esf], '--loading-transform', '-t',
                                                                help='A type of transformation to apply to loading '
                                                                 'matrices. [orange]ecdf[/orange] substitutes values in the table with empricical CDF,'
-                                                                ' [orange]esf[/orange] with negative logarithm of the empirical survival function.'),
+                                                                ' [orange]esf[/orange] with negative logarithm of the empirical survival function.'
+                                                                '[orange]scale[/orange] just rescales all entries to [0, 1] range.'),
             motif_expression: List[Path] = Option(None, help='A list of paths (of length equal to the number of loading matrices) of motif expression'
                                                   ' tables. All expression values are assumed to be in log2-scale.'),
             sample_groups: Path = Option(None, help='Either a JSON dictionary or a text file with a mapping between groups and sample names they'
@@ -157,6 +160,9 @@ def _fit(name: str = Argument(..., help='Project name.'),
           clustering: ClusteringMode = Option(ClusteringMode.none, help='Clustering method.'),
           num_clusters: int = Option(200, help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
           test_chromosomes: List[str] = Option(None, '--test-chromosomes', '-t', help='Test chromosomes'),
+          motif_variance: bool = Option(True,  help='Estimate individual motif variances or assume them all equal.'
+                                                  'The latter makes method more similar to (IS)MARA approach and might be beneficial when the data is small.'),
+          refinement: GLSRefinement = Option(GLSRefinement.none, help='TODO help'),
           gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
           gpu_decomposition: bool = Option(False, help='Use GPU if available or SVD decomposition.'), 
           x64: bool = Option(True, help='Use high precision algebra.')):
@@ -170,6 +176,8 @@ def _fit(name: str = Argument(..., help='Project name.'),
     p.start()
     fit(name, clustering=clustering, num_clusters=num_clusters,
         gpu=gpu, test_chromosomes=test_chromosomes,
+        motif_variance=motif_variance,
+        refinement=refinement,
         gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
     dt = time() - t0

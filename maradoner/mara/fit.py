@@ -123,7 +123,7 @@ def predict_activities(data: TransformedData, fit: FitResult,
                        gpu=False, verbose=True) -> ActivitiesPrediction:
     U = list()
     variance = list()
-
+    
     B_decomposition = fit.B_decomposition
     if gpu:
         device = jax.devices()
@@ -209,10 +209,14 @@ def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
 def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]:
     if not inds:
         return data, None
-    B_d = np.delete(data.B, inds, axis=0)
-    B = data.B[inds]
-    Y_d = np.delete(data.Y, inds, axis=0)
-    Y = data.Y[inds]
+    B = data.B
+    Y = data.Y
+    # Y = Y -  (Y.mean(axis=0, keepdims=True) + Y.mean(axis=1, keepdims=True) - Y.mean())
+    # B = B - B.mean(axis=0, keepdims=True)
+    B_d = np.delete(B, inds, axis=0)
+    B = B[inds]
+    Y_d = np.delete(Y, inds, axis=0)
+    Y = Y[inds]
     promoter_names_d = np.delete(data.promoter_names, inds)
     promoter_names = list(np.array(data.promoter_names)[inds])
     data_d = ProjectData(Y=Y_d, B=B_d, K=data.K, weights=data.weights,
@@ -271,24 +275,34 @@ def calculate_fov(project: str, gpu: bool,
                 sample = 1 - Y1.mean(axis=0) / Y.mean(axis=0)
                 total = 1 - Y1.mean() / Y.mean()
             elif stat_type == stat_type.corr:
+                # Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
                 total = np.corrcoef(Y.flatten(), effects.flatten())[0, 1]
                 prom = _cor(Y, effects, axis=1)
                 sample = _cor(Y, effects, axis=0)
             return FOVResult(total, prom, sample)
+        m2 = Bs[1].mean(axis=0, keepdims=True)
+        m0 = Bs[1].mean()
+        Bs = None
         if Bs is None:
-            data = transform_data(data)
+            # data = transform_data(data)
             B = data.B if activities.clustering is None else activities.clustering[0]
             Y = data.Y
             U = activities.U
         else:
             B = data.B
             Y = data.Y
-            B = np.hstack((B, np.ones((len(B), 1))))
-            U = np.linalg.pinv(np.hstack((Bs[0], np.ones((len(Bs[0]), 1))))) @ Bs[1]
+            U = np.linalg.pinv(Bs[0]) @ (Bs[1] - Bs[1].mean(axis=0, keepdims=True) - Bs[1].mean(axis=1, keepdims=True) + Bs[1].mean())
+            # B = np.hstack((B, np.ones((len(B), 1))))
+            # U = np.linalg.pinv(np.hstack((Bs[0], np.ones((len(Bs[0]), 1))))) @ Bs[1]
         if keep_motifs is not None:
             B = B[:, keep_motifs]
             U = U[keep_motifs]
+        B = B - B.mean(axis=0, keepdims=True)
         d = B @ U
+        # m2 = Y.mean(axis=0, keepdims=True)
+        # m0 = Y.mean()
+        m = (Y.mean(axis=1, keepdims=True) + m2 - m0)
+        d = d + m
         stat_0 = sub(Y, d)
         return stat_0,
     data = read_init(project)
