@@ -18,7 +18,7 @@ from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
 from .export import export_results, export_loadings_product, Standardization, ANOVAType
-from .export import export_pairwise_test
+from .export import export_contrast
 from . import __version__ as project_version
 from .select import select_motifs_single
 import json
@@ -162,6 +162,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
           test_chromosomes: List[str] = Option(None, '--test-chromosomes', '-t', help='Test chromosomes'),
           motif_variance: bool = Option(True,  help='Estimate individual motif variances or assume them all equal.'
                                                   'The latter makes method more similar to (IS)MARA approach and might be beneficial when the data is small.'),
+          promoter_variance: bool = Option(False, help='Estiamte individual promoter variances or assume them all equal.'),
           refinement: GLSRefinement = Option(GLSRefinement.none, help='TODO help'),
           gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
           gpu_decomposition: bool = Option(False, help='Use GPU if available or SVD decomposition.'), 
@@ -177,6 +178,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
     fit(name, clustering=clustering, num_clusters=num_clusters,
         gpu=gpu, test_chromosomes=test_chromosomes,
         motif_variance=motif_variance,
+        promoter_variance=promoter_variance,
         refinement=refinement,
         gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
@@ -188,6 +190,7 @@ def _gof(name: str = Argument(..., help='Project name.'),
          use_groups: bool = Option(False, help='Compute statistic for samples aggragated across groups.'), 
          stat_type: GOFStat = Option(GOFStat.fov, help='Statistic type to compute'),
          stat_mode: GOFStatMode = Option(GOFStatMode.total, help='Whether to compute stats for residuals or accumulate their effects'),
+         weights: bool = Option(True, help='Whether to use weighted statistics. Applicable only if promoter variance was estimated.'),
          gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
          x64: bool = Option(True, help='Use high precision algebra.')):
     """
@@ -198,7 +201,9 @@ def _gof(name: str = Argument(..., help='Project name.'),
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Calculating FOVs...", total=None)
     p.start()
-    res = calculate_fov(name, stat_mode=stat_mode, stat_type=stat_type, use_groups=use_groups, gpu=gpu, x64=x64)
+    res = calculate_fov(name, stat_mode=stat_mode, stat_type=stat_type, use_groups=use_groups, 
+                        weights=weights,
+                        gpu=gpu, x64=x64)
     if stat_type == GOFStat.corr:
         title = 'Pearson correlation'
     else:
@@ -207,9 +212,10 @@ def _gof(name: str = Argument(..., help='Project name.'),
         title += ' (Residual)'
     else:
         title += ' (Total)'
-    t = Table('Set', 'null', 'intercepts', 'motif_mean',
+    t = Table('Set', 'centering', '+mean motif activity', '+ group-specific motif activity',
               title=title)
     row = [f'{t.total:.6f}' for t in res.train]
+    
     t.add_row('train', *row)
     if res.test is not None:
         row = [f'{t.total:.6f}' for t in res.test]
@@ -359,25 +365,25 @@ def _estimate_promoter_variance(name: str = Argument(..., help='Project name'),
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
     
-@app.command('pairwise-difftest',
-             help='Perform pairwise differential test between 2 groups using posterior distribution of activities.'
-                  ' It computes difference in activities between group_b and group_a and performs a series of Z-tests for each motif.')
-def _pairwise_difftest(name: str = Argument(..., help='Project name'),
-                                group_a: str = Argument(...,
-                                                          help='Name of the first group.'
-                                                          ),
-                                group_b: str = Argument(...,
-                                                          help='Name of the second group.'
-                                                          ),
-                                output_folder: Path = Argument(..., help='Output folder.') ):
+@app.command('contrast',
+             help='Perform differential test given a constrasts vector.'
+                 ' The contrast vector can be any algebraic string with variables being group names.'
+                 ' For example, "[orange]healthy - ill[/orange]", "[orange](group_a + group_b + group_c) / 3 - group_d[/orange]".'
+                 ' It computes a weighted algebraic sum of motif cctivities and then performs a series of Z-tests for each motif.')
+def _contrast(name: str = Argument(..., help='Project name'),
+                                contrast: str = Argument(...,
+                                                          help='An algebraic expression defining the contrast vector.'),
+                                output_folder: Path = Argument(..., help='Output folder.'),
+                                postfix: str = Option(None, help='Postfix to add to the results file.')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Performing and saving a pairwise test...", total=None)
     p.start()
-    export_pairwise_test(name, output_folder, group_a, group_b)
+    export_contrast(name, output_folder, contrast, postfix)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+
 
 def main():
     check_packages()

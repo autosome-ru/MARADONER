@@ -299,8 +299,15 @@ def export_results(project_name: str, output_folder: str,
                                                                             motif_variance_std))
     with open(os.path.join(folder, 'motif_variances.tsv'), 'w') as f:
         f.write(s)
-    DF(promoter_mean, index=prom_names, columns=['mean']).to_csv(os.path.join(folder, 'promoter_means.tsv'),
-                                                                 sep='\t')
+    
+    promoter_variances = error_variance.promotor
+    if promoter_variances is None or promoter_variances.var() == 0:
+        DF(promoter_mean, index=prom_names, columns=['mean']).to_csv(os.path.join(folder, 'promoter_means.tsv'),
+                                                                     sep='\t')
+    else:
+        DF(np.array([promoter_mean, promoter_variances ** 0.5]).T, index=prom_names,
+               columns=['mean', 'std']).to_csv(os.path.join(folder, 'promoter.tsv'),
+                                               sep='\t')
     DF(np.array([motif_mean, motif_mean_std]).T,
        index=motif_names, columns=['mean', 'std']).to_csv(os.path.join(folder, 'motif_means.tsv'),
                                                           sep='\t')
@@ -408,8 +415,78 @@ def export_results(project_name: str, output_folder: str,
             export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
                        sample_names=sample_names)
 
-def export_pairwise_test(project_name: str,  output_folder: str,
-                         group_a: str, group_b: str):
+
+import ast
+import sympy
+
+def validate(node):
+    """
+    Validates that the AST only contains allowed operations: +, -, *, unary -, names, and numeric constants.
+    """
+    if isinstance(node, ast.Expression):
+        return validate(node.body)
+    if isinstance(node, ast.BinOp):
+        validate(node.left)
+        validate(node.right)
+        allowed_ops = (ast.Add, ast.Sub, ast.Mult, ast.Div)
+        if not isinstance(node.op, allowed_ops):
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+    elif isinstance(node, ast.UnaryOp):
+        validate(node.operand)
+        if not isinstance(node.op, ast.USub):
+            raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+    elif isinstance(node, ast.Name):
+        pass
+    elif isinstance(node, ast.Constant):
+        if not isinstance(node.value, (int, float)):
+            raise ValueError("Non-numeric constant")
+    else:
+        raise ValueError(f"Unsupported node type: {type(node).__name__}")
+
+
+
+def parse_linear_expression(expr_str):
+    """
+    Parses a linear algebraic expression string with only +, -, *, parentheses, and constants.
+    Raises ValueError for unsupported operations (e.g., ^, /, sin) or non-linear terms (e.g., a*b, a^2).
+    Returns a dictionary of variable coefficients.
+    
+    Example:
+    >>> parse_linear_expression("(my_variable_1 * 2 - my_variable_2) - (3 * a - b)")
+    {'a': -3, 'b': 1, 'my_variable_1': 2, 'my_variable_2': -1}
+    
+    >>> parse_linear_expression("(my_variable_1 - my_variable_2) - (a - b) * 2")
+    {'a': -2, 'b': 2, 'my_variable_1': 1, 'my_variable_2': -1}
+    """
+    preprocessed = expr_str.replace(' ', '').replace('^', '**')
+    try:
+        tree = ast.parse(preprocessed, mode='eval')
+    except SyntaxError as e:
+        raise ValueError(f"Invalid expression syntax: {e}")
+    
+    validate(tree)
+    
+    expr = sympy.sympify(preprocessed)
+    expr = sympy.expand(expr)
+    symbols = sorted(expr.free_symbols, key=str)
+    coeffs = {str(s): int(expr.coeff(s)) if expr.coeff(s).is_integer else float(expr.coeff(s)) 
+              for s in symbols}
+    
+    # Ensure it's linear
+    if symbols:
+        poly = expr.as_poly(symbols)
+        if poly.total_degree() > 1:
+            raise ValueError("Expression must be linear (no products of variables or powers >1)")
+    
+    return dict(sorted(coeffs.items(), key=lambda x: x[0]))
+
+
+def export_contrast(project_name: str,  output_folder: str,
+                    contrasts: str, filename_postfix: str = None):
+    if filename_postfix is None:
+        postfix = str()
+    else:
+        postfix = '_' + filename_postfix
     data = read_init(project_name)
     fmt = data.fmt
     motif_names = data.motif_names
@@ -426,27 +503,33 @@ def export_pairwise_test(project_name: str,  output_folder: str,
         motif_names_filtered = np.delete(motif_names, act.filtered_motifs)
     else:
         motif_names_filtered = motif_names
-    i = group_names.index(group_a)
-    j = group_names.index(group_b)
-    variances_a = None
-    variances_b = None
+    contrasts = parse_linear_expression(contrasts)
+    variances = list()
     for k, cov in enumerate(act.cov()):
-        if k == i:
-            variances_a = cov.diagonal()
-        elif k == j:
-            variances_b = cov.diagonal()
-    U = act.U
-    U_a = U[:, i]
-    U_b = U[:, j]
-    z_stat =  (U_b - U_a) / (variances_a + variances_b) ** 0.5
+        variances.append(cov.diagonal())
+    variances = np.array(variances) 
+    coeffs = np.zeros_like(variances)
+    inds = np.zeros(len(variances), dtype=bool)
+    for c, v in contrasts.items():
+        i = group_names.index(c)
+        coeffs[i] = v
+        inds[i] = True
+    U = act.U.T
+    U = U[inds]
+    variances = variances[inds]
+    coeffs = coeffs[inds]
+    variances = variances * coeffs ** 2
+    z_stat = (U * coeffs).sum(axis=0) / variances.sum(axis=0) ** 0.5
+    # z_stat =  (U_b - U_a) / (variances_a + variances_b) ** 0.5
     pval = 2 * norm.sf(np.abs(z_stat))
     fdr = multitest.multipletests(pval, alpha=0.05, method='fdr_by')[1]
     data = np.array([z_stat, pval, fdr]).T
-    filename = os.path.join(output_folder, f'{group_a}_vs_{group_b}.tsv')
+    filename = os.path.join(output_folder, f'constrast{postfix}.tsv')
     os.makedirs(output_folder, exist_ok=True)
     DF(data, columns=['z_stat', 'pval', 'fdr'],
        index=motif_names_filtered).to_csv(filename, sep='\t')
-            
+
+         
 def export_loadings_product(project_name: str, output_folder: str,
                             use_hdf: bool = True, intercepts: bool = True,
                             tsv_truncation=4):

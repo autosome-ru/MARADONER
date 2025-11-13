@@ -262,6 +262,7 @@ def _cor(a, b, axis=1):
 def calculate_fov(project: str, gpu: bool, 
                   stat_type: GOFStat, keep_motifs: str, x64=True,
                   verbose=True, dump=True):
+    keep_motifs = None
     def calc_fov(data: TransformedData, fit: FitResult,
                  activities: ActivitiesPrediction, keep_motifs=None, Bs=None) -> tuple[FOVResult]:
         def sub(Y, effects) -> FOVResult:
@@ -282,22 +283,27 @@ def calculate_fov(project: str, gpu: bool,
             return FOVResult(total, prom, sample)
         m2 = Bs[1].mean(axis=0, keepdims=True)
         m0 = Bs[1].mean()
-        Bs = None
+        
+        # Bs = None
         if Bs is None:
             # data = transform_data(data)
             B = data.B if activities.clustering is None else activities.clustering[0]
             Y = data.Y
             U = activities.U
         else:
+            B_ = Bs[0]
             B = data.B
             Y = data.Y
             U = np.linalg.pinv(Bs[0]) @ (Bs[1] - Bs[1].mean(axis=0, keepdims=True) - Bs[1].mean(axis=1, keepdims=True) + Bs[1].mean())
             # B = np.hstack((B, np.ones((len(B), 1))))
             # U = np.linalg.pinv(np.hstack((Bs[0], np.ones((len(Bs[0]), 1))))) @ Bs[1]
+            # m0 = Y.mean(axis=1, keepdims=True)
+            # m2 = 0
+            # m0 = 0
         if keep_motifs is not None:
             B = B[:, keep_motifs]
             U = U[keep_motifs]
-        B = B - B.mean(axis=0, keepdims=True)
+        # B = B - B.mean(axis=0, keepdims=True)
         d = B @ U
         # m2 = Y.mean(axis=0, keepdims=True)
         # m0 = Y.mean()

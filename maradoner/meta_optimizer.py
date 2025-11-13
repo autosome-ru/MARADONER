@@ -61,7 +61,7 @@ class MetaOptimizer():
 
     def grad(self, x):
         g = self._grad(self._reparam(x, param_scalers=self.param_scalers))
-        rg = jax.jacrev(self._reparam, argnums=0)
+        rg = jax.jacfwd(self._reparam, argnums=0)
         return g * rg(x, 
                       param_scalers=self.param_scalers).sum(axis=0) * self.fun_scale
     

@@ -50,8 +50,12 @@ def estimate_promoter_variance(project_name: str, prior_top=0.90):
     B = data.B
     Y = data.Y
     group_inds = data.group_inds
-    prior_var = estimate_promoter_prior_variance(data, activities, fit,
-                                                 top=prior_top)
+    if fit.error_variance.promotor is None or fit.error_variance.var() == 0:
+        prior_var = estimate_promoter_prior_variance(data, activities, fit,
+                                                     top=prior_top)
+    else:
+        prior_var = fit.error_variance.promotor
+        
     print('Piror standard deviation:', prior_var ** 0.5)
     prior_means = fit.error_variance.variance
     Y = Y - fit.promoter_mean.mean.reshape(-1, 1) - fit.sample_mean.mean.reshape(1, -1)
