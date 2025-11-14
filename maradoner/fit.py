@@ -339,10 +339,10 @@ def transform_data(data, std_y=False, std_b=False, helmert=True, weights=None) -
     if weights is not None:
         B = B * weights.reshape(-1, 1)
         Y = Y * weights.reshape(-1, 1)
+        if weights.std()  == 0:
+            weights = None
     if std_b:
         B /= B.std(axis=0, keepdims=True)
-    if weights.std()  == 0:
-        weights = None
     if helmert:
         if weights is None:
             # F_p = ones_nullspace(len(Y))
