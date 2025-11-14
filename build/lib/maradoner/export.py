@@ -257,7 +257,6 @@ def export_results(project_name: str, output_folder: str,
     os.makedirs(output_folder, exist_ok=True)
     # grn(data, act, fit, os.path.join(output_folder, 'grn'))
     error_variance = fit.error_variance.variance
-    promoter_variance = fit.error_variance.promotor
     error_variance_fim = Information(fit.error_variance.fim)
     error_variance_stat, error_variance_std = error_variance_fim.standardize(error_variance, 
                                                                              mode=Standardization.std)
@@ -301,11 +300,12 @@ def export_results(project_name: str, output_folder: str,
     with open(os.path.join(folder, 'motif_variances.tsv'), 'w') as f:
         f.write(s)
     
-    if promoter_variance is None or promoter_variance.var() == 0:
+    promoter_variances = error_variance.promotor
+    if promoter_variances is None or promoter_variances.var() == 0:
         DF(promoter_mean, index=prom_names, columns=['mean']).to_csv(os.path.join(folder, 'promoter_means.tsv'),
                                                                      sep='\t')
     else:
-        DF(np.array([promoter_mean, promoter_variance ** 0.5]).T, index=prom_names,
+        DF(np.array([promoter_mean, promoter_variances ** 0.5]).T, index=prom_names,
                columns=['mean', 'std']).to_csv(os.path.join(folder, 'promoter.tsv'),
                                                sep='\t')
     DF(np.array([motif_mean, motif_mean_std]).T,
