@@ -39,6 +39,7 @@ class LoadingTransform(str, Enum):
     scale = 'scale'
     ecdf = 'ecdf'
     esf = 'esf'
+    drist = 'drist'
 
 
 class OrderCommands(TyperGroup):
@@ -122,7 +123,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                                             ' to 1, the more promoters will be left in the dataset.'),
             filter_max_mode: bool = Option(True, help='Use max-mode of filtering. Max-mode keeps promoters that are active at least for some samples.'
                                                        ' If disabled, filtration using GMM on the averages will be ran instead.'),
-            filter_plot: Path = Option(None, help='Expression plot with a fitted mixture that is used for filtering.'),
+            filter_plot: bool = Option(True, help='Expression plot with a fitted mixture that is used for filtering.'),
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
                                                 help='String postfixes will be appeneded to the motifs from each of the supplied loading matrices'),
             motif_filename: Path = Option(None, '--motif-filename', help='If provided, then only motifs with names present in this fill will be kept'),
@@ -137,6 +138,8 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Initializing project...", total=None)
     p.start()
+    if filter_plot:
+        filter_plot = f'{name}.filter-plot.png'
     r = create_project(name, expression, loading_matrix_filenames=loading, motif_expression_filenames=motif_expression, 
                        loading_matrix_transformations=loading_transform, sample_groups=sample_groups, 
                        promoter_filter_lowexp_cutoff=filter_lowexp_w,

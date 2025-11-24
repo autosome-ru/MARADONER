@@ -51,7 +51,7 @@ def loglik(params: jnp.ndarray, x: jnp.ndarray, n: int):
     w = params[-1]
     return -logmixture(x, mu, sigma, w, n).sum()
 
-def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, max_mode=True, 
+def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, component_limit=0.6, max_mode=True,
                   fit_plot_filename=None, plot_dpi=200):
     expression = (expression - expression.mean()) / expression.std()
     if not max_mode:
@@ -79,7 +79,7 @@ def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, max_mode=True,
         return inds, probs
         
     expression_max = expression.max(axis=1).values
-    
+
     mu = [-1.0, 0.0]
     sigmas = [1.0, 1.0]
     w = [0.5]
@@ -110,12 +110,19 @@ def filter_lowexp(expression: pd.DataFrame, cutoff=0.95, max_mode=True,
     pdf1 = jnp.exp(logpdf1)
     pdf2 = jnp.exp(logpdf2)
     ws = np.array(pdf1 / ((w * pdf1 + (1-w)*pdf2)) * w)
-    if x[ws >= 0.5].mean() < x[ws < 0.5].mean():
+    
+    if float(w) > component_limit:
+        ws[:] = 1.0
+    else:
         ws = 1 - ws
-    j = np.argmax(ws)
-    l = np.argmin(ws)
-    ws[j:] = 1.0
-    ws[:l] = 0.0
+        if x[ws >= 0.5].mean() < x[ws < 0.5].mean():
+            ws = 1 - ws
+        j = np.argmax(ws)
+        l = np.argmin(ws)
+        ws[j:] = 1.0
+        ws[:l] = 0.0
+    
+    k = 0
     for k in range(len(ws)):
         if ws[k] >= 1.0-cutoff:
             break

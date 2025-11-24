@@ -1648,6 +1648,8 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
         if weights:
             if a_vec is None:
                 a_vec = fit.error_variance.promotor ** (-0.5)
+                if len(a_vec) != len(Y):
+                    a_vec = np.ones(len(Y))
             Y = a_vec.reshape(-1, 1) * Y
             B = a_vec.reshape(-1, 1) * B
             mu_p = a_vec.reshape(-1, 1) * mu_p

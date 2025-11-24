@@ -226,6 +226,7 @@ def export_results(project_name: str, output_folder: str,
                    anova_mode: ANOVAType=ANOVAType.positive,
                    weighted_zscore=False,
                    alpha=0.05,
+                   export_B: bool = False,
                    n_jobs=6):
     
     def calc_z_test(x):
@@ -241,6 +242,11 @@ def export_results(project_name: str, output_folder: str,
     fmt = data.fmt
     motif_names = data.motif_names
     prom_names = data.promoter_names
+    if export_B:
+        B = data.B
+        B = DF(B, index=prom_names, columns=motif_names)
+        os.makedirs(output_folder, exist_ok=True)
+        B.to_csv(os.path.join(output_folder, 'B.tsv'), sep='\t')
     # del data
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
         fit: FitResult = dill.load(f)
@@ -390,6 +396,8 @@ def export_results(project_name: str, output_folder: str,
        columns=['overall'] + list(group_names)).to_csv(os.path.join(folder, 'z_score.tsv'), sep='\t')
     DF(act.U_raw, index=motif_names_filtered, columns=data.sample_names).to_csv(os.path.join(folder, 'activity_raw.tsv'), sep='\t')
     
+    
+    
     if os.path.isfile(f'{project_name}.fov.{fmt}'):
         with open(f'{project_name}.fov.{fmt}', 'rb') as f:
             fov = dill.load(f)
@@ -414,6 +422,7 @@ def export_results(project_name: str, output_folder: str,
             promoter_names_test = np.array(data.promoter_names)[fit.promoter_inds_to_drop]
             export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
                        sample_names=sample_names)
+            
 
 
 import ast

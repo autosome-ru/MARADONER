@@ -1,5 +1,6 @@
 from .utils import logger_print, openers
 from .dataset_filter import filter_lowexp
+from .drist import DRIST
 import scipy.stats as st
 import datatable as dt
 import pandas as pd
@@ -7,28 +8,57 @@ import numpy as np
 import dill
 import json
 import os
+import re
 
-def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None):
-    if not mode or mode == 'none':
-        df[df < zero_cutoff] = 0
-        df = (df - df.min(axis=None)) / (df.max(axis=None) - df.min(axis=None))
+
+def drist_it(B: pd.DataFrame, Y: pd.DataFrame, test_chromosomes: list[str] = None):
+    if test_chromosomes:
+        pattern = re.compile(r'chr([0-9XYM]+|\d+)')
+        
+        test_chromosomes = set(test_chromosomes)
+        mask = [pattern.search(p).group() in test_chromosomes for i, p in enumerate(Y.index)]
+        mask = ~np.array(mask, dtype=bool)
+    else:
+        mask = np.ones(len(B), dtype=bool)
+    Y = Y.values
+    Y = Y - Y.mean(axis=1, keepdims=True)
+    Bt = B.values[mask, :]
+    Y = Y[mask, :]
+    drist = DRIST(max_iter=1000, verbose=True, share_function=True)
+    B.values[mask, :] = drist.fit_transform(Bt, Y)
+    if not np.all(mask):
+        B.values[~mask, :] = drist.transform(B.values[~mask, :])
+        
+    B = B - B.min()
+    return B
+
+
+def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
+                       test_chromosomes: list[str] = None):
     stds = df.std()
     drop_inds = (stds == 0) | np.isnan(stds)
     if prom_inds is not None:
         df = df.loc[prom_inds, ~drop_inds]
     else:
         df = df.loc[:, ~drop_inds]
+    # if not mode or mode == 'none':
+    #     df[df < zero_cutoff] = 0
+    #     df = (df - df.min(axis=None)) / (df.max(axis=None) - df.min(axis=None))
     if mode == 'ecdf':
         for j in range(len(df.columns)):
             v = df.iloc[:, j]
             df.iloc[:, j] = st.ecdf(v).cdf.evaluate(v)
-    elif mode == 'esf':
+    elif mode in ('esf',):
         for j in range(len(df.columns)):
             v = df.iloc[:, j]
             v = st.ecdf(v).sf.evaluate(v)
             t = np.unique(v)[1]
             v[v < t] = t
             df.iloc[:, j] = -np.log(v)
+        # if mode == 'drist':
+        #     df = drist_it(df, Y, test_chromosomes=test_chromosomes)
+    elif mode == 'drist':
+        df = drist_it(df, Y, test_chromosomes=test_chromosomes)
     elif mode == 'none':
         pass
     elif mode:
@@ -100,7 +130,9 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
                                   max_mode=promoter_filter_max)
     promoter_expression = promoter_expression.loc[inds]
     proms = promoter_expression.index
-    loading_matrices = [transform_loadings(df, mode, prom_inds=inds) for df, mode in zip(loading_matrices, loading_matrix_transformations)]
+    test_chromosomes  = None#['chr2', 'chr15']
+    loading_matrices = [transform_loadings(df, mode, prom_inds=inds, test_chromosomes=test_chromosomes,
+                                           Y=promoter_expression) for df, mode in zip(loading_matrices, loading_matrix_transformations)]
     if motif_postfixes is not None:
         for mx, postfix in zip(loading_matrices, motif_postfixes):
             mx.columns = [f'{c}_{postfix}' for c in mx.columns]

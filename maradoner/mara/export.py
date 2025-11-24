@@ -42,12 +42,18 @@ def export_fov(fovs: tuple[FOVResult], folder: str,
         os.path.join(folder, 'samples.tsv'), sep='\t')
 
 
-def export_results(project_name: str, output_folder: str):
+def export_results(project_name: str, output_folder: str,
+                   export_B: bool = False):
     data = read_init(project_name)
     fmt = data.fmt
     motif_names = data.motif_names
     prom_names = data.promoter_names
     sample_names = data.sample_names
+    if export_B:
+        B = data.B
+        B = DF(B, index=prom_names, columns=motif_names)
+        os.makedirs(output_folder, exist_ok=True)
+        B.to_csv(os.path.join(output_folder, 'B.tsv'), sep='\t')
     # del data
     with openers[fmt](f'{project_name}.old.fit.{fmt}', 'rb') as f:
         fit: FitResult = dill.load(f)
