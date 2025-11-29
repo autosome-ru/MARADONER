@@ -1,6 +1,7 @@
 from .utils import logger_print, openers
 from .dataset_filter import filter_lowexp
 from .drist import DRIST
+import multiprocessing
 import scipy.stats as st
 import datatable as dt
 import pandas as pd
@@ -11,7 +12,8 @@ import os
 import re
 
 
-def drist_it(B: pd.DataFrame, Y: pd.DataFrame, test_chromosomes: list[str] = None):
+def drist_it(B: pd.DataFrame, Y: pd.DataFrame, test_chromosomes: list[str] = None,
+             share_function: bool = False, optimizer='jacobi'):
     if test_chromosomes:
         pattern = re.compile(r'chr([0-9XYM]+|\d+)')
         
@@ -24,7 +26,8 @@ def drist_it(B: pd.DataFrame, Y: pd.DataFrame, test_chromosomes: list[str] = Non
     Y = Y - Y.mean(axis=1, keepdims=True)
     Bt = B.values[mask, :]
     Y = Y[mask, :]
-    drist = DRIST(max_iter=1000, verbose=True, share_function=True)
+    drist = DRIST(max_iter=1000, verbose=True, share_function=share_function,
+                  optimizer=optimizer)
     B.values[mask, :] = drist.fit_transform(Bt, Y)
     if not np.all(mask):
         B.values[~mask, :] = drist.transform(B.values[~mask, :])
@@ -57,8 +60,9 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
             df.iloc[:, j] = -np.log(v)
         # if mode == 'drist':
         #     df = drist_it(df, Y, test_chromosomes=test_chromosomes)
-    elif mode == 'drist':
-        df = drist_it(df, Y, test_chromosomes=test_chromosomes)
+    elif mode.startswith('drist'):
+        df = drist_it(df, Y, test_chromosomes=test_chromosomes,
+                      share_function=mode.endswith('un'))
     elif mode == 'none':
         pass
     elif mode:
@@ -68,7 +72,7 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
 def create_project(project_name: str, promoter_expression_filename: str, loading_matrix_filenames: list[str],
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
                    promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None, promoter_filter_max=True,
-                   motif_names_filename=None, compression='raw', dump=True, verbose=True):
+                   motif_names_filename=None, n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
     if not os.path.isfile(promoter_expression_filename):
         raise FileNotFoundError(f'Promoter expression file {promoter_expression_filename} not found.')
     if type(loading_matrix_filenames) is str:
@@ -101,8 +105,13 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
                         motif_names.append(item)
     else:
         motif_names = None
+    cpu_count = multiprocessing.cpu_count()
+    if n_jobs < 1 and n_jobs > 0:
+        n_jobs = int(n_jobs * cpu_count)
+    elif n_jobs <= 0:
+        n_jobs = cpu_count
     logger_print('Reading dataset...', verbose)
-    promoter_expression = dt.fread(promoter_expression_filename).to_pandas()
+    promoter_expression = dt.fread(promoter_expression_filename, nthreads=n_jobs).to_pandas()
     promoter_expression = promoter_expression.set_index(promoter_expression.columns[0])
     
     if sample_groups:
@@ -114,7 +123,7 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     
     proms = promoter_expression.index
     sample_names = promoter_expression.columns
-    loading_matrices = [dt.fread(f).to_pandas() for f in loading_matrix_filenames]
+    loading_matrices = [dt.fread(f, nthreads=n_jobs).to_pandas() for f in loading_matrix_filenames]
     loading_matrices = [df.set_index(df.columns[0]).loc[proms] for df in loading_matrices]
     if loading_matrix_transformations is None or type(loading_matrix_transformations) is str:
         loading_matrix_transformations = [loading_matrix_transformations] * len(loading_matrices)
@@ -130,14 +139,14 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
                                   max_mode=promoter_filter_max)
     promoter_expression = promoter_expression.loc[inds]
     proms = promoter_expression.index
-    test_chromosomes  = None#['chr2', 'chr15']
+    test_chromosomes  = list() # ['chr2', 'chr15']
     loading_matrices = [transform_loadings(df, mode, prom_inds=inds, test_chromosomes=test_chromosomes,
                                            Y=promoter_expression) for df, mode in zip(loading_matrices, loading_matrix_transformations)]
     if motif_postfixes is not None:
         for mx, postfix in zip(loading_matrices, motif_postfixes):
             mx.columns = [f'{c}_{postfix}' for c in mx.columns]
     if motif_expression_filenames:
-        motif_expression = [dt.fread(f).to_pandas() for f in motif_expression_filenames]
+        motif_expression = [dt.fread(f, nthreads=n_jobs).to_pandas() for f in motif_expression_filenames]
         motif_expression = [df.set_index(df.columns[0]) for df in motif_expression]
         if motif_postfixes is not None:
             for mx, postfix in zip(motif_expression, motif_postfixes):

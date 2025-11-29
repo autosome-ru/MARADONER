@@ -40,6 +40,7 @@ class LoadingTransform(str, Enum):
     ecdf = 'ecdf'
     esf = 'esf'
     drist = 'drist'
+    dristun = 'dristun'
 
 
 class OrderCommands(TyperGroup):
@@ -113,8 +114,10 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
             loading_transform: List[LoadingTransform] = Option([LoadingTransform.esf], '--loading-transform', '-t',
                                                                help='A type of transformation to apply to loading '
                                                                 'matrices. [orange]ecdf[/orange] substitutes values in the table with empricical CDF,'
-                                                                ' [orange]esf[/orange] with negative logarithm of the empirical survival function.'
-                                                                '[orange]scale[/orange] just rescales all entries to [0, 1] range.'),
+                                                                ' [orange]esf[/orange] with negative logarithm of the empirical survival function. '
+                                                                '[orange]scale[/orange] just rescales all entries to [0, 1] range. '
+                                                                '[orange]drist[/orange] will attempt to find an optimal monotonous transform of each column. '
+                                                                '[orange]dristun[/orange] is [orange]drist[/orange] but the transform function is same for all columns/motifs.'),
             motif_expression: List[Path] = Option(None, help='A list of paths (of length equal to the number of loading matrices) of motif expression'
                                                   ' tables. All expression values are assumed to be in log2-scale.'),
             sample_groups: Path = Option(None, help='Either a JSON dictionary or a text file with a mapping between groups and sample names they'
@@ -127,6 +130,8 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
                                                 help='String postfixes will be appeneded to the motifs from each of the supplied loading matrices'),
             motif_filename: Path = Option(None, '--motif-filename', help='If provided, then only motifs with names present in this fill will be kept'),
+            n_jobs: float = Option(0.5, help='Number of threads to use when reading datatables. If -1, maximal number of threads are used. If it is fractional in range (0, 1), '
+                                   'the fraction maximal number is used.'),
             compression: Compression = Option(Compression.raw.value, help='Compression method used to store results.')):
     if type(compression) is Compression:
         compression = str(compression.value)
@@ -148,6 +153,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                        compression=compression, 
                        motif_postfixes=loading_postfix,
                        motif_names_filename=motif_filename,
+                       n_jobs=n_jobs,
                        verbose=False)
     p.stop()
     dt = time() - t0

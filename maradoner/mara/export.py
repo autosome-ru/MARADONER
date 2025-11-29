@@ -43,7 +43,7 @@ def export_fov(fovs: tuple[FOVResult], folder: str,
 
 
 def export_results(project_name: str, output_folder: str,
-                   export_B: bool = False):
+                   export_B: bool = True):
     data = read_init(project_name)
     fmt = data.fmt
     motif_names = data.motif_names
