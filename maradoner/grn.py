@@ -50,7 +50,7 @@ def estimate_promoter_variance(project_name: str, prior_top=0.90):
     B = data.B
     Y = data.Y
     group_inds = data.group_inds
-    if fit.error_variance.promotor is None or fit.error_variance.var() == 0:
+    if fit.error_variance.promotor is None or fit.error_variance.promotor.var() == 0:
         prior_var = estimate_promoter_prior_variance(data, activities, fit,
                                                      top=prior_top)
     else:
