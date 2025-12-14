@@ -294,6 +294,8 @@ def _export(name: str = Argument(..., help='Project name.'),
             anova_mode: ANOVAType = Option(ANOVAType.positive, help='If negative, look for non-variative motifs'),
             weighted_zscore: bool = Option(False, help='Reciprocal variance weighted Z-scores'),
             alpha: float = Option(0.05, help='FDR alpha.'),
+            log_counts: bool = Option(False, help='Export expression value predictions.'),
+            log_counts_grouped: bool = Option(True, help='Whether to export expressions wrt to groups or samples.'),
             loadings_product: bool = Option(False, help='Export loading matrix-acitvity 3D tensor. This will produce num_of_groups tabular files.'),
             lp_hdf: bool = Option(True, help='Each loadings-product table will be stored in hdf format (occupies much less space than plain tsv) using float16 precision.'),
             lp_intercepts: bool = Option(True, help='Include motif means in the 3D tensor.'),
@@ -303,7 +305,7 @@ def _export(name: str = Argument(..., help='Project name.'),
     p.add_task(description="Exporting results...", total=None)
     p.start()
     export_results(name, output_folder, std_mode=std_mode, anova_mode=anova_mode, alpha=alpha,
-                   weighted_zscore=weighted_zscore)
+                   weighted_zscore=weighted_zscore, export_counts=log_counts, counts_grouped=log_counts_grouped)
     p.stop()
     
     if loadings_product:

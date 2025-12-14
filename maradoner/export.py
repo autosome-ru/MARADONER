@@ -3,7 +3,7 @@
 from pandas import DataFrame as DF
 # add dot
 from .utils import read_init, openers, ProjectData
-from .fit import FOVResult, ActivitiesPrediction, FitResult
+from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data
 from .grn import grn
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from scipy.linalg import eigh, lapack, cholesky, solve
@@ -221,12 +221,57 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     return stats, pvalues, fdr, bad_inds
     
 
+def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPrediction, groups: bool = True):
+    sample_names = data.sample_names
+    group_names = data.group_names
+    promoter_names = data.promoter_names
+    data = transform_data(data, helmert=False)
+    B = data.B
+    mu_m = B @ fit.motif_mean.mean.reshape(-1, 1)
+    B = np.delete(B, activities.filtered_motifs, axis=1)
+    mu_s = fit.sample_mean.mean.reshape(1, -1)
+    mu_p = fit.promoter_mean.mean.reshape(-1, 1)
+    if len(mu_p) != len(B):
+        Y = data.Y  - mu_s - mu_m - B @ activities.U_raw
+        D = (1 / fit.error_variance.variance)[data.group_inds_inv].reshape(-1, 1)
+        mu_p = (Y @ D / (D.sum())).reshape(-1, 1)
+    if not groups:
+        cols = sample_names
+        U = activities.U_raw
+    else:
+        lt = list()
+        mu_s = mu_s.flatten()
+        for inds in data.group_inds:
+            lt.append(np.mean(mu_s[inds]))
+        mu_s = np.array(lt).reshape(1, -1)
+        cols = group_names
+        U = activities.U
+    log_counts = mu_s + mu_m + B @ U + mu_p
+    return DF(log_counts, index=promoter_names, columns=cols)
+    
+        
+        
+    
+
+def export_log_counts(output_folder: str, data: ProjectData, fit: FitResult,
+                      activities: ActivitiesPrediction, group: bool = True):
+    os.makedirs(output_folder, exist_ok=True)
+    data_train, data_test = split_data(data, fit.promoter_inds_to_drop)
+    log_counts = calc_log_counts(data_train, fit, activities, groups=group)
+    log_counts.to_csv(os.path.join(output_folder, 'train.tsv'), sep='\t')
+    if data_test:
+        log_counts = calc_log_counts(data_test, fit, activities, groups=group)
+        log_counts.to_csv(os.path.join(output_folder, 'test.tsv'), sep='\t')
+    
+
 def export_results(project_name: str, output_folder: str,
                    std_mode: Standardization, 
                    anova_mode: ANOVAType=ANOVAType.positive,
                    weighted_zscore=False,
                    alpha=0.05,
                    export_B: bool = False,
+                   export_counts: bool = False,
+                   counts_grouped: bool = True,
                    n_jobs=6):
     
     def calc_z_test(x):
@@ -263,7 +308,11 @@ def export_results(project_name: str, output_folder: str,
     os.makedirs(output_folder, exist_ok=True)
     # grn(data, act, fit, os.path.join(output_folder, 'grn'))
     error_variance = fit.error_variance.variance
-    promoter_variance = fit.error_variance.promotor
+    # For backwards comptatability # TODO: rename promotor to promoter
+    try:
+        promoter_variance = fit.error_variance.promotor
+    except:
+        promoter_variance = None
     error_variance_fim = Information(fit.error_variance.fim)
     error_variance_stat, error_variance_std = error_variance_fim.standardize(error_variance, 
                                                                              mode=Standardization.std)
@@ -288,6 +337,9 @@ def export_results(project_name: str, output_folder: str,
     promoter_mean = fit.promoter_mean.mean.flatten()
     # del fit
     
+    if export_counts:
+        folder = os.path.join(output_folder, 'log_counts')
+        export_log_counts(folder, data, fit, act, counts_grouped)
     
     folder = os.path.join(output_folder, 'params')
     os.makedirs(folder, exist_ok=True)
