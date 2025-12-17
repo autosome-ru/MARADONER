@@ -163,7 +163,8 @@ def export_fov(fovs: tuple[FOVResult], folder: str,
 
 
 def posterior_anova(activities: ActivitiesPrediction, fit: FitResult, 
-                    B: np.ndarray, corr_stat=False, map_cov=False):
+                    B: np.ndarray, corr_stat=False, map_cov=False,
+                    groups=None):
     precs = list()
     istds = list()
     covs = list()
@@ -186,12 +187,14 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
         BTB = B.T @ B
         BTB_s = BTB * motif_variance ** 0.5
         BTB_s = BTB_s @ BTB_s.T
-    for cov, U, sigma, n, nu in zip(activities.cov(), U.T, 
+    for i, (cov, U, sigma, n, nu) in enumerate(zip(activities.cov(), U.T, 
                           activities._cov[-2], 
-                          fit.error_variance.variance, fit.motif_variance.group):
+                          fit.error_variance.variance, fit.motif_variance.group)):
         # cov = cov[~bad_inds, ~bad_inds]
         # cov = cov[..., ~bad_inds]
         # cov = cov[~bad_inds]
+        if groups and i not in groups:
+            continue
         if map_cov:
             D = BTB_s * nu  + np.identity(len(BTB)) * sigma
             cov = cov @ D @ cov.T * n / sigma ** 2 
@@ -213,6 +216,8 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     # stats = (1 / total_cov.diagonal().reshape(-1, 1)) ** 0.5 * stats
     istds = [1 / c.diagonal() ** 0.5 for c in covs]
     istds = np.array(istds).T 
+    if groups:
+        stats = stats[:, np.array(groups)]
     stats = stats * istds
     stats = stats ** 2
     stats = stats.sum(axis=-1)
@@ -249,9 +254,7 @@ def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPre
     log_counts = mu_s + mu_m + B @ U + mu_p
     return DF(log_counts, index=promoter_names, columns=cols)
     
-        
-        
-    
+
 
 def export_log_counts(output_folder: str, data: ProjectData, fit: FitResult,
                       activities: ActivitiesPrediction, group: bool = True):
@@ -475,7 +478,34 @@ def export_results(project_name: str, output_folder: str,
             export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
                        sample_names=sample_names)
             
+def export_posterior_anova(project_name: str, filename: str,
+                           groups: list[str]):
+    
 
+    data = read_init(project_name)
+    fmt = data.fmt
+    motif_names = data.motif_names
+    prom_names = data.promoter_names
+    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
+        fit: FitResult = dill.load(f)
+    if fit.promoter_inds_to_drop:
+        prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
+    group_names = fit.group_names
+    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
+        act: ActivitiesPrediction = dill.load(f)
+    if act.filtered_motifs is not None:
+        motif_names_filtered = np.delete(motif_names, act.filtered_motifs)
+    else:
+        motif_names_filtered = motif_names
+    
+    output_folder = os.path.split(filename)[0]
+    if output_folder:
+        os.makedirs(output_folder, exist_ok=True)
+    groups = [i for i, n in enumerate(group_names) if n in groups]
+    stat, pvalue, fdr, bad_inds = posterior_anova(act, fit, B=data.B, groups=groups)
+    motif_names_filtered = np.array(motif_names_filtered)[~bad_inds]
+    anova = DF([stat, pvalue, fdr], columns=motif_names_filtered, index=['stat', 'p-value', 'FDR']).T
+    anova.to_csv(filename, sep='\t')
 
 import ast
 import sympy

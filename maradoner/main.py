@@ -18,7 +18,7 @@ from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
 from .export import export_results, export_loadings_product, Standardization, ANOVAType
-from .export import export_contrast
+from .export import export_contrast, export_posterior_anova
 from . import __version__ as project_version
 from .select import select_motifs_single
 import json
@@ -317,7 +317,19 @@ def _export(name: str = Argument(..., help='Project name.'),
     
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
-    
+
+@app.command('anova', help='Run posterior ANOVA across groups of interest.')
+def _anova(name: str = Argument(..., help='Project name.'),
+            filename: Path = Argument(..., help='Output folder.'),
+            groups: List[str] = Argument(..., help='Group names')):
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Computing posterior ANOVA...", total=None)
+    p.start()
+    export_posterior_anova(name, filename, groups)
+    p.stop()
+    dt = time() - t0
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 
 __select_motif_doc = 'Selects best motif variants when the project was created from multiple loading matrices, each with an unique postfix.'\
