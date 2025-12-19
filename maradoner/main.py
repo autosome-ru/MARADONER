@@ -168,7 +168,9 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
 def _fit(name: str = Argument(..., help='Project name.'),
           clustering: ClusteringMode = Option(ClusteringMode.none, help='Clustering method.'),
           num_clusters: int = Option(200, help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
-          test_chromosomes: List[str] = Option(None, '--test-chromosomes', '-t', help='Test chromosomes'),
+          test_promoters_filename: Path = Option(None, '--test-promoters-filename', help='Path to a text file containing gene/promoter names,'
+                                                                                          ' separated by a newline character, to be used as a testing set.'),
+          test_chromosomes: List[str] = Option(None, '--test-chromosomes', '-t', help='Test chromosome number, e.g. 3, X, etc.'),
           motif_variance: bool = Option(True,  help='Estimate individual motif variances or assume them all equal.'
                                                   'The latter makes method more similar to (IS)MARA approach and might be beneficial when the data is small.'),
           promoter_variance: bool = Option(False, help='Estiamte individual promoter variances or assume them all equal.'),
@@ -189,6 +191,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
         motif_variance=motif_variance,
         promoter_variance=promoter_variance,
         refinement=refinement,
+        test_promoters_filename=test_promoters_filename,
         gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
     dt = time() - t0

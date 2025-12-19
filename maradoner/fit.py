@@ -1396,9 +1396,9 @@ def cluster_data(B: np.ndarray, mode=ClusteringMode.none, num_clusters=200,
     return B, clustering
 
 def fit(project: str, clustering: ClusteringMode,
-        num_clusters: int, test_chromosomes: list,
+        num_clusters: int, test_chromosomes: list, 
         gpu: bool, gpu_decomposition: bool, x64=True, true_mean=None, motif_variance: bool = True,
-        promoter_variance: bool = False,
+        promoter_variance: bool = False, test_promoters_filename: str = None,
         refinement: GLSRefinement = GLSRefinement.none, verbose=True, dump=True) -> ActivitiesPrediction:
     if x64:
         jax.config.update("jax_enable_x64", True)
@@ -1409,17 +1409,25 @@ def fit(project: str, clustering: ClusteringMode,
         logger_print('Clustering data...', verbose)
     data.B, clustering = cluster_data(data.B, mode=clustering, 
                                       num_clusters=num_clusters)
-    if test_chromosomes:
+    
+    if test_promoters_filename:
+        with open(test_promoters_filename, 'r') as f:
+            test_chromosomes = filter(lambda x: len(x), map(lambda x: x.strip(), f.readlines()))
+            test_chromosomes = set(test_chromosomes)
+            promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) 
+                                     if p in test_chromosomes]
+    elif test_chromosomes:
         import re
         pattern = re.compile(r'chr([0-9XYM]+|\d+)')
-        
+
         test_chromosomes = set(test_chromosomes)
         promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) 
                                  if pattern.search(p).group() in test_chromosomes]
-        data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
-        data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
     else:
         promoter_inds_to_drop = None
+    if promoter_inds_to_drop is not None:
+        data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
+        data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
     logger_print('Transforming data...', verbose)
     data_orig = transform_data(data, helmert=False)
     if gpu_decomposition:
