@@ -268,7 +268,7 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         fit: FitResult = dill.load(f)
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
         activities: ActivitiesPrediction = dill.load(f)
-    
+    data, _ = split_data(data, fit.promoter_inds_to_drop)
     dtype = np.float32
     B = data.B.astype(dtype)
     Y = data.Y.astype(dtype)
@@ -316,8 +316,8 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     if save_stat:
         os.makedirs(folder_stat, exist_ok=True)
     os.makedirs(folder_belief, exist_ok=True)
-    for sigma, nu, name, inds in zip(promvar.T[..., None], nus,  group_names, group_inds):
-        print(name)
+    for sigma, nu, name, inds in (pbar := tqdm(list(zip(promvar.T[..., None], nus,  group_names, group_inds)))):
+        pbar.set_postfix_str(name)
         var = (B_hat * nu + sigma)
         
         Y_ = Y[:, inds][..., None, :] 
@@ -354,6 +354,9 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
             print(k, fdr_threshold)
         except ValueError:
             fdr_threshold = 1.0
+        if '/' in name:
+            print('Slash character detected in the group name. It will be replaced with an underscore when saving results.')
+            name = name.replace('/', '_')
         filename = os.path.join(folder_belief, f'{name}.txt')
         with open(filename, 'w') as f:
             f.write(f'{fdr_threshold}')
