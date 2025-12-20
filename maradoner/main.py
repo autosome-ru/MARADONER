@@ -353,7 +353,14 @@ def _select_motifs(name: str = Argument(..., help='Project name'),
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 
-__grn_doc = 'Tests each promoter against each motif per each group. Some people call it GRN.'
+__grn_doc = '\bTests each promoter against each motif per each group. Some people call it a GRN.\n'\
+            'It compares H_0 against H_1:\n'\
+            ' [cyan]H_0: y = b u + b μ 1_s^T + e,[/cyan]\n'\
+            " [cyan]H_1: y = (b u)' + (b μ)' 1_s^T + e,[/cyan]\n"\
+            "where y is a vector of gene expression observations, apostraphe denotes the effect of the motif of interest being excluded from the model."\
+            "If [purple]--no-means[/purple] is supplied, H_1 instead is\n"\
+            " [cyan]H_1: y = (b u)' + [orange]b μ [/orange]1_s^T + e,[/cyan]\n "\
+            "so we measure only effect that is due to the deviation u."
 @app.command('grn',
              help=__grn_doc)
 def _grn(name: str = Argument(..., help='Project name'),
@@ -362,7 +369,7 @@ def _grn(name: str = Argument(..., help='Project name'),
          hdf: bool = Option(True, help='Use HDF format instead of tar.gz files. Typically eats much less space'),
          stat: bool = Option(True, help='Save statistics alongside probabilities.'),
          prior_h1: float = Option(1/10, help='Prior belief on the expected fraction of motifs active per promoter.'),
-         means: bool = Option(True, help='Include motif-specific means in both H_0 and H_1 models, otherwise only activities deviations are being tested.')):
+         means: bool = Option(True, help='Include motif-specific means in H_1 model, otherwise only activities deviations are being tested.')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Building GRN...", total=None)
@@ -372,21 +379,16 @@ def _grn(name: str = Argument(..., help='Project name'),
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
     
-__estimate_promvar_doc = 'Estimates each promoter variance for each group using empirical Bayesian shrinkage.'\
-                         ' A very recommended step before computing GRN.'
+__estimate_promvar_doc = 'Estimates each promoter variance for each group using Empirical Bayesian shrinkage.'\
+                         ' The nature of the approach is similar to the one introduced in limma-voom. A very recommended step before computing GRN.'
 @app.command('estimate-promoter-variance',
              help=__estimate_promvar_doc)
-def _estimate_promoter_variance(name: str = Argument(..., help='Project name'),
-                                prior_top: float = Option(0.90,
-                                                          help='The fraction from the bottom as ranked by sample'
-                                                          ' variance of promoters to be used for estimating global group-wise variance.'
-                                                          ' Higher values result in higher prior variance and weaken the prior.'
-                                                          )):
+def _estimate_promoter_variance(name: str = Argument(..., help='Project name')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Estimating each promoter's variance...", total=None)
     p.start()
-    estimate_promoter_variance(name, prior_top=prior_top)
+    estimate_promoter_variance(name, )
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')

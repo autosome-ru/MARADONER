@@ -3,13 +3,16 @@ import numpy as np
 import jax.numpy as jnp
 import jax 
 from .utils import read_init, openers, ProjectData
-from .fit import ActivitiesPrediction, FitResult
+from .fit import ActivitiesPrediction, FitResult, split_data
 from scipy.optimize import minimize
 import os
 import dill
 from pandas import DataFrame as DF
 from functools import partial
 from tqdm import tqdm
+from scipy.special import digamma
+from scipy.interpolate import interp1d
+from scipy.stats import f as f_dist
 
 
 def estimate_promoter_prior_variance(data: ProjectData, activities: ActivitiesPrediction,
@@ -31,7 +34,139 @@ def estimate_promoter_prior_variance(data: ProjectData, activities: ActivitiesPr
     inds = inds[:int(len(inds) * top)]
     return np.var(var[inds])
 
-def estimate_promoter_variance(project_name: str, prior_top=0.90):
+def scalable_gaussian_smoother(x, y, span=0.1, n_grid=200):
+    x_min, x_max = x.min(), x.max()
+    x_grid = np.linspace(x_min, x_max, n_grid)
+    y_grid = np.zeros(n_grid)
+    sigma = (x_max - x_min) * span
+    
+    for i in range(n_grid):
+        dists = x - x_grid[i]
+        weights = np.exp(-0.5 * (dists / sigma)**2)
+        sum_weights = np.sum(weights)
+        if sum_weights > 0:
+            y_grid[i] = np.sum(weights * y) / sum_weights
+    return x_grid, y_grid
+
+def estimate_variance_loess(Y: np.ndarray, M: np.ndarray, span: float = 0.2) -> np.ndarray:
+    """
+    Estimates the diagonal elements of the variance matrix D using Empirical Bayes.
+    
+    Parameters:
+    -----------
+    Y : np.ndarray
+        Observed data matrix of shape (p_features, s_samples).
+    M : np.ndarray
+        Expected mean matrix of shape (p_features, s_samples).
+    span : float
+        The fraction of data range used for the Gaussian kernel smoother.
+        
+    Returns:
+    --------
+    np.ndarray
+        A vector of length p containing the posterior variance estimates.
+    """
+    p, s = Y.shape
+    d_obs = float(s) 
+    
+    residuals = Y - M
+
+    obs_vars = np.mean(residuals**2, axis=1) + 1e-9
+    
+    # Use mean of M (or Y) as the abundance metric for the trend
+    abundance = np.mean(M, axis=1)
+    
+    # We work on log(variance) vs mean. 
+    # E[log(s^2)] != log(E[s^2]). It is biased downwards by digamma(d/2) - log(d/2).
+    log_obs_vars = np.log(obs_vars)
+    
+    bias = digamma(d_obs / 2.0) - np.log(d_obs / 2.0)
+    
+    corrected_log_vars = log_obs_vars - bias
+    
+
+
+    x_trend, y_trend = scalable_gaussian_smoother(abundance, corrected_log_vars, span=span, n_grid=250)
+ 
+    trend_interpolator = interp1d(x_trend, y_trend, bounds_error=False, fill_value="extrapolate")
+    # The trend now represents the unbiased log(sigma^2), so we can exponentiate directly
+    prior_vars_s0 = np.exp(trend_interpolator(abundance))
+    
+    # Optimize hyperparameter d0 
+    # The statistic F = obs_vars / prior_vars follows F(d_obs, d0)
+    F_stats = obs_vars / prior_vars_s0
+    
+    def objective_with_gradient(x):
+        d0 = x[0]
+        if d0 <= 1e-5: d0 = 1e-5
+        
+     
+        nll = -np.sum(f_dist.logpdf(F_stats, dfn=d_obs, dfd=d0))
+        
+        # grad
+        psi_term = digamma((d_obs + d0) / 2.0) - digamma(d0 / 2.0)
+        log_term = np.log(d0 / (d0 + d_obs * F_stats))
+        rational_term = (d_obs * (F_stats - 1)) / (d0 + d_obs * F_stats)
+        
+        # Gradient per gene: 0.5 * (psi + log + rational)
+        grad = -0.5 * np.sum(psi_term + log_term + rational_term)
+        
+        return nll, np.array([grad])
+
+    res = minimize(objective_with_gradient, 
+                   [10.0], 
+                   method='L-BFGS-B', 
+                   jac=True, 
+                   bounds=[(0.01, 1e5)])
+    
+    d0_hat = res.x[0]
+    
+    if d0_hat > 1e4: 
+        return prior_vars_s0
+
+    # posterior mean
+    numerator = (d_obs * obs_vars) + (d0_hat * prior_vars_s0)
+    denominator = d_obs + d0_hat
+    
+    return numerator / denominator
+
+def estimate_promoter_variance(project_name: str, span=0.1):
+ 
+    def fun(sigma, y: jnp.ndarray, b: jnp.ndarray, s: int,
+          prior_mean: float, prior_var: float):
+        if jnp.iterable(sigma):
+            sigma = sigma[0]
+        theta = prior_var / prior_mean
+        alpha = prior_var / theta ** 2
+        penalty = sigma / theta - (alpha - 1) * jnp.log(sigma)
+        return y / (b + sigma) + s * jnp.log(b + sigma) + penalty
+    data = read_init(project_name)
+    
+    fmt = data.fmt
+    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
+        fit: FitResult = dill.load(f)
+    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
+        activities: ActivitiesPrediction = dill.load(f)
+    data, _ = split_data(data, fit.promoter_inds_to_drop)
+    B = data.B
+    Y = data.Y
+    group_inds = data.group_inds
+
+    Y = Y - fit.promoter_mean.mean.reshape(-1, 1) - fit.sample_mean.mean.reshape(1, -1)
+    M = fit.promoter_mean.mean.reshape(-1, 1) + fit.sample_mean.mean.reshape(1, -1)
+    M = B @ fit.motif_mean.mean.reshape(-1, 1) + B @ activities.U_raw
+    var = list()
+    for inds, nu in tqdm(list(zip(group_inds, fit.motif_variance.group))):
+        Y_ = Y[:, inds] / nu ** 0.5
+        M_ = M[:, inds] / nu ** 0.5
+        var_g = estimate_variance_loess(Y_, M_, span=span)
+        var.append(var_g)
+    var = np.array(var, dtype=float).T
+    with openers[fmt](f'{project_name}.promvar.{fmt}', 'wb') as f:
+        dill.dump(var, f)
+    return var
+
+def estimate_promoter_variance_individual(project_name: str, prior_top=0.90):
  
     def fun(sigma, y: jnp.ndarray, b: jnp.ndarray, s: int,
           prior_mean: float, prior_var: float):
