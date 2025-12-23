@@ -361,9 +361,9 @@ def export_results(project_name: str, output_folder: str,
                                                                             motif_variance_std))
     with open(os.path.join(folder, 'motif_variances.tsv'), 'w') as f:
         f.write(s)
-    s = 'motif\ttau\n' + '\n'.join(f'{a}\t{b}' for a, b, c in zip(motif_names,
-                                                                       np.delete(motif_variance, ~act.filtered_motifs)
-                                                                       ))
+    s = 'motif\ttau\n' + '\n'.join(f'{a}\t{b}' for a, b, c in zip(np.delete(motif_names, ~act.filtered_motifs),
+                                                                  np.delete(motif_variance, ~act.filtered_motifs)
+                                                                  ))
     with open(os.path.join(folder, 'filtered_motif_variances.tsv'), 'w') as f:
         f.write(s)
     if promoter_variance is None or promoter_variance.var() == 0:
