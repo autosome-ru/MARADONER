@@ -356,12 +356,16 @@ def export_results(project_name: str, output_folder: str,
                 index=group_names,
                 columns=['sigma', 'sigma_std', 'nu', 'nu_std']).to_csv(os.path.join(folder, 'group_variances.tsv'),
                                                              sep='\t')
-    s = 'motif\ttau\tstd\n' + '\n'.join(f'{a}\t{b}\t{c}' for a, b, c in zip(motif_names,
-                                                                            motif_variance,
+    s = 'motif\ttau\tstd\n' + '\n'.join(f'{a}\t{b}\t{c}' for a, b, c in zip(motif_names_filtered,
+                                                                            np.delete(motif_variance, act.filtered_motifs),
                                                                             motif_variance_std))
     with open(os.path.join(folder, 'motif_variances.tsv'), 'w') as f:
         f.write(s)
-    
+    s = 'motif\ttau\n' + '\n'.join(f'{a}\t{b}' for a, b, c in zip(motif_names,
+                                                                       np.delete(motif_variance, ~act.filtered_motifs)
+                                                                       ))
+    with open(os.path.join(folder, 'filtered_motif_variances.tsv'), 'w') as f:
+        f.write(s)
     if promoter_variance is None or promoter_variance.var() == 0:
         DF(promoter_mean, index=prom_names, columns=['mean']).to_csv(os.path.join(folder, 'promoter_means.tsv'),
                                                                      sep='\t')
