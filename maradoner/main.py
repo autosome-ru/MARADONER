@@ -240,7 +240,7 @@ def _gof(name: str = Argument(..., help='Project name.'),
 @app.command('predict', help='Estimate deviations of motif activities from their means.')
 def _predict(name: str = Argument(..., help='Project name.'),
          filter_motifs: bool = Option(True, help='Do not predict deviations from motifs whose variance is low.'),
-         filter_order: int = Option(7, help='Motif variance is considered low if it is [orange]filter-order[/orange] orders of magnitude smaller that a median motif variance.'),
+         filter_order: int = Option(5, help='Motif variance is considered low if it is [orange]filter-order[/orange] orders of magnitude smaller that a median motif variance.'),
          tau_search: bool = Option(False, help='Search for tau multiplier using CV'),
          cv_repeats: int = Option(3, help='CV repeats in [orange]RepeatedKFold[/orange]'),
          cv_splits: int = Option(5, help='CV splits in [orange]RepeatedKFold[/orange]'),

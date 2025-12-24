@@ -154,7 +154,11 @@ def estimate_promoter_variance(project_name: str, span=0.1):
 
     Y = Y - fit.promoter_mean.mean.reshape(-1, 1) - fit.sample_mean.mean.reshape(1, -1)
     M = fit.promoter_mean.mean.reshape(-1, 1) + fit.sample_mean.mean.reshape(1, -1)
-    M = B @ fit.motif_mean.mean.reshape(-1, 1) + B @ activities.U_raw
+    M = B @ fit.motif_mean.mean.reshape(-1, 1) 
+    if activities.filtered_motifs is not None:
+        M = M + np.delete(B, activities.filtered_motifs, axis=1) @ activities.U_raw
+    else:
+        M = M + B @ activities.U_raw
     var = list()
     for inds, nu in tqdm(list(zip(group_inds, fit.motif_variance.group))):
         Y_ = Y[:, inds] / nu ** 0.5
