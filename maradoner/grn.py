@@ -92,7 +92,7 @@ def estimate_variance_loess(Y: np.ndarray, M: np.ndarray, span: float = 0.2) -> 
     bias = digamma(d_obs / 2.0) - np.log(d_obs / 2.0)
     
     corrected_log_vars = log_obs_vars - bias
-    1878
+    
     
 
     x_trend, y_trend = scalable_gaussian_smoother(abundance, corrected_log_vars, span=span, n_grid=100)
@@ -346,9 +346,10 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
             Y_ = Y_ + BM
             theta = theta + BM
             
-        
-        loglr = 2 * B * (Y_ * theta).sum(axis=-1) - B_pow * (theta ** 2).sum(axis=-1)
-        loglr = 2 * (Y_ * theta).sum(axis=-1) - (theta ** 2).sum(axis=-1)
+        if not fixed:
+            loglr = 2 * B * (Y_ * theta).sum(axis=-1) - B_pow * (theta ** 2).sum(axis=-1)
+        else:
+            loglr = 2 * (Y_ * theta).sum(axis=-1) - (theta ** 2).sum(axis=-1)
         del Y_
         del theta
         loglr = loglr / (2 * var)
