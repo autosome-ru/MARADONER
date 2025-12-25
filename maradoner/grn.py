@@ -48,6 +48,7 @@ def scalable_gaussian_smoother(x, y, span=0.1, n_grid=200):
             y_grid[i] = np.sum(weights * y) / sum_weights
     return x_grid, y_grid
 
+
 def estimate_variance_loess(Y: np.ndarray, M: np.ndarray, span: float = 0.2) -> np.ndarray:
     """
     Estimates the diagonal elements of the variance matrix D using Empirical Bayes.
@@ -67,11 +68,19 @@ def estimate_variance_loess(Y: np.ndarray, M: np.ndarray, span: float = 0.2) -> 
         A vector of length p containing the posterior variance estimates.
     """
     p, s = Y.shape
-    d_obs = float(s) 
+    d_obs = float(s) + 1
     
     residuals = Y - M
-
-    obs_vars = np.mean(residuals**2, axis=1) + 1e-9
+    obs_vars = np.mean(residuals**2, axis=1) + 1e-12
+    # print(Y.shape)
+    # obs_vars = np.var(residuals, axis=1, ddof=0)
+    # mad = np.median(np.abs(residuals), axis=1)
+    # robust_vars = mad ** 2 / 2
+    # obs_vars = robust_vars
+    # inds = 
+    # print(obs_vars.mean(), obs_vars.max(), obs_vars.std())
+    # inds = np.argsort(obs_vars)
+    # print(obs_vars[inds[:int(len(inds)*0.9)]].mean())
     
     # Use mean of M (or Y) as the abundance metric for the trend
     abundance = np.mean(M, axis=1)
@@ -83,10 +92,10 @@ def estimate_variance_loess(Y: np.ndarray, M: np.ndarray, span: float = 0.2) -> 
     bias = digamma(d_obs / 2.0) - np.log(d_obs / 2.0)
     
     corrected_log_vars = log_obs_vars - bias
+    1878
     
 
-
-    x_trend, y_trend = scalable_gaussian_smoother(abundance, corrected_log_vars, span=span, n_grid=250)
+    x_trend, y_trend = scalable_gaussian_smoother(abundance, corrected_log_vars, span=span, n_grid=100)
  
     trend_interpolator = interp1d(x_trend, y_trend, bounds_error=False, fill_value="extrapolate")
     # The trend now represents the unbiased log(sigma^2), so we can exponentiate directly
@@ -141,7 +150,6 @@ def estimate_promoter_variance(project_name: str, span=0.1):
         penalty = sigma / theta - (alpha - 1) * jnp.log(sigma)
         return y / (b + sigma) + s * jnp.log(b + sigma) + penalty
     data = read_init(project_name)
-    
     fmt = data.fmt
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
         fit: FitResult = dill.load(f)
@@ -151,25 +159,31 @@ def estimate_promoter_variance(project_name: str, span=0.1):
     B = data.B
     Y = data.Y
     group_inds = data.group_inds
-
-    M = fit.promoter_mean.mean.reshape(-1, 1) + fit.sample_mean.mean.reshape(1, -1)
+    
+    Y = Y - fit.sample_mean.mean.reshape(1, -1)
+    M = fit.promoter_mean.mean.reshape(-1, 1)
     M = M + B @ fit.motif_mean.mean.reshape(-1, 1) 
     if activities.filtered_motifs is not None:
         M = M + np.delete(B, activities.filtered_motifs, axis=1) @ activities.U_raw
     else:
         M = M + B @ activities.U_raw
+    if fit.error_variance.promotor is None:
+        var_mean = 1
+    else:
+        var_mean =fit.error_variance.promotor.mean()
     var = list()
-    for inds, nu in tqdm(list(zip(group_inds, fit.motif_variance.group))):
+    for inds, nu in (pbar := tqdm(list(zip(group_inds, fit.motif_variance.group)))):
         Y_ = Y[:, inds] / nu ** 0.5
         M_ = M[:, inds] / nu ** 0.5
         var_g = estimate_variance_loess(Y_, M_, span=span)
+        var_g = var_g / var_g.mean() * var_mean
         var.append(var_g)
     var = np.array(var, dtype=float).T
     with openers[fmt](f'{project_name}.promvar.{fmt}', 'wb') as f:
         dill.dump(var, f)
     return var
 
-def estimate_promoter_variance_individual(project_name: str, prior_top=0.90):
+def estimate_promoter_variance_(project_name: str, prior_top=0.90):
  
     def fun(sigma, y: jnp.ndarray, b: jnp.ndarray, s: int,
           prior_mean: float, prior_var: float):
@@ -213,9 +227,11 @@ def estimate_promoter_variance_individual(project_name: str, prior_top=0.90):
         for y, b in zip(Yt, B_hat * nu):
             res = minimize(partial(f_, b=b, y=y), x0=jnp.array([prior_mean]),
                            method='SLSQP', bounds=[(0, None)],
-                           jac=partial(g_, b=b, y=y))
+                           jac=partial(g_, b=b, y=y)
+                           )
             var_g.append(res.x[0] ** 2)
         var.append(var_g)
+        break
     var = np.array(var, dtype=float).T
     with openers[fmt](f'{project_name}.promvar.{fmt}', 'wb') as f:
         dill.dump(var, f)
@@ -264,7 +280,8 @@ def bayesian_fdr_control(p0, alpha=0.05):
     return discoveries, threshold
 
 def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
-        fdr_alpha=0.05, prior_h1=1/100, include_mean: bool = True):
+        fdr_alpha=0.05, prior_h1=1/100, include_mean: bool = True,
+        fixed: bool = True):
     data = read_init(project_name)
     fmt = data.fmt
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
@@ -319,7 +336,7 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     if save_stat:
         os.makedirs(folder_stat, exist_ok=True)
     os.makedirs(folder_belief, exist_ok=True)
-    for sigma, nu, name, inds in (pbar := tqdm(list(zip(promvar.T[..., None], nus,  group_names, group_inds)))):
+    for sigma, nu, name, inds in (pbar := tqdm(list(zip(promvar.T[..., None], nus,  group_names, group_inds)), dynamic_ncols=True)):
         pbar.set_postfix_str(name)
         var = (B_hat * nu + sigma)
         
@@ -331,19 +348,20 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
             
         
         loglr = 2 * B * (Y_ * theta).sum(axis=-1) - B_pow * (theta ** 2).sum(axis=-1)
+        loglr = 2 * (Y_ * theta).sum(axis=-1) - (theta ** 2).sum(axis=-1)
         del Y_
         del theta
         loglr = loglr / (2 * var)
         del var
         lr = np.exp(loglr)
         belief = lr * prior_h1 / ((1 - prior_h1) + lr * prior_h1)
+
+        
         inds = sigma.flatten() > 1e-3
         lr = lr[inds]
         belief = belief[inds]
         belief = belief.astype(np.half)
-        # fdr_threshold = bayesian_fdr_control(belief.flatten(), fdr_alpha)
-        # print(fdr_threshold[0].mean(), fdr_threshold[1])
-        # fdr_threshold = fdr_threshold[1]
+
         sorted_beliefs = belief.flatten() 
         sorted_beliefs = sorted_beliefs[sorted_beliefs > 0.5]
         sorted_beliefs = np.sort(sorted_beliefs)[::-1]
@@ -354,7 +372,7 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         try:
             k = np.min(np.where(cumulative_fdr <= fdr_alpha)[0])
             fdr_threshold = sorted_beliefs[k]
-            print(k, fdr_threshold)
+            # print(k, fdr_threshold)
         except ValueError:
             fdr_threshold = 1.0
         if '/' in name:
@@ -371,9 +389,11 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
             if save_stat:
                 lr = lr.astype(np.half)
                 filename = os.path.join(folder_stat, f'{name}.hdf')
-                DF(data=lr, index=proms, columns=motif_names).to_hdf(filename, key='zscore', mode='w', complevel=4)
+                DF(data=lr, index=proms, columns=motif_names).to_hdf(filename, key='lrt', mode='w', complevel=4, 
+                                                                     complib='blosc')
             filename = os.path.join(folder_belief, f'{name}.hdf')
-            DF(data=belief, index=proms, columns=motif_names).to_hdf(filename, key='lrt', mode='w', complevel=4)
+            DF(data=belief, index=proms, columns=motif_names).to_hdf(filename, key='belief', mode='w', complevel=4, 
+                                                                    complib='blosc')
         else:
             if save_stat:
                 lr = lr.astype(np.half)
