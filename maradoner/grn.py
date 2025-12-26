@@ -303,17 +303,9 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     promoter_mean = fit.promoter_mean.mean.astype(dtype)
     sample_mean = fit.sample_mean.mean.astype(dtype)
     
-    try:
-        with openers[fmt](f'{project_name}.promvar.{fmt}', 'rb') as f:
-            promvar: np.ndarray = dill.load(f)
-    except FileNotFoundError:
-        print('WARNING')
-        print('It seems that promoter variances were not estimated prior to running GRN.')
-        print('All promoter-wise variances will be assumed to be equal to the average error variance.')
-        print('Consider estimating promoter-wise variances before running GRN in the future.')
-        promvar = np.zeros((len(B), len(group_names)))
-        for i, sigma in enumerate(fit.error_variance.variance):
-            promvar[:, i] = sigma
+    promvar = np.zeros((len(B), len(group_names)))
+    for i, sigma in enumerate(fit.error_variance.variance):
+        promvar[:, i] = sigma
     
     Y = Y - promoter_mean.reshape(-1, 1) - sample_mean.reshape(1, -1)
     Y = Y - B @ motif_mean.reshape(-1, 1)

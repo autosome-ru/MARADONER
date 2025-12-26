@@ -13,7 +13,7 @@ from rich.table import Table
 from .create import create_project
 from pathlib import Path
 from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode, GLSRefinement
-from .grn import estimate_promoter_variance, grn
+from .grn import grn
 from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
@@ -382,18 +382,7 @@ def _grn(name: str = Argument(..., help='Project name'),
     
 __estimate_promvar_doc = 'Estimates each promoter variance for each group using Empirical Bayesian shrinkage.'\
                          ' The nature of the approach is similar to the one introduced in limma-voom. A very recommended step before computing GRN.'
-@app.command('estimate-promoter-variance',
-             help=__estimate_promvar_doc)
-def _estimate_promoter_variance(name: str = Argument(..., help='Project name')):
-    t0 = time()
-    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    p.add_task(description="Estimating each promoter's variance...", total=None)
-    p.start()
-    estimate_promoter_variance(name, )
-    p.stop()
-    dt = time() - t0
-    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
-    
+
 @app.command('contrast',
              help='Perform differential test given a constrasts vector.'
                  ' The contrast vector can be any algebraic string with variables being group names.'
