@@ -368,7 +368,7 @@ def _grn(name: str = Argument(..., help='Project name'),
                                            ' comparable to the expression file size.'),
          hdf: bool = Option(True, help='Use HDF format instead of tar.gz files. Typically eats much less space'),
          stat: bool = Option(False, help='Save statistics alongside probabilities.'),
-         prior_h1: float = Option(1/10, help='Prior belief on the expected fraction of motifs active per promoter.'),
+         prior_h1: float = Option(1/2, help='Prior belief on the expected fraction of motifs active per promoter.'),
          means: bool = Option(True, help='Test motif-specific means along with activities deviations, otherwise only the latter are tested.')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
