@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__version__ = '0.25.2'
+__version__ = '0.25.3'
 import importlib
 
 

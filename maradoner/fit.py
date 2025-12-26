@@ -1021,6 +1021,8 @@ def predict_activities(data: TransformedData, fit: FitResult,
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
     B = data.B
     Y = data.Y
+    Y = a_vec.reshape(-1, 1) * Y
+    B = a_vec.reshape(-1, 1) * B
     # Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
     # B = B - B.mean(axis=0, keepdims=True)
     Y = Y - mu_p - B @ mu_m - np.outer(a_vec, mu_s.flatten())
@@ -1666,7 +1668,7 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
         d1 = mu_p.reshape(-1, 1) + jnp.outer(a_vec, mu_s.flatten())
         d2 = B @ U_m
         d2 = d2.repeat(len(mu_s), -1)
-        # Y1 = Y0 - mu_p.reshape(-1, 1) - mu_s.reshape(1, -1)
+
         if use_groups:
             U = activities.U
             groups = data.group_inds
