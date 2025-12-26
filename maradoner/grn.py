@@ -280,8 +280,7 @@ def bayesian_fdr_control(p0, alpha=0.05):
     return discoveries, threshold
 
 def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
-        fdr_alpha=0.05, prior_h1=1/100, include_mean: bool = True,
-        fixed: bool = True):
+        fdr_alpha=0.05, prior_h1=1/100, include_mean: bool = True):
     data = read_init(project_name)
     fmt = data.fmt
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
@@ -318,10 +317,9 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     
     BM = B * motif_mean
     BM = BM[..., None]
-    # BU = BU[..., None]
     B_hat = B ** 2 * motif_variance
     B_hat = B_hat.sum(axis=1, keepdims=True) - B_hat
-    B_pow = B ** 2
+
     
     folder_stat = os.path.join(output, 'lr')
     folder_belief = os.path.join(output, 'belief')
@@ -338,10 +336,8 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
             Y_ = Y_ + BM
             theta = theta + BM
             
-        if not fixed:
-            loglr = 2 * B * (Y_ * theta).sum(axis=-1) - B_pow * (theta ** 2).sum(axis=-1)
-        else:
-            loglr = 2 * (Y_ * theta).sum(axis=-1) - (theta ** 2).sum(axis=-1)
+
+        loglr = 2 * (Y_ * theta).sum(axis=-1) - (theta ** 2).sum(axis=-1)
         del Y_
         del theta
         loglr = loglr / (2 * var)

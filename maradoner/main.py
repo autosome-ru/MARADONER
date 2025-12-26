@@ -369,13 +369,12 @@ def _grn(name: str = Argument(..., help='Project name'),
          hdf: bool = Option(True, help='Use HDF format instead of tar.gz files. Typically eats much less space'),
          stat: bool = Option(False, help='Save statistics alongside probabilities.'),
          prior_h1: float = Option(1/10, help='Prior belief on the expected fraction of motifs active per promoter.'),
-         means: bool = Option(True, help='Test motif-specific means along with activities deviations, otherwise only the latter are tested.'),
-         fix: bool = Option(False, help='ashjfrkhaksjfashj')):
+         means: bool = Option(True, help='Test motif-specific means along with activities deviations, otherwise only the latter are tested.')):
     t0 = time()
     p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
     p.add_task(description="Building GRN...", total=None)
     p.start()
-    grn(name, output=folder, use_hdf=hdf, save_stat=stat, prior_h1=prior_h1, include_mean=means, fixed=fix)
+    grn(name, output=folder, use_hdf=hdf, save_stat=stat, prior_h1=prior_h1, include_mean=means)
     p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
