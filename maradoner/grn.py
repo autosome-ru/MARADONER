@@ -280,7 +280,7 @@ def bayesian_fdr_control(p0, alpha=0.05):
     return discoveries, threshold
 
 def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
-        fdr_alpha=0.05, prior_h1=1/100, include_mean: bool = True):
+        fdr_alpha=0.05, prior_h1=1/2, include_mean: bool = True):
     data = read_init(project_name)
     fmt = data.fmt
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
@@ -288,7 +288,7 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
         activities: ActivitiesPrediction = dill.load(f)
     data, _ = split_data(data, fit.promoter_inds_to_drop)
-    dtype = np.float32
+    dtype = np.float64
     B = data.B.astype(dtype)
     Y = data.Y.astype(dtype)
     group_inds = data.group_inds
@@ -304,7 +304,7 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     
     promvar = np.zeros((len(B), len(group_names)))
     for i, sigma in enumerate(fit.error_variance.variance):
-        promvar[:, i] = sigma
+        promvar[:, i] = sigma * fit.error_variance.promotor
     
     Y = Y - promoter_mean.reshape(-1, 1) - sample_mean.reshape(1, -1)
     Y = Y - B @ motif_mean.reshape(-1, 1)
@@ -328,7 +328,8 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     os.makedirs(folder_belief, exist_ok=True)
     for sigma, nu, name, inds in (pbar := tqdm(list(zip(promvar.T[..., None], nus,  group_names, group_inds)), dynamic_ncols=True)):
         pbar.set_postfix_str(name)
-        var = (B_hat * nu + sigma)
+        # var = (B_hat * nu + sigma)
+        var = sigma
         
         Y_ = Y[:, inds][..., None, :] 
         theta = B[..., None] * U[:, inds] 
@@ -391,6 +392,5 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
                                                                           float_format='%.3f')
             filename = os.path.join(folder_belief, f'{name}.tsv')
             DF(data=belief, index=proms, columns=motif_names).to_csv(filename, sep='\t',
-                                                                          float_format='%.3f')    
-        
+                                                                          float_format='%.3f')
         

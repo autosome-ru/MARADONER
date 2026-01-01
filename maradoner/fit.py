@@ -38,6 +38,7 @@ def null_space_transform(Q: np.ndarray, Y: np.ndarray) -> np.ndarray:
     Returns:
     VT_Y (ndarray): (p - r) x n matrix representing V^T Y (float64).
     """
+
     Y = np.array(Y, order='F', copy=True)
 
     p, r = Q.shape
@@ -381,26 +382,49 @@ def loglik_error(d: jnp.ndarray, Qn_Y: jnp.ndarray, group_inds_inv: jnp.ndarray)
 
 def loglik_error_full(x: jnp.ndarray, Y: jnp.ndarray, Q_C: jnp.ndarray, group_inds_inv: jnp.ndarray, D_fix_val: float, D_fix_ind: int) -> float:
     p, s = Y.shape
+    r = Q_C.shape[1]
     x = x ** 2
-    D = x.at[:-p].get()
+    D = x.at[:-p].get() + 1e-4
     if D_fix_ind is not None:
         D = jnp.insert(D, D_fix_ind, D_fix_val)
-    S = x.at[-p:].get()
+    S = x.at[-p:].get() + 1e-3
     S = 1 / S
     D = 1 / D
     D = D.at[group_inds_inv].get()
     w_D = D.sum()
     M = Q_C.T * S @ Q_C
-
     YD = Y * D
     YS = Y.T * S
     YD = YD - jnp.outer(YD.sum(axis=-1), D / w_D)
-    YS = YS - YS @ Q_C @ jnp.linalg.inv(M) @ Q_C.T
+    YS = YS - YS @ Q_C @ jnp.linalg.inv(M) @ Q_C.T * S
     vec = jnp.einsum('ij,ji->', YD, YS)
-    logdet_D = -(p-1) * (jnp.log(D).sum()  - w_D)
+    logdet_D = (p-r) * (-jnp.log(D).sum()  + jnp.log(w_D))
     logdet_S = (s-1) * (jnp.linalg.slogdet(M)[0] - jnp.log(S).sum())
     logdet = logdet_D + logdet_S
     return vec + logdet
+
+# def loglik_error_full(x: jnp.ndarray, Y: jnp.ndarray, Q_C: jnp.ndarray, group_inds_inv: jnp.ndarray, D_fix_val: float, D_fix_ind: int) -> float:
+#     p, s = Y.shape
+#     x = x ** 2
+#     D = x.at[:-p].get()
+#     if D_fix_ind is not None:
+#         D = jnp.insert(D, D_fix_ind, D_fix_val)
+#     S = x.at[-p:].get()
+#     S = 1 / S
+#     D = 1 / D
+#     D = D.at[group_inds_inv].get()
+#     w_D = D.sum()
+#     M = (Q_C.T * S) @ Q_C
+
+#     YD = Y * D
+#     YS = Y.T * S
+#     YD = YD - jnp.outer(YD.sum(axis=-1), D / w_D)
+#     YS = YS - YS @ Q_C @ jnp.linalg.inv(M) @ Q_C.T
+#     vec = jnp.einsum('ij,ji->', YD, YS)
+#     logdet_D = -(p-1) * (jnp.log(D).sum()  - w_D)
+#     logdet_S = (s-1) * (jnp.linalg.slogdet(M)[0] - jnp.log(S).sum())
+#     logdet = logdet_D + logdet_S
+#     return vec + logdet
     
     
 def loglik_error_grad(d: jnp.ndarray, Qn_Y: jnp.ndarray, group_inds_inv: jnp.ndarray,
@@ -718,15 +742,15 @@ def estimate_error_variance_full(data: TransformedData, B_decomposition: Lowrank
     fun = jax.jit(jax.value_and_grad(fun, argnums=0))
     from scipy.optimize import minimize
     x0 = jnp.append(d0, jnp.ones(len(data.Y))) ** 0.5
-    res = minimize(fun, x0, jac=True, method='L-BFGS-B')
+    res = minimize(fun, x0, jac=True, method='L-BFGS-B', options={'maxiter': 10000})
     if verbose:
         print('-' * 15)
         print(res)
         print('-' * 15)
     x = res.x ** 2
-    D = x[:-len(data.Y)]
+    D = x[:-len(data.Y)] + 1e-4
     D = np.insert(D, D_fix_ind, D_fix_val)
-    S = x[-len(data.Y):]
+    S = x[-len(data.Y):] + 1e-3
     fim = error_variance.fim # TODO
     
     return ErrorVarianceEstimates(np.array(D), np.array(S), np.array(fim),
@@ -744,7 +768,24 @@ def estimate_promoter_mean(data: TransformedData,
     w = (1 / D).sum()
     mean = Y @ (1 / D.reshape(-1, 1))
     mean = mean - Q_C @ (Q_C.T @ mean)
-    mean = ones_nullspace_transform_transpose(mean)
+    weights = error_variance.promotor ** -0.5
+    if np.std(weights) > 1e-12:
+        q = weights / np.linalg.norm(weights)
+        
+
+        decomp_null = LowrankDecomposition(
+            Q=q.reshape(-1, 1), 
+            S=np.array([]), 
+            V=np.array([])
+        )
+        
+
+        mean_2d = mean.reshape(-1, 1)
+        mean_2d = decomp_null.adjoint_null_space_transform(mean_2d)
+        mean = mean_2d.flatten()
+    else:
+
+        mean = ones_nullspace_transform_transpose(mean)
     mean = mean / w
     return PromoterMeanEstimates(mean)
 
@@ -884,7 +925,18 @@ def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposi
     A = jnp.sqrt(Sigma).reshape(-1, 1) * BTB
     # Fp = ones_nullspace(len(data.Y) + 1)
     # Y_tilde = (data.Y - Fp @ mu_p.reshape(-1, 1)) / d
-    Y_tilde = (data.Y - ones_nullspace_transform(mu_p.reshape(-1, 1))) / d
+    weights = error_variance.promotor ** -0.5
+    if np.std(weights) > 1e-12:
+        # Weighted case: Use Householder transform matching the weights
+        # Normalize weights to get the projection vector Q
+        q = weights / np.linalg.norm(weights)
+        # Apply the transform
+        # null_space_transform expects Q as (p, r) and Y as (p, n)
+        mu_p_transformed = null_space_transform(q.reshape(-1, 1), mu_p.reshape(-1, 1))
+    else:
+        # Standard case: Use Helmert transform
+        mu_p_transformed = ones_nullspace_transform(mu_p.reshape(-1, 1))
+    Y_tilde = (data.Y - mu_p_transformed) / d
     Y_hat = jnp.sqrt(Sigma).reshape(-1,1) *  data.B.T @ Y_tilde * g / d
     D_B, Q_B = jnp.linalg.eigh(jnp.sqrt(Sigma).reshape(-1, 1) * BTB * jnp.sqrt(Sigma))
     At_QB = A.T @ Q_B
@@ -914,7 +966,7 @@ def estimate_sample_mean(data: TransformedData, error_variance: ErrorVarianceEst
     D = jnp.asarray(error_variance.variance)
     G = G.at[data.group_inds_inv].get()
     D = D.at[data.group_inds_inv].get()
-    a_vec = (error_variance.promotor ** (-0.5))#.reshape(-1,1)
+    a_vec = (error_variance.promotor ** (-0.5))
 
     p, m = B.shape
     sqrt_Sigma = np.sqrt(Sigma).reshape(1, -1)
@@ -922,52 +974,30 @@ def estimate_sample_mean(data: TransformedData, error_variance: ErrorVarianceEst
     U, S, _ = jnp.linalg.svd(C, full_matrices=False)
     S_sq = S ** 2
 
-    # Calculations involving the new vector 'a_vec'
+
     a = a_vec.T @ U
     sum_Y = a_vec.T @ Y
     a_sq_norm = np.sum(a_vec ** 2)
 
-    # The rest of the calculation logic
+
     UT_Y = U.T @ Y
     a_sq = a ** 2
     sum_a_sq = np.sum(a_sq)
 
     a_UT_Y = a[:, np.newaxis] * UT_Y
 
-    # Numerator calculation
+
     num_part1 = np.sum(a_UT_Y / (G[np.newaxis, :] * S_sq[:, np.newaxis] + D[np.newaxis, :]), axis=0)
     num_part2 = (sum_Y - np.sum(a_UT_Y, axis=0)) / D
     numerator = num_part1 + num_part2
 
-    # Denominator calculation
+
     denom_part1 = np.sum(a_sq[:, np.newaxis] / (G[np.newaxis, :] * S_sq[:, np.newaxis] + D[np.newaxis, :]), axis=0)
     denom_part2 = (a_sq_norm - sum_a_sq) / D
     denominator = denom_part1 + denom_part2
 
     mu = numerator / denominator
-    # sqrt_Sigma = jnp.sqrt(Sigma).reshape(1, -1)
-    # C = B * sqrt_Sigma
 
-    # U, S, _ = jnp.linalg.svd(C, full_matrices=False)
-
-    # a = jnp.sum(U, axis=0)
-    # UT_Y = U.T @ Y          # [m, s]
-    # sum_Y = jnp.sum(Y, axis=0)  # [s] 
-
-    # S_sq = S ** 2
-    # a_sq = a ** 2
-    # sum_a_sq = jnp.sum(a_sq)
-    # a_UT_Y = a[:, None] * UT_Y  # [m, s]
-
-    # denom_part1 = jnp.sum(a_sq[:, None] / (G[None, :] * S_sq[:, None] + D[None, :]), axis=0)
-    # denom_part2 = (p - sum_a_sq) / D
-    # denominator = denom_part1 + denom_part2
-
-    # num_part1 = jnp.sum(a_UT_Y / (G[None, :] * S_sq[:, None] + D[None, :]), axis=0)
-    # num_part2 = (sum_Y - jnp.sum(a_UT_Y, axis=0)) / D
-    # numerator = num_part1 + num_part2
-
-    # mu = numerator / denominator
     return SampleMeanEstimates(np.array(mu).reshape(-1, 1))
 
 @dataclass(frozen=True)
@@ -1021,11 +1051,18 @@ def predict_activities(data: TransformedData, fit: FitResult,
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
     B = data.B
     Y = data.Y
-    Y = a_vec.reshape(-1, 1) * Y
-    B = a_vec.reshape(-1, 1) * B
     # Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
     # B = B - B.mean(axis=0, keepdims=True)
     Y = Y - mu_p - B @ mu_m - np.outer(a_vec, mu_s.flatten())
+    # # 3. [THE FIX] Center B. Weighted column sums become 0.
+    # # We calculate the weighted mean of each motif column
+    w_norm_sq = np.dot(a_vec, a_vec)
+    weighted_col_means = (a_vec @ B) / w_norm_sq
+    
+    # # Subtract it. Now B matches the geometry of Y.
+    B0 = B
+    B = B - np.outer(a_vec, weighted_col_means)
+    # print(np.linalg.norm(B-B0))
     if filter_motifs:
         inds = np.log10(Sigma) >= (np.median(np.log10(Sigma)) - filter_order)
         B = B[:, inds]
@@ -1668,7 +1705,7 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
         d1 = mu_p.reshape(-1, 1) + jnp.outer(a_vec, mu_s.flatten())
         d2 = B @ U_m
         d2 = d2.repeat(len(mu_s), -1)
-
+        # Y1 = Y0 - mu_p.reshape(-1, 1) - mu_s.reshape(1, -1)
         if use_groups:
             U = activities.U
             groups = data.group_inds
