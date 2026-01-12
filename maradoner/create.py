@@ -107,7 +107,7 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
         motif_names = None
     cpu_count = multiprocessing.cpu_count()
     if n_jobs < 1 and n_jobs > 0:
-        n_jobs = int(n_jobs * cpu_count)
+        n_jobs = max(1, int(n_jobs * cpu_count))
     elif n_jobs <= 0:
         n_jobs = cpu_count
     logger_print('Reading dataset...', verbose)
