@@ -61,6 +61,13 @@ def variance_explained(Y, B, U, groups: list, group_average=True, weights=None, 
         return 1 - (Yn - B @ U) ** 2 / Yn ** 2
     return 1 - np.sum((Yn - B @ U) ** 2, axis=0) / np.sum(Yn ** 2, axis=0)
 
+def subs_zeros(X: np.ndarray) -> np.ndarray:
+    X = np.array(X)
+    inds = X == 0
+    m = np.abs(X[~inds]).min()
+    X[inds] = m
+    return X
+
 @dataclass
 class ProjectData:
     Y: np.ndarray

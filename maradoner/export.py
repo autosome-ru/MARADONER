@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from pandas import DataFrame as DF
 # add dot
-from .utils import read_init, openers, ProjectData
+from .utils import read_init, openers, ProjectData, subs_zeros
 from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data
 from .grn import grn
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
@@ -214,7 +214,7 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     #     stats = total_cor @ stats
     #     total_cov = total_cor @ total_cov @ total_cor
     # stats = (1 / total_cov.diagonal().reshape(-1, 1)) ** 0.5 * stats
-    istds = [1 / c.diagonal() ** 0.5 for c in covs]
+    istds = [1 / subs_zeros(c.diagonal() ** 0.5) for c in covs]
     istds = np.array(istds).T 
     if groups:
         stats = stats[:, np.array(groups)]
@@ -438,7 +438,7 @@ def export_results(project_name: str, output_folder: str,
     U = list()
     stds = list()
     for u, cov in zip(act.U.T, act.cov()):
-        std = cov.diagonal() ** 0.5
+        std = subs_zeros(cov.diagonal() ** 0.5)
         u = u / std
         U.append(u)
         stds.append(std)
