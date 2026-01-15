@@ -26,7 +26,7 @@ class OptimizerResult:
         
 
 class MetaOptimizer():
-    def __init__(self, fun, grad, init_method='L-BFGS-B', methods=('TNC'), num_steps_momentum=60,
+    def __init__(self, fun, grad, init_method='L-BFGS-B', methods=('TNC',), num_steps_momentum=60,
                  reparam='square', scaling_set=None,  skip_init=False,
                  momentum_lrs=(1e-2, 1e-3, 1e-4)):
         self.init_method = init_method
@@ -69,7 +69,7 @@ class MetaOptimizer():
         return self._fun(self._reparam(x, 
                                        param_scalers=self.param_scalers)) * self.fun_scale
     
-    def scipy_optimize(self, x0, methods: list, max_iter=1000):
+    def scipy_optimize(self, x0, methods: list, max_iter=None):
         if type(methods) is str:
             methods = [methods]
         best_sol = None
@@ -79,7 +79,7 @@ class MetaOptimizer():
             sol = minimize(fun,
                            x0=self._inverse_reparam(x0, param_scalers=self.param_scalers),
                            method=method, jac=grad, 
-                           options={'maxiter': max_iter})
+                           options={'maxiter': max_iter} if max_iter else None)
             if best_sol is None or np.isnan(best_sol.fun) or best_sol.fun > sol.fun:
                 best_sol = sol
         best_sol.x = self._reparam(best_sol.x, param_scalers=self.param_scalers)
@@ -132,9 +132,9 @@ class MetaOptimizer():
         best_scale = None
         best_fun = start_loglik
         if not self.skip_init:
-            for scale in (1.0, 1e1, 1e2, 1e3):
+            for scale in (1.0, 1e1, 1e2):
                 self.fun_scale = np.abs(1 / start_loglik  * scale)
-                sol = self.scipy_optimize(x0, self.scipy_methods, max_iter=10)
+                sol = self.scipy_optimize(x0, self.init_method, max_iter=10)
                 if sol is None:
                     continue
                 if np.isfinite(sol.fun) and sol.fun < best_fun:

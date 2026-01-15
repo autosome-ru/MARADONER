@@ -621,7 +621,7 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
     D_B = jnp.where(D_B > 0, D_B, 0.0)
     s = 1 / (jnp.kron(D_A, D_B) + 1)
     indices = jnp.arange(len(s), dtype=int)
-    # indices = (indices % len(G)) * len(Sigma) + indices // len(G)
+
     indices = len(G) * (indices % len(Sigma)) + indices // len(Sigma)
     s_permuted = s.at[indices].get()
     BTCQ = BTB * Sigma @ Q_B
@@ -643,7 +643,6 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
     FIM_tau = jnp.zeros((len(Sigma), len(Sigma)), dtype=float)
     FIM_tau = jax.lax.fori_loop(0, len(D_A), f_tau, FIM_tau) / 2
     FIM_tau = FIM_tau * jnp.outer(1 / Sigma, 1 / Sigma)
-    
     @jax.jit
     def f_nu(k, mx):
         ind = indices.at[k].get()
@@ -673,7 +672,7 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
         return (zeta * psi_i * theta_j).sum()
     
     FIM_tau_nu = jnp.zeros((len(Sigma), len(G)), dtype=float)
-    FIM_tau_nu = FIM_tau_nu.at[*indices.T].set(jax.vmap(f_tau_nu)(indices))
+    FIM_tau_nu = FIM_tau_nu.at[*indices.T].set(jax.lax.map(f_tau_nu, indices, batch_size=32))
     FIM_tau_nu = FIM_tau_nu * jnp.outer(1 / Sigma, 1 / G) / 2
     FIM_tau_nu = FIM_tau_nu @ group_loadings
     
@@ -704,7 +703,7 @@ def calc_error_variance_fim(data: TransformedData, error_variance: jnp.ndarray):
     return group_loadings.T @ fim @ group_loadings
 
 def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
-                             verbose=False) -> ErrorVarianceEstimates:
+                            verbose=False) -> ErrorVarianceEstimates:
     p = B_decomposition.Q.shape[0]
     Y = B_decomposition.null_space_transform(data.Y)
     d0 = jnp.array([np.var(Y[:, inds]) for inds in data.group_inds])
@@ -729,9 +728,11 @@ def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecom
                                   loglik=res.fun)
 
 
-def estimate_error_variance_full(data: TransformedData, B_decomposition: LowrankDecomposition,
+def estimate_error_variance_full(data: TransformedData,
+                                 B_decomposition: LowrankDecomposition,
                                  error_variance: ErrorVarianceEstimates,
-                             verbose=False) -> ErrorVarianceEstimates:
+                                 original_data: TransformedData = None,
+                                 verbose=False) -> ErrorVarianceEstimates:
     # Y = B_decomposition.null_space_transform(data.Y)
     Y = data.Y
     d0 = error_variance.variance 
@@ -741,8 +742,20 @@ def estimate_error_variance_full(data: TransformedData, B_decomposition: Lowrank
     fun = partial(loglik_error_full, Y=Y, Q_C=B_decomposition.Q, group_inds_inv=data.group_inds_inv, D_fix_val=D_fix_val, D_fix_ind=D_fix_ind)
     fun = jax.jit(jax.value_and_grad(fun, argnums=0))
     from scipy.optimize import minimize
-    x0 = jnp.append(d0, jnp.ones(len(data.Y))) ** 0.5
-    res = minimize(fun, x0, jac=True, method='L-BFGS-B', options={'maxiter': 10000})
+    if original_data is not None:
+        Y0 = original_data.Y
+        Y0 = Y0 - Y0.mean(axis=0, keepdims=True) - Y0.mean(axis=1, keepdims=True) + Y0.mean()
+        D = error_variance.variance
+        D = D[original_data.group_inds_inv]
+        Y0 = Y0 / D ** (-0.5)
+        prom_x0 = Y0.var(axis=1)
+    else:
+        prom_x0 = jnp.ones(len(data.Y))
+    x0 = jnp.append(d0, prom_x0) ** 0.5
+    res = minimize(fun, x0, jac=True,
+                   method='TNC'#'L-BFGS-B', 
+                   # options={'maxiter': 10000},
+                   )
     if verbose:
         print('-' * 15)
         print(res)
@@ -789,55 +802,108 @@ def estimate_promoter_mean(data: TransformedData,
     mean = mean / w
     return PromoterMeanEstimates(mean)
 
+def _estimate_motif_variance_mom(Y, B, ind_fix, fix_value, eps=1e-14):
+    # Gamma = (B^T B)^-1
+    BTB = B.T @ B
+    try:
+        Gamma = np.linalg.inv(BTB)
+    except np.linalg.LinAlgError:
+        raise ValueError("B must have full column rank to be invertible.")
+        
+    # W = (B^T B)^-1 B^T
+    W = Gamma @ B.T
+    Z = W @ Y
+    
+    # E[Z_ij^2] = sigma_i^2 * g_j + Gamma_ii
+    # We estimate sigma_i^2 * g_j by subtracting the known noise bias Gamma_ii.
+    Gamma_diag = np.diag(Gamma)
+    
+    # S_ij = Z_ij^2 - Gamma_ii
+    S = np.square(Z) - Gamma_diag[:, None]
+    
+    #  R_i approx sum(g) * sigma_i^2
+    R = np.sum(S, axis=1)
+    # C_j approx sum(sigma^2) * g_j
+    C = np.sum(S, axis=0)
+    
+    # Using the ratio of column sums: g_j / g_fixed = C_j / C_fixed
+    if C[ind_fix] == 0:
+        scale_factor = 0
+    else:
+        scale_factor = fix_value / C[ind_fix]
+        
+    g_est = C * scale_factor
+    
+    # sigma_i^2 = R_i / sum(g)
+    sum_g_est = np.sum(g_est)
+    
+    if sum_g_est == 0:
+        sigma_sq_est = np.zeros_like(R)
+    else:
+        sigma_sq_est = R / sum_g_est
+        
+    return np.clip(sigma_sq_est, eps, float('inf')), np.clip(g_est, eps, float('inf'))
+
 def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
                              error_variance: ErrorVarianceEstimates,
+                             original_data: TransformedData = None,
                              verbose=False) -> MotifVarianceEstimates:
+    multiplier = 1e-2
     D = jnp.array(error_variance.variance)
+    j = jnp.argsort(D)[len(D) // 2]
+    fix = D.at[j].get() * multiplier
     BTB = B_decomposition.V.T * B_decomposition.S ** 2 @ B_decomposition.V
     d = 1 / D.at[data.group_inds_inv].get()
+    
+    if original_data is not None:
+        Y = original_data.Y
+        B = original_data.B
+        Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
+        Y = Y * d ** 0.5
+        B = B - B.mean(axis=0, keepdims=True)
+        Sigma0, G0 = _estimate_motif_variance_mom(Y, B, j, 1e-1)
+        G0 = G0 / d 
+        G0 = np.array([G0[inds].mean() for inds in original_data.group_inds])
+        scaler = fix / G0[j]
+        G0 = G0 * scaler
+        Sigma0 = Sigma0 / scaler
+        G0 = np.delete(G0, j)
+    else:
+        Sigma0, G0 = jnp.ones(len(BTB), dtype=float), np.repeat(fix, len(D) - 1)
+    
     d = d / d.sum() ** 0.5
     D_product_inv = jnp.outer(-d, d)
     D_product_inv = jnp.fill_diagonal(D_product_inv,
                                       D_product_inv.diagonal() + d * d.sum(),
                                       inplace=False )
     Z = data.B.T @ data.Y @ D_product_inv
-    j = jnp.argsort(D)[len(D) // 2]
-    _fix = D.at[j].get()
-    for multiplier in [1e-1]:#[1e-2, 1, 10]:
-        fix = _fix * multiplier
-        x0 = jnp.append(jnp.ones(len(BTB), dtype=float), np.repeat(fix, len(D) - 1))
-        fun = partial(loglik_motifs, Z=Z, BTB=BTB, D_product_inv=D_product_inv,
-                      group_inds_inv=data.group_inds_inv, G_fix_ind=j, G_fix_val=fix)
-        grad = partial(loglik_motifs_grad, Z=Z, BTB=BTB, D_product_inv=D_product_inv,
-                      group_inds_inv=data.group_inds_inv, group_inds=data.group_inds,
-                      G_fix_ind=j, G_fix_val=fix)
-        fun = jax.jit(fun)
-        grad = jax.jit(grad)
-        opt = MetaOptimizer(fun, grad, num_steps_momentum=50)
-        try:
-            res = opt.optimize(x0)
-        except ValueError as E:
-            print(E)
-            print('Failed for mult =', multiplier)
-            continue
-        if not np.isfinite(res.fun):
-            print(res)
-            print(res.x)
-            break
-        
-        break
+
+    x0 = jnp.append(Sigma0, G0)
+    fun = partial(loglik_motifs, Z=Z, BTB=BTB, D_product_inv=D_product_inv,
+                  group_inds_inv=data.group_inds_inv, G_fix_ind=j, G_fix_val=fix)
+    grad = partial(loglik_motifs_grad, Z=Z, BTB=BTB, D_product_inv=D_product_inv,
+                  group_inds_inv=data.group_inds_inv, group_inds=data.group_inds,
+                  G_fix_ind=j, G_fix_val=fix)
+    fun = jax.jit(fun)
+    grad = jax.jit(grad)
+    opt = MetaOptimizer(fun, grad, num_steps_momentum=50)
+    res = opt.optimize(x0)
+    if not np.isfinite(res.fun):
+        print(res)
+        print(res.x)
     if verbose:
         print('-' * 15)
         print(res)
         print('-' * 15)
     Sigma = res.x[:len(BTB)]
     G = res.x[len(BTB):]
+    
     G = jnp.insert(G, j, fix)
     fim = partial(loglik_motifs_fim, BTB=BTB, D_product_inv=D_product_inv,
                   group_inds_inv=data.group_inds_inv, group_inds=data.group_inds,
                   G_fix_ind=j, G_fix_val=fix)
     f = fim(res.x)
-    eig = jnp.linalg.eigh(f)[0].min()
+    eig = np.linalg.eigvalsh(f).min()
     print('FIM min eig', eig)
     if eig < 0:
         eig = list()
@@ -847,7 +913,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
             x = res.x.copy()
             x = x.at[:len(BTB)].set(jnp.clip(x.at[:len(BTB)].get(), eps, float('inf')))
             f = fim(x)
-            eig.append(jnp.linalg.eigh(f)[0].min())
+            eig.append(np.linalg.eigvalsh(f).min())
             print(eps, eig[-1])
             if eig[-1] > 0:
                 break
@@ -1493,6 +1559,7 @@ def fit(project: str, clustering: ClusteringMode,
         if promoter_variance:
             logger_print('Estimating FULL error variances...', verbose)
             error_variance = estimate_error_variance_full(data_orig, B_decomposition_orig, error_variance,
+                                                          original_data=data_orig,
                                                           verbose=verbose)
             data_orig = transform_data(data, helmert=False, weights=error_variance.promotor ** (-0.5))
             data = transform_data(data, helmert=True, weights=error_variance.promotor ** (-0.5))
@@ -1509,6 +1576,7 @@ def fit(project: str, clustering: ClusteringMode,
         if motif_variance:
             motif_variance = estimate_motif_variance(data, B_decomposition,
                                                       error_variance=error_variance,
+                                                      original_data=data_orig,
                                                       verbose=verbose)
         else:
             motif_variance = estimate_motif_variance_identity(data, B_decomposition,
