@@ -25,11 +25,6 @@ class GOFStat(str, Enum):
 class GOFStatMode(str, Enum):
     residual = 'residual'
     total = 'total'
-    
-class FOVMeanMode(str, Enum):
-    null = 'null'
-    gls = 'gls'
-    knn = 'knn'
 
 def null_space_transform(Q: np.ndarray, Y: np.ndarray) -> np.ndarray:
     """
@@ -1125,13 +1120,10 @@ def predict_activities(data: TransformedData, fit: FitResult,
     # Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
     # B = B - B.mean(axis=0, keepdims=True)
     Y = Y - mu_p - B @ mu_m - np.outer(a_vec, mu_s.flatten())
-    # # 3. [THE FIX] Center B. Weighted column sums become 0.
-    # # We calculate the weighted mean of each motif column
+
     w_norm_sq = np.dot(a_vec, a_vec)
     weighted_col_means = (a_vec @ B) / w_norm_sq
     
-    # # Subtract it. Now B matches the geometry of Y.
-    B0 = B
     B = B - np.outer(a_vec, weighted_col_means)
     # print(np.linalg.norm(B-B0))
     if filter_motifs:
@@ -1433,7 +1425,6 @@ def gls_refinement(data: TransformedData,
                                                 loglik_start=motif_variance.loglik_start)
         # print(res)
         # print(G)
-        
         
         mu_m = B_pinv @ mu_p
         mu_p = mu_p - data.B @ mu_m
@@ -1737,67 +1728,8 @@ def _cor(a, b, axis=1):
     denominator = np.sqrt(np.sum(a_centered**2, axis=axis) * np.sum(b_centered**2, axis=axis))
     return numerator / denominator
 
-
-def predict_mu_p_test(B: np.ndarray, Z: np.ndarray, mu_p: np.ndarray, test_inds: np.ndarray, 
-                      n_B: int = 8, n_Z: int = 8, n_neighbours: int = 64) -> np.ndarray:
-
-    from sklearn.decomposition import PCA
-    from sklearn.neighbors import KNeighborsRegressor
-
-    if n_B > 0:
-        pca_b = PCA(n_components=n_B)
-        B_reduced = pca_b.fit_transform(B)
-    else:
-        if n_B == -1:
-            B_reduced = B
-        else:
-            B_reduced = None
-    
-    if n_Z > 0:
-        pca_z = PCA(n_components=n_Z)
-        Z_reduced = pca_z.fit_transform(Z)
-        if B_reduced is None:
-            comb = [Z_reduced, ]
-        else:
-            comb = [B_reduced, Z_reduced]
-    else:
-        if n_Z == -1:
-            Z_reduced = Z
-            if B_reduced is None:
-                comb = [Z_reduced]
-            else:
-                comb = [B_reduced, Z_reduced]
-        else:
-            Z_reduced = None
-            comb = [B_reduced, ]
-    
-    combined_features = np.hstack(comb)
-    
-
-    p = combined_features.shape[0]
-    all_indices = np.arange(p)
-
-    train_inds = np.setdiff1d(all_indices, test_inds)
-    
-
-
-    X_train = combined_features[train_inds]
-    y_train = mu_p
-    X_test = combined_features[test_inds]
-    
-    
-
-    reg = KNeighborsRegressor(n_neighbors=n_neighbours, weights='distance', )
-    reg.fit(X_train, y_train)
-    
-
-    predictions = reg.predict(X_test)
-    return predictions
-
-
 def calculate_fov(project: str, use_groups: bool, gpu: bool, 
                   stat_type: GOFStat, stat_mode: GOFStatMode, weights: bool = True,
-                  mean_mode: FOVMeanMode = FOVMeanMode.gls, knn_n=128, pca_b=64, pca_z=3,
                   x64=True, verbose=True, dump=True):
     def calc_fov(data: TransformedData, fit: FitResult,
                  activities: ActivitiesPrediction, mu_p=None, a_vec=None) -> tuple[FOVResult]:
@@ -1865,8 +1797,6 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
         fit : FitResult = dill.load(f)
     with openers[fmt](f'{project}.predict.{fmt}', 'rb') as f:
         activities : ActivitiesPrediction = dill.load(f)
-    if mean_mode == mean_mode.knn:
-        B0 = transform_data(data, helmert=False).B
     data, data_test = split_data(data, fit.promoter_inds_to_drop)
     if x64:
         jax.config.update("jax_enable_x64", True)
@@ -1879,38 +1809,19 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
         device = jax.devices('cpu')
     device = next(iter(device))
     with jax.default_device(device):
-
         if data_test is not None:
-            drops = activities.filtered_motifs
-            U = activities.U_raw
-            U_m = fit.motif_mean.mean.reshape(-1, 1)
-            mu_s = fit.sample_mean.mean.reshape(-1, 1)
-            if mean_mode == mean_mode.gls:
-                Y = data_test.Y - mu_s.T
-                Y = Y - data_test.B @ U_m
-                Y = Y - np.delete(data_test.B, drops, axis=1) @ U
-                D = (1 / fit.error_variance.variance)[data_test.group_inds_inv].reshape(-1, 1)
-                mu_p = Y @ D / (D.sum()) 
-            elif mean_mode == mean_mode.knn:
-                mu_p = fit.promoter_mean.mean.flatten()
-                B = B0
-                Z = (B @ fit.motif_mean.mean.reshape(-1, 1)) + fit.sample_mean.mean.reshape(1, -1)
-                Z = Z + np.delete(B, drops, axis=1) @ U
-                mu_p = predict_mu_p_test(B, Z, mu_p, fit.promoter_inds_to_drop,
-                                         n_neighbours=knn_n, n_Z=pca_z, n_B=pca_b)
-            elif mean_mode == mean_mode.null:
-                mu_p = np.zeros((len(data_test.Y), 1))
-
+            try:
+                with openers[fmt](f'{project}.promoter_mean.{fmt}', 'rb') as f:
+                    mu_p : np.ndarray = dill.load(f)
+            except FileNotFoundError:
+                raise FileNotFoundError("To compute GOFs on the testing set, you must first run estimate-promoter-means with an appropriate setting.")
             test_FOV = calc_fov(data=data_test, fit=fit, activities=activities,
                                 mu_p=mu_p)
         train_FOV = calc_fov(data=data, fit=fit, activities=activities)
     if data_test is None:
         test_FOV = None
         mu_p = None
-    res = (TestResult(train_FOV, test_FOV, grouped=use_groups), mu_p)
+    res = TestResult(train_FOV, test_FOV, grouped=use_groups)
     with openers[fmt](f'{project}.fov.{fmt}', 'wb') as f:
         dill.dump(res, f)
     return res
-        
-        
-        

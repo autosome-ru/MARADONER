@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__version__ = '0.26.1'
+__version__ = '0.27.0'
 import importlib
 
 
@@ -20,7 +20,8 @@ __min_reqs__ = [
             'scikit-learn>=1.6',
             'tables>=3.10',
             'sympy>=1.12',
-            'seaborn>=0.12'
+            'seaborn>=0.12',
+            'pygam'
            ]
 
 def versiontuple(v):

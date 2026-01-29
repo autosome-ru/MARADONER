@@ -12,7 +12,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from .create import create_project
 from pathlib import Path
-from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode, GLSRefinement, FOVMeanMode
+from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode, GLSRefinement
+from .promoter_mean_test import FOVMeanMode, estimate_promoter_mean
 from .grn import grn
 from .synthetic_data import generate_dataset
 from time import time
@@ -209,13 +210,6 @@ def _gof(name: str = Argument(..., help='Project name.'),
          use_groups: bool = Option(False, help='Compute statistic for samples aggragated across groups.'), 
          stat_type: GOFStat = Option(GOFStat.fov, help='Statistic type to compute'),
          stat_mode: GOFStatMode = Option(GOFStatMode.total, help='Whether to compute stats for residuals or accumulate their effects'),
-         mean_mode: FOVMeanMode = Option(FOVMeanMode.gls, help='Promoter-wise mean imputation method used for a testing set. '\
-                                                                 '[orange]null[/orange] substitutes mu_p with zeros.'\
-                                                                 '[orange]gls[/orange] uses a simple GLS estimator using only sample-wise variances after accounting for other effects. [red]leakge[/red]-prone '\
-                                                                 '[orange]knn[/orange] employs KNN using principal components of the loading matrix and the total predicted effect matrices as features.'),
-         knn_n: int = Option(256, help='Number of nearest neighbours to use if [orange]mean_mode=gls[/orange].'),
-         pca_b: int = Option(64, help='Number of PC of the loading matrix to use if [orange]mean_mode=gls[/orange] (-1 uses all).'),
-         pca_z: int = Option(3, help='Number of PC of the total effect matrix to use if [orange]mean_mode=gls[/orange] (-1 uses all).'),
          weights: bool = Option(True, help='Whether to use weighted statistics. Applicable only if promoter variance was estimated.'),
          gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
          x64: bool = Option(True, help='Use high precision algebra.')):
@@ -229,11 +223,7 @@ def _gof(name: str = Argument(..., help='Project name.'),
     p.start()
     res = calculate_fov(name, stat_mode=stat_mode, stat_type=stat_type, use_groups=use_groups, 
                         weights=weights,
-                        mean_mode=mean_mode,
-                        knn_n=knn_n,
-                        pca_b=pca_b,
-                        pca_z=pca_z,
-                        gpu=gpu, x64=x64)[0]
+                        gpu=gpu, x64=x64)
     if stat_type == GOFStat.corr:
         title = 'Pearson correlation'
     else:
@@ -257,6 +247,33 @@ def _gof(name: str = Argument(..., help='Project name.'),
     dt = time() - t0
     rprint(t)
     # rprint(__gof_doc)
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+
+@app.command('estimate-promoter-mean', help='Estimate promoter-specific mean expression values for a testing subset.')
+def _estimate_promoter_mean(name: str = Argument(..., help='Project name.'),
+                            mean_mode: FOVMeanMode = Option(FOVMeanMode.gls, help='Promoter-wise mean imputation method used for a testing set. '\
+                                                                                  '[orange]null[/orange] substitutes mu_p with zeros.'\
+                                                                                  '[orange]gls[/orange] uses a simple GLS estimator using only sample-wise variances after accounting for other effects. [red]leakge[/red]-prone '\
+                                                                                  '[orange]knn[/orange] employs KNN using principal components of the loading matrix and the total predicted effect matrices as features.'),
+                            knn_n: int = Option(256, help='Number of nearest neighbours to use if [orange]mean_mode=gls[/orange].'),
+                            pca_b: int = Option(64, help='Number of PC of the loading matrix to use if [orange]mean_mode=gls[/orange] (-1 uses all).'),
+                            pca_z: int = Option(3, help='Number of PC of the total effect matrix to use if [orange]mean_mode=gls[/orange] (-1 uses all).'),
+                            covariate: Path = Option(None, help='A path to a tsv file containing covariates. If present, will enhance mean predictions usning GAMs.')):
+    """
+    Fit a a mixture model parameters to data for the given project.
+    """
+
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Estimating promoter-specific mean expression values...", total=None)
+    p.start()
+    res = estimate_promoter_mean(name,
+                                mean_mode=mean_mode,
+                                knn_n=knn_n,
+                                pca_b=pca_b,
+                                pca_z=pca_z,
+                                covariate=covariate)
+    dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 @app.command('predict', help='Estimate deviations of motif activities from their means.')

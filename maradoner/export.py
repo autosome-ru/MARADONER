@@ -304,6 +304,7 @@ def export_results(project_name: str, output_folder: str,
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
         fit: FitResult = dill.load(f)
     if fit.promoter_inds_to_drop:
+        prom_names_test = np.array(prom_names)[fit.promoter_inds_to_drop]
         prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
     group_names = fit.group_names
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
@@ -314,7 +315,7 @@ def export_results(project_name: str, output_folder: str,
         motif_names_filtered = motif_names
     
     os.makedirs(output_folder, exist_ok=True)
-    # grn(data, act, fit, os.path.join(output_folder, 'grn'))
+
     error_variance = fit.error_variance.variance
     # For backwards comptatability # TODO: rename promotor to promoter
     try:
@@ -459,9 +460,15 @@ def export_results(project_name: str, output_folder: str,
     
     
     mu_p_test = None
+    if os.path.isfile(f'{project_name}.promoter_mean.{fmt}'):
+        with open(f'{project_name}.promoter_mean.{fmt}', 'rb') as f:
+            mu_p_test = dill.load(f)
+        DF(mu_p_test, index=prom_names_test, columns=['mean']).to_csv(os.path.join(folder, 'test_promoter_means.tsv'),
+                                                                      sep='\t')
+            
     if os.path.isfile(f'{project_name}.fov.{fmt}'):
         with open(f'{project_name}.fov.{fmt}', 'rb') as f:
-            fov, mu_p_test = dill.load(f)
+            fov = dill.load(f)
             train = fov.train
             test = fov.test
         folder = os.path.join(output_folder, 'fov')
