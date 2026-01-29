@@ -212,7 +212,7 @@ def _gof(name: str = Argument(..., help='Project name.'),
          mean_mode: FOVMeanMode = Option(FOVMeanMode.gls, help='Promoter-wise mean imputation method used for a testing set. '\
                                                                  '[orange]null[/orange] substitutes mu_p with zeros.'\
                                                                  '[orange]gls[/orange] uses a simple GLS estimator using only sample-wise variances after accounting for other effects. [red]leakge[/red]-prone '\
-                                                                 '[orange]knnn[/orange] employs KNN using principal components of the loading matrix and the total predicted effect matrices as features.'),
+                                                                 '[orange]knn[/orange] employs KNN using principal components of the loading matrix and the total predicted effect matrices as features.'),
          knn_n: int = Option(256, help='Number of nearest neighbours to use if [orange]mean_mode=gls[/orange].'),
          pca_b: int = Option(64, help='Number of PC of the loading matrix to use if [orange]mean_mode=gls[/orange] (-1 uses all).'),
          pca_z: int = Option(3, help='Number of PC of the total effect matrix to use if [orange]mean_mode=gls[/orange] (-1 uses all).'),
@@ -233,7 +233,7 @@ def _gof(name: str = Argument(..., help='Project name.'),
                         knn_n=knn_n,
                         pca_b=pca_b,
                         pca_z=pca_z,
-                        gpu=gpu, x64=x64)
+                        gpu=gpu, x64=x64)[0]
     if stat_type == GOFStat.corr:
         title = 'Pearson correlation'
     else:
@@ -242,7 +242,10 @@ def _gof(name: str = Argument(..., help='Project name.'),
         title += ' (Residual)'
     else:
         title += ' (Total)'
-    t = Table('Set', 'centering', '+mean motif activity', '+ group-specific motif activity',
+    t = Table('Set\n[cyan]Y = [/cyan]', 
+              'centering\n[cyan]mu_p 1_s^T + 1_p mu_s^T[/cyan]',
+              '+ mean motif activity\n[cyan]+ B mu_m 1_s^T[/cyan]',
+              '+ group-specific motif activity\n[cyan]+ B U[/cyan]',
               title=title)
     row = [f'{t.total:.6f}' for t in res.train]
     
@@ -253,7 +256,7 @@ def _gof(name: str = Argument(..., help='Project name.'),
     p.stop()
     dt = time() - t0
     rprint(t)
-    rprint(__gof_doc)
+    # rprint(__gof_doc)
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
 @app.command('predict', help='Estimate deviations of motif activities from their means.')

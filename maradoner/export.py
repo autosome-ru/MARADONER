@@ -226,7 +226,8 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     return stats, pvalues, fdr, bad_inds
     
 
-def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPrediction, groups: bool = True):
+def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPrediction, groups: bool = True,
+                    mu_p: np.ndarray = None):
     sample_names = data.sample_names
     group_names = data.group_names
     promoter_names = data.promoter_names
@@ -235,11 +236,13 @@ def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPre
     mu_m = B @ fit.motif_mean.mean.reshape(-1, 1)
     B = np.delete(B, activities.filtered_motifs, axis=1)
     mu_s = fit.sample_mean.mean.reshape(1, -1)
-    mu_p = fit.promoter_mean.mean.reshape(-1, 1)
-    if len(mu_p) != len(B):
-        Y = data.Y  - mu_s - mu_m - B @ activities.U_raw
-        D = (1 / fit.error_variance.variance)[data.group_inds_inv].reshape(-1, 1)
-        mu_p = (Y @ D / (D.sum())).reshape(-1, 1)
+    if mu_p is None:
+        mu_p = fit.promoter_mean.mean.reshape(-1, 1)
+    mu_p = mu_p.reshape(-1, 1)
+    # if len(mu_p) != len(B):
+    #     Y = data.Y  - mu_s - mu_m - B @ activities.U_raw
+    #     D = (1 / fit.error_variance.variance)[data.group_inds_inv].reshape(-1, 1)
+    #     mu_p = (Y @ D / (D.sum())).reshape(-1, 1)
     if not groups:
         cols = sample_names
         U = activities.U_raw
@@ -257,13 +260,15 @@ def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPre
 
 
 def export_log_counts(output_folder: str, data: ProjectData, fit: FitResult,
-                      activities: ActivitiesPrediction, group: bool = True):
+                      activities: ActivitiesPrediction, group: bool = True,
+                      mu_p_test: np.ndarray = None):
     os.makedirs(output_folder, exist_ok=True)
     data_train, data_test = split_data(data, fit.promoter_inds_to_drop)
     log_counts = calc_log_counts(data_train, fit, activities, groups=group)
     log_counts.to_csv(os.path.join(output_folder, 'train.tsv'), sep='\t')
     if data_test:
-        log_counts = calc_log_counts(data_test, fit, activities, groups=group)
+        log_counts = calc_log_counts(data_test, fit, activities, groups=group,
+                                     mu_p=mu_p_test)
         log_counts.to_csv(os.path.join(output_folder, 'test.tsv'), sep='\t')
     
 
@@ -340,9 +345,6 @@ def export_results(project_name: str, output_folder: str,
     promoter_mean = fit.promoter_mean.mean.flatten()
     # del fit
     
-    if export_counts:
-        folder = os.path.join(output_folder, 'log_counts')
-        export_log_counts(folder, data, fit, act, counts_grouped)
     
     folder = os.path.join(output_folder, 'params')
     os.makedirs(folder, exist_ok=True)
@@ -456,10 +458,10 @@ def export_results(project_name: str, output_folder: str,
     DF(act.U_raw, index=motif_names_filtered, columns=data.sample_names).to_csv(os.path.join(folder, 'activity_raw.tsv'), sep='\t')
     
     
-    
+    mu_p_test = None
     if os.path.isfile(f'{project_name}.fov.{fmt}'):
         with open(f'{project_name}.fov.{fmt}', 'rb') as f:
-            fov = dill.load(f)
+            fov, mu_p_test = dill.load(f)
             train = fov.train
             test = fov.test
         folder = os.path.join(output_folder, 'fov')
@@ -481,6 +483,14 @@ def export_results(project_name: str, output_folder: str,
             promoter_names_test = np.array(data.promoter_names)[fit.promoter_inds_to_drop]
             export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
                        sample_names=sample_names)
+    
+    if export_counts:
+        inds = fit.promoter_inds_to_drop
+        if (inds is not None and len(inds)) and mu_p_test is None:
+            raise Exception('Run "maradoenr gof" with an appropriate "--mean-mode" option to impute promoter-wise means for the testing set.')
+        folder = os.path.join(output_folder, 'log_counts')
+        export_log_counts(folder, data, fit, act, counts_grouped, mu_p_test=mu_p_test)
+        
             
 def export_posterior_anova(project_name: str, filename: str,
                            groups: list[str]):

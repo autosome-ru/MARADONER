@@ -1906,7 +1906,8 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
         train_FOV = calc_fov(data=data, fit=fit, activities=activities)
     if data_test is None:
         test_FOV = None
-    res = TestResult(train_FOV, test_FOV, grouped=use_groups)
+        mu_p = None
+    res = (TestResult(train_FOV, test_FOV, grouped=use_groups), mu_p)
     with openers[fmt](f'{project}.fov.{fmt}', 'wb') as f:
         dill.dump(res, f)
     return res
