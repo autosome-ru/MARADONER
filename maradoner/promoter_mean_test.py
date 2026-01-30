@@ -14,7 +14,7 @@ class FOVMeanMode(str, Enum):
     knn = 'knn'
 
 def knn_predict(B: np.ndarray, Z: np.ndarray, mu_p: np.ndarray, test_inds: np.ndarray, 
-                n_B: int = 8, n_Z: int = 8, n_neighbours: int = 64) -> np.ndarray:
+                n_B: int = 8, n_Z: int = 8, n_neighbours: int = 64, covariate=None) -> np.ndarray:
 
     if n_B > 0:
         pca_b = PCA(n_components=n_B)
@@ -42,9 +42,10 @@ def knn_predict(B: np.ndarray, Z: np.ndarray, mu_p: np.ndarray, test_inds: np.nd
         else:
             Z_reduced = None
             comb = [B_reduced, ]
-    
+    if covariate:
+        comb.append(covariate)
     combined_features = np.hstack(comb)
-
+    # combined_features = (combined_features - combined_features.mean(axis=0, keepdims=True)) / combined_features.std(axis=0, keepdims=True)
     p = combined_features.shape[0]
     all_indices = np.arange(p)
     train_inds = np.setdiff1d(all_indices, test_inds)
@@ -72,7 +73,9 @@ def estimate_promoter_mean(project: str,
         activities : ActivitiesPrediction = dill.load(f)
     B0 = transform_data(data, helmert=False).B
     data, data_test = split_data(data, fit.promoter_inds_to_drop)
-    
+    data = transform_data(data, helmert=False, )
+    if data_test is not None:
+        data_test = transform_data(data_test, helmert=False)
     drops = activities.filtered_motifs
     U = activities.U_raw
     U_m = fit.motif_mean.mean.reshape(-1, 1)
@@ -91,6 +94,9 @@ def estimate_promoter_mean(project: str,
         config = dict()
         for i, c in enumerate(cols):
             config[c] = pygam.s(i, n_splines=num_splies)
+        # for i in range(len(cols) - 1):
+        #     a, b = cols[i:i+2]
+        #     config[f'{a}_{b}'] = pygam.te(pygam.s(i, n_splines=num_splies), pygam.s(i+1, n_splines=num_splies) )
         t = None
         for v in config.values():
             if t is None:
@@ -101,6 +107,7 @@ def estimate_promoter_mean(project: str,
         gam.gridsearch(X_train, mu_p, progress=False)
         mu_p_d = gam.predict(X[fit.promoter_inds_to_drop]) 
         mu_p_d_train = gam.predict(X_train)
+        print(1.0 - np.var(mu_p_d_train - mu_p) / np.var(mu_p))
     else:
         mu_p_d = 0
         mu_p_d_train = 0
@@ -116,6 +123,7 @@ def estimate_promoter_mean(project: str,
         Z = B @ U_m + fit.sample_mean.mean.reshape(1, -1)
         B = np.delete(B, drops, axis=1)
         Z = Z + B @ U
+        
         mu_p = knn_predict(B, Z, mu_p, fit.promoter_inds_to_drop,
                            n_neighbours=knn_n, n_Z=pca_z, n_B=pca_b) 
     elif mean_mode == mean_mode.null:

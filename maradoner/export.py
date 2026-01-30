@@ -379,6 +379,16 @@ def export_results(project_name: str, output_folder: str,
     DF(np.array([motif_mean, motif_mean_std]).T,
        index=motif_names, columns=['mean', 'std']).to_csv(os.path.join(folder, 'motif_means.tsv'),
                                                           sep='\t')
+    
+                                                          
+    mu_p_test = None
+    print(f'{project_name}.promoter_mean.{fmt}')
+    if os.path.isfile(f'{project_name}.promoter_mean.{fmt}'):
+        print(folder)
+        with open(f'{project_name}.promoter_mean.{fmt}', 'rb') as f:
+            mu_p_test = dill.load(f)
+        DF(mu_p_test, index=prom_names_test, columns=['mean']).to_csv(os.path.join(folder, 'test_promoter_means.tsv'),
+                                                                      sep='\t')                                                      
     folder = os.path.join(folder, 'correlations')
     os.makedirs(folder, exist_ok=True)
     DF(fit.sample_mean.mean).to_csv(os.path.join(folder, 'sample_means.tsv'),
@@ -459,12 +469,6 @@ def export_results(project_name: str, output_folder: str,
     DF(act.U_raw, index=motif_names_filtered, columns=data.sample_names).to_csv(os.path.join(folder, 'activity_raw.tsv'), sep='\t')
     
     
-    mu_p_test = None
-    if os.path.isfile(f'{project_name}.promoter_mean.{fmt}'):
-        with open(f'{project_name}.promoter_mean.{fmt}', 'rb') as f:
-            mu_p_test = dill.load(f)
-        DF(mu_p_test, index=prom_names_test, columns=['mean']).to_csv(os.path.join(folder, 'test_promoter_means.tsv'),
-                                                                      sep='\t')
             
     if os.path.isfile(f'{project_name}.fov.{fmt}'):
         with open(f'{project_name}.fov.{fmt}', 'rb') as f:
