@@ -886,7 +886,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                   G_fix_ind=j, G_fix_val=fix)
     fun = jax.jit(fun)
     grad = jax.jit(grad)
-    opt = MetaOptimizer(fun, grad, num_steps_momentum=50)
+    opt = MetaOptimizer(fun, grad, num_steps_momentum=50 if original_data is None else 0)
     res = opt.optimize(x0)
     if not np.isfinite(res.fun):
         print(res)

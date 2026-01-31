@@ -123,6 +123,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                                                   ' tables. All expression values are assumed to be in log2-scale.'),
             sample_groups: Path = Option(None, help='Either a JSON dictionary or a text file with a mapping between groups and sample names they'
                                           ' contain. If a text file, each line must start with a group name followed by space-separated sample names.'),
+            sample_groups_subset: bool = Option(False, help='Do not raise an exception if [orange]sample-groups[/orange] contains columns not present in the data.'),
             filter_lowexp_w: float = Option(0.9, help='Truncation boundary for filtering out low-expressed promoters. The closer [orange]w[/orange]'
                                             ' to 1, the more promoters will be left in the dataset.'),
             filter_max_mode: bool = Option(True, help='Use max-mode of filtering. Max-mode keeps promoters that are active at least for some samples.'
@@ -148,6 +149,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
         filter_plot = f'{name}.filter-plot.png'
     r = create_project(name, expression, loading_matrix_filenames=loading, motif_expression_filenames=motif_expression, 
                        loading_matrix_transformations=loading_transform, sample_groups=sample_groups, 
+                       sample_groups_subset=sample_groups_subset,
                        promoter_filter_lowexp_cutoff=filter_lowexp_w,
                        promoter_filter_plot_filename=filter_plot,               
                        promoter_filter_max=filter_max_mode,

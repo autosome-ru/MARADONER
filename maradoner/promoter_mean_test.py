@@ -42,7 +42,7 @@ def knn_predict(B: np.ndarray, Z: np.ndarray, mu_p: np.ndarray, test_inds: np.nd
         else:
             Z_reduced = None
             comb = [B_reduced, ]
-    if covariate:
+    if covariate is not None:
         comb.append(covariate)
     combined_features = np.hstack(comb)
     # combined_features = (combined_features - combined_features.mean(axis=0, keepdims=True)) / combined_features.std(axis=0, keepdims=True)
@@ -80,7 +80,6 @@ def estimate_promoter_mean(project: str,
     U = activities.U_raw
     U_m = fit.motif_mean.mean.reshape(-1, 1)
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
-    
     mu_p = fit.promoter_mean.mean.flatten()
     if covariate:
         ws = data.Y - mu_s.T - mu_p.reshape(-1, 1) - data.B @ U_m - np.delete(data.B, drops, axis=1) @ U
@@ -107,7 +106,7 @@ def estimate_promoter_mean(project: str,
         gam.gridsearch(X_train, mu_p, progress=False)
         mu_p_d = gam.predict(X[fit.promoter_inds_to_drop]) 
         mu_p_d_train = gam.predict(X_train)
-        print(1.0 - np.var(mu_p_d_train - mu_p) / np.var(mu_p))
+        # print(1.0 - np.var(mu_p_d_train - mu_p) / np.var(mu_p))
     else:
         mu_p_d = 0
         mu_p_d_train = 0

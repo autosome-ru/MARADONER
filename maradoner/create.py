@@ -72,7 +72,7 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
 def create_project(project_name: str, promoter_expression_filename: str, loading_matrix_filenames: list[str],
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
                    promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None, promoter_filter_max=True,
-                   motif_names_filename=None, n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
+                   sample_groups_subset=False,  motif_names_filename=None, n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
     if not os.path.isfile(promoter_expression_filename):
         raise FileNotFoundError(f'Promoter expression file {promoter_expression_filename} not found.')
     if type(loading_matrix_filenames) is str:
@@ -115,6 +115,17 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     promoter_expression = promoter_expression.set_index(promoter_expression.columns[0])
     
     if sample_groups:
+        if sample_groups_subset:
+            cols = set(promoter_expression.columns)
+            to_rem = list()
+            for group, samples in sample_groups.items():
+                samples = set(samples) & cols
+                if not samples:
+                    to_rem.append(group)
+                else:
+                    sample_groups[group] = list(samples)
+            for group in to_rem:
+                del sample_groups[group]
         cols = set()
         for vals in sample_groups.values():
             cols.update(vals)
