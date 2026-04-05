@@ -59,3 +59,19 @@ maradoner --help
 maradoner create --help
 maradoner fit --help
 # and so on for each command
+```
+
+# Cite
+For the time being, you can cite [our technical arXiv paper](https://doi.org/10.48550/arXiv.2602.03343) that explains MARADONER's inner clockworks in a great detail:
+
+```
+@misc{meshcheryakov2026,
+      title={MARADONER: Motif Activity Response Analysis Done Right}, 
+      author={Georgy Meshcheryakov and Andrey I. Buyan},
+      year={2026},
+      eprint={2602.03343},
+      archivePrefix={arXiv},
+      primaryClass={stat.CO},
+      url={https://arxiv.org/abs/2602.03343}, 
+}
+```
