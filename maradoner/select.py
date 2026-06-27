@@ -15,8 +15,13 @@ def select_motifs_single(project_name: str, filename: str):
     
     with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
         motif_score = dill.load(f).motif_mean
-        std = np.linalg.pinv(motif_score.fim, hermitian=True).diagonal() ** 0.5
-        motif_score = motif_score.mean / std ** 0.5
+        # Use the intercept (average activity) component mu_m = M[:, 0] and its
+        # Fisher block fim[:m, :m].
+        M = np.asarray(motif_score.mean)
+        M = M[:, 0] if M.ndim > 1 else M
+        m = len(M)
+        std = np.linalg.pinv(motif_score.fim[:m, :m], hermitian=True).diagonal() ** 0.5
+        motif_score = M / std ** 0.5
     
     
     
@@ -24,7 +29,7 @@ def select_motifs_single(project_name: str, filename: str):
         with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
             U = dill.load(f)
             filtered = U.filtered_motifs
-            U = U.U.mean(axis=-1, keepdims=True)
+            U = U.U.mean(axis=-1)
         inds = np.arange(0, len(motif_score))
         inds = np.delete(inds, filtered)
         motif_score[inds] += U

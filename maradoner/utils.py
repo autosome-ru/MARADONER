@@ -81,6 +81,13 @@ class ProjectData:
     promoter_names: list
     motif_postfixes: list
     fmt: str
+    L: np.ndarray = None
+    # Covariate design matrix X of shape (c, s): each column is a sample, each
+    # row a covariate. The first row is always the intercept (all ones). When no
+    # covariates are supplied, X is just the intercept row (c == 1), which makes
+    # the model identical to the classic MARADONER (M X == mu_m 1_s^T).
+    X: np.ndarray = None
+    covariate_names: list = None
 
 
 def read_init(project_name: str) -> ProjectData:
@@ -94,6 +101,19 @@ def read_init(project_name: str) -> ProjectData:
     group_inds = list()
     for name in group_names:
         group_inds.append(np.array(init['groups'][name]))
+    import pandas as pd
+    L = None
+    # L = pd.read_csv('/home/georgy/Загрузки/cluster32_nmf.tsv', sep='\t', index_col=0)
+    # L = L.loc[init['promoter_names']]
+    # L = L.values
+    sample_names = init['sample_names']
+    X = init.get('covariates', None)
+    covariate_names = init.get('covariate_names', None)
+    if X is None:
+        # No covariates supplied: design matrix is just the intercept row of ones,
+        # i.e. the classic mu_m 1_s^T term.
+        X = np.ones((1, len(sample_names)), dtype=float)
+        covariate_names = ['intercept']
     r = ProjectData(
         Y=init['expression'],
         B=init['loadings'],
@@ -103,8 +123,11 @@ def read_init(project_name: str) -> ProjectData:
         promoter_names=init['promoter_names'],
         motif_postfixes=init['motif_postfixes'],
         group_names=group_names,
-        sample_names=init['sample_names'],
+        sample_names=sample_names,
         group_inds=group_inds,
+        L=L,
+        X=X,
+        covariate_names=covariate_names,
         fmt=fmt
         )
     return r

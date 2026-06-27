@@ -12,11 +12,40 @@ from collections import defaultdict
 from enum import Enum
 from .utils import read_init, ProjectData, logger_print, openers
 import dill
+from .linalg import lowrank_decomposition, ones_nullspace, ones_nullspace_transform, \
+                    ones_nullspace_transform_transpose, null_space_transform, LowrankDecomposition
+from .loading_context import estimate_context, LoadingContext, LoadingMultipliers, estimate_multipliers
+from .drist import DRIST
+from . import lowrank as _lowrank
 
-class GLSRefinement(str, Enum):
-    none = 'none'
-    fixed = 'fixed'
-    full = 'full'
+
+def _error_lowrank_W(error_variance):
+    """Return the (s, k) low-rank factor W of the error covariance, or None if absent.
+    Defensive against old pickles that predate the `lowrank` field."""
+    W = getattr(error_variance, 'lowrank', None)
+    if W is None:
+        return None
+    W = np.asarray(W)
+    return W if W.ndim == 2 and W.shape[1] > 0 else None
+
+
+def _activity_lowrank_V(motif_variance):
+    """Return the (s, k) low-rank factor V of the activity covariance, or None if absent."""
+    V = getattr(motif_variance, 'lowrank', None)
+    if V is None:
+        return None
+    V = np.asarray(V)
+    return V if V.ndim == 2 and V.shape[1] > 0 else None
+
+
+def error_covariance(error_variance, group_inds_inv) -> np.ndarray:
+    """Dense per-sample error covariance Theta = diag(D[group]) + W W^T (s x s)."""
+    d = np.asarray(error_variance.variance)[group_inds_inv]
+    Theta = np.diag(d)
+    W = _error_lowrank_W(error_variance)
+    if W is not None:
+        Theta = Theta + W @ W.T
+    return Theta
 
 class GOFStat(str, Enum):
     fov = 'fov'
@@ -25,181 +54,6 @@ class GOFStat(str, Enum):
 class GOFStatMode(str, Enum):
     residual = 'residual'
     total = 'total'
-
-def null_space_transform(Q: np.ndarray, Y: np.ndarray) -> np.ndarray:
-    """
-    Compute V^T Y where V is the orthogonal complement to Q, using Householder 
-    transformations via LAPACK's dormqr. 
-    
-    Parameters:
-    Q (ndarray): p x r semi-orthogonal matrix where Q^T Q = I_r, r <= p. 
-    Y (ndarray): p x n matrix. 
-    
-    Returns:
-    VT_Y (ndarray): (p - r) x n matrix representing V^T Y (float64).
-    """
-
-    Y = np.array(Y, order='F', copy=True)
-
-    p, r = Q.shape
-
-    if r > p:
-        raise ValueError(f"Number of columns r ({r}) cannot exceed number of rows p ({p}) in Q.")
-        
-    # 1. Compute QR factorization of Q
-    # Need a copy of Q because 'raw' QR might modify it slightly in some versions/backends,
-    # even though documentation often says it doesn't. Using overwrite_a=True below is safer.
-    Q_copy = np.array(Q, order='F', dtype=np.float64) # Fortran order often preferred by LAPACK
-    qr_a, tau, work_qr, info_qr = lapack.dgeqrf(Q_copy, overwrite_a=True)
-    if info_qr != 0:
-        raise RuntimeError(f"LAPACK dgeqrf failed with info = {info_qr}")
-    # qr_a now contains R in upper triangle and reflectors below diagonal (overwritten Q_copy)
-    
-    # 2. Prepare matrix Z (to be modified by dormqr)
-
-    # 3. Apply Q_full^T to Z using dormqr
-    lwork = -1
-    # Use Z's shape here for the query, pass dummy Z
-    _, work_query, _ = lapack.dormqr('L', 'T', qr_a, tau, np.empty_like(Y), lwork=lwork, overwrite_c=True)
-    optimal_lwork = int(work_query[0].real)
-    lwork = max(1, optimal_lwork)
-
-
-    # Actual application
-    q_mult_y, work_actual, info_ormqr = lapack.dormqr('L', 'T', qr_a, tau, Y, 
-                                                      lwork=lwork, overwrite_c=True)
-    
-    if info_ormqr != 0:
-        print("--- Debug Info Before dormqr Failure ---")
-        print(f"Q shape: {Q.shape}, dtype: {Q.dtype}")
-        print(f"qr_a shape: {qr_a.shape}, dtype: {qr_a.dtype}, order: {'F' if qr_a.flags.f_contiguous else 'C'}")
-        print(f"tau shape: {tau.shape}, dtype: {tau.dtype}")
-        print(f"Y shape: {Y.shape}, dtype: {Y.dtype}, order: {'F' if Y.flags.f_contiguous else 'C'}")
-        print(f"lwork: {lwork}")
-        print("--- End Debug Info ---")
-        raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr}")
-
-    VT_Y = q_mult_y[r:, :] 
-    return VT_Y
-@dataclass(frozen=True)
-class LowrankDecomposition:
-    Q: np.ndarray
-    S: np.ndarray
-    V: np.ndarray
-
-    def null_space_transform(self, Y: np.ndarray) -> np.ndarray:
-        """
-        Compute V^T Y where V is the orthogonal complement to Q, using Householder 
-        transformations via LAPACK's dormqr. 
-        
-        Parameters:
-        Q (ndarray): p x r semi-orthogonal matrix where Q^T Q = I_r, r <= p. 
-        Y (ndarray): p x n matrix. 
-        
-        Returns:
-        VT_Y (ndarray): (p - r) x n matrix representing V^T Y (float64).
-        """
-        Y = np.array(Y, order='F', copy=True)
-        Q = np.array(self.Q).astype(np.float64, copy=False)
-
-        p, r = Q.shape
-
-        if r > p:
-            raise ValueError(f"Number of columns r ({r}) cannot exceed number of rows p ({p}) in Q.")
-            
-        # 1. Compute QR factorization of Q
-        # Need a copy of Q because 'raw' QR might modify it slightly in some versions/backends,
-        # even though documentation often says it doesn't. Using overwrite_a=True below is safer.
-        Q_copy = np.array(Q, order='F', dtype=np.float64) # Fortran order often preferred by LAPACK
-        qr_a, tau, work_qr, info_qr = lapack.dgeqrf(Q_copy, overwrite_a=True)
-        if info_qr != 0:
-            raise RuntimeError(f"LAPACK dgeqrf failed with info = {info_qr}")
-        # qr_a now contains R in upper triangle and reflectors below diagonal (overwritten Q_copy)
-        
-        # 2. Prepare matrix Z (to be modified by dormqr)
-
-        # 3. Apply Q_full^T to Z using dormqr
-        lwork = -1
-        # Use Z's shape here for the query, pass dummy Z
-        _, work_query, _ = lapack.dormqr('L', 'T', qr_a, tau, np.empty_like(Y), lwork=lwork, overwrite_c=True)
-        optimal_lwork = int(work_query[0].real)
-        lwork = max(1, optimal_lwork)
-
-
-        # Actual application
-        q_mult_y, work_actual, info_ormqr = lapack.dormqr('L', 'T', qr_a, tau, Y, 
-                                                          lwork=lwork, overwrite_c=True)
-        
-        if info_ormqr != 0:
-            print("--- Debug Info Before dormqr Failure ---")
-            print(f"Q shape: {Q.shape}, dtype: {Q.dtype}")
-            print(f"qr_a shape: {qr_a.shape}, dtype: {qr_a.dtype}, order: {'F' if qr_a.flags.f_contiguous else 'C'}")
-            print(f"tau shape: {tau.shape}, dtype: {tau.dtype}")
-            print(f"Y shape: {Y.shape}, dtype: {Y.dtype}, order: {'F' if Y.flags.f_contiguous else 'C'}")
-            print(f"lwork: {lwork}")
-            print("--- End Debug Info ---")
-            raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr}")
-
-        VT_Y = q_mult_y[r:, :] 
-        return VT_Y
-    
-    
-    def adjoint_null_space_transform(self, Z: np.ndarray) -> np.ndarray:
-        """
-        Computes V @ Z, the inverse of the null_space_transform.
-        V is the orthogonal complement to Q. Z is typically the output of
-        null_space_transform (i.e., Z = V^T Y).
-        
-        Parameters:
-        Q (ndarray): The p x r semi-orthogonal matrix from the class instance.
-        Z (ndarray): (p - r) x n matrix. 
-        
-        Returns:
-        V_Z (ndarray): p x n matrix representing V @ Z (float64).
-        """
-        Q = np.array(self.Q).astype(np.float64, copy=False)
-        p, r = Q.shape
-        
-        if Z.ndim != 2:
-            raise ValueError("Input Z must be a 2D array.")
-            
-        if Z.shape[0] != p - r:
-            raise ValueError(f"Input Z must have p-r = {p-r} rows, but got {Z.shape[0]}.")
-        
-        n = Z.shape[1]
-        
-        # Ensure Z is in a compatible format for LAPACK
-        Z = np.array(Z, dtype=np.float64, copy=False)
-    
-        # 2. Compute the QR factorization of Q to get Householder reflectors
-        # This part is identical to the forward transform.
-        Q_copy = np.array(Q, order='F', dtype=np.float64)
-        qr_a, tau, work_qr, info_qr = lapack.dgeqrf(Q_copy, overwrite_a=True)
-        if info_qr != 0:
-            raise RuntimeError(f"LAPACK dgeqrf failed with info = {info_qr}")
-            
-        # 3. Create the padded matrix [0; Z]
-        # This is the key step for the inverse transformation.
-        Y_padded = np.vstack([np.zeros((r, n)), Z])
-        Y_padded = np.array(Y_padded, order='F', copy=True)
-    
-        # 4. Apply Q_full (no transpose) to the padded matrix using dormqr
-        # Note: transr='N' for no transpose
-        
-        # Workspace query
-        lwork = -1
-        _, work_query, _ = lapack.dormqr('L', 'N', qr_a, tau, Y_padded, lwork=lwork, overwrite_c=True)
-        optimal_lwork = int(work_query[0].real)
-        lwork = max(1, optimal_lwork)
-    
-        # Actual application of the transformation
-        V_Z, work_actual, info_ormqr = lapack.dormqr('L', 'N', qr_a, tau, Y_padded, 
-                                                      lwork=lwork, overwrite_c=True)
-        
-        if info_ormqr != 0:
-            raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr}")
-    
-        return V_Z
 
 
 
@@ -210,6 +64,43 @@ class TransformedData:
     group_inds: list
     group_inds_inv: np.ndarray
     K : np.ndarray = None
+    L: np.ndarray = None
+    # Covariate design matrix, shape (c, s). First row is the intercept (ones).
+    X: np.ndarray = None
+
+
+def covariate_projection(D_n: jnp.ndarray, X: jnp.ndarray) -> jnp.ndarray:
+    """Build the projection-aware inverse used in the Sigma/G REML step:
+
+        H_X^T (H_X D H_X^T)^{-1} H_X  ==  D^{-1} - D^{-1} X^T (X D^{-1} X^T)^{-1} X D^{-1},
+
+    where H_X is any semi-orthogonal complement of the row space of X (which always
+    contains 1_s as its intercept row). Projecting out X simultaneously removes the
+    promoter-mean term mu_p 1_s^T (via 1_s) and the covariate mean term B M X (via
+    the full row space of X). When X is just the intercept row this reduces exactly
+    to the classic D^{-1} - D^{-1} 1 1^T D^{-1} / (1^T D^{-1} 1) construction.
+
+    Parameters
+    ----------
+    D_n : (s,) sample-wise error variances (already expanded over samples).
+    X   : (c, s) covariate design matrix.
+    """
+    X = jnp.asarray(X, dtype=D_n.dtype)
+    Di = 1.0 / D_n                      # (s,) = diag(D^{-1})
+    XDi = X * Di                        # (c, s) = X D^{-1}
+    XDiX = XDi @ X.T                    # (c, c) = X D^{-1} X^T
+    return jnp.diag(Di) - XDi.T @ jnp.linalg.solve(XDiX, XDi)
+
+
+def motif_mean_matrix(motif_mean, X) -> np.ndarray:
+    """Per-sample motif-activity mean in motif space: M @ X, shape (m, s).
+
+    Works for both the legacy 1-D mu_m (treated as an intercept-only M) and the
+    covariate matrix M of shape (m, c)."""
+    M = np.asarray(motif_mean.mean if hasattr(motif_mean, 'mean') else motif_mean)
+    if M.ndim == 1:
+        M = M.reshape(-1, 1)
+    return M @ np.asarray(X)
     
 @dataclass(frozen=True)
 class ErrorVarianceEstimates:
@@ -218,6 +109,10 @@ class ErrorVarianceEstimates:
     fim: np.ndarray
     loglik: float
     loglik_start: float
+    # Optional low-rank correction to the error column-covariance: the full error
+    # covariance is Theta = diag(variance[group]) + lowrank @ lowrank.T, with `lowrank`
+    # of shape (s, k).  None / k == 0 recovers the classic diagonal group-wise D.
+    lowrank: np.ndarray = None
 
 @dataclass(frozen=True)
 class MotifVarianceEstimates:
@@ -227,6 +122,10 @@ class MotifVarianceEstimates:
     fixed_group: int
     loglik: float
     loglik_start: float
+    # Optional low-rank correction to the activity column-covariance: the full activity
+    # covariance is G = diag(group[group]) + lowrank @ lowrank.T, with `lowrank` of shape
+    # (s, k).  None / k == 0 recovers the classic diagonal group-wise G.
+    lowrank: np.ndarray = None
 
 @dataclass(frozen=True)
 class MotifMeanEstimates:
@@ -252,83 +151,15 @@ class FitResult:
     clustering: np.ndarray = None
     clustered_B: np.ndarray = None
     promoter_inds_to_drop: list = None
+    loading_context: LoadingContext = None
+    drist: DRIST = None
+    loading_multipliers: LoadingMultipliers = None
     
-def ones_nullspace(n: int):
-    res = np.zeros((n - 1, n), dtype=float)
-    for i in range(1, n):
-        norm = (1 / i + 1) ** 0.5
-        res[i - 1, :i] = -1 / i / norm
-        res[i - 1, i] = 1 / norm
-    return res
-
-def ones_nullspace_transform(x):
-    n, m = x.shape
-    if n <= 1:
-        return np.zeros((0, m), dtype=x.dtype)
-
-    Y = np.zeros((n - 1, m), dtype=float) 
-    current_sum = x[0, :].astype(float)
-
-    for r in range(n - 1): 
-        i = r + 1 
-        sqrt_i_i_plus_1 = np.sqrt(i * (i + 1)) 
-        
-        # Coefficients for row r of Y (which uses row i-1 = r of H)
-        coeff1 = -1.0 / sqrt_i_i_plus_1
-        coeff2 = np.sqrt(i / (i + 1))
-        Y[r, :] = coeff1 * current_sum + coeff2 * x[r + 1, :]
-
-        # Update current_sum for the next iteration (to become sum_{k=0}^{r+1} X[k,:])
-        if r < n - 2: # Avoid adding beyond X's bounds on the last iteration
-             current_sum += x[r + 1, :]
-    return Y
-
-def ones_nullspace_transform_transpose(X: np.ndarray) -> np.ndarray:
-    n, m = X.shape
-    n = n + 1 
-
-    if n == 1:
-         output_dtype = X.dtype if np.issubdtype(X.dtype, np.floating) else float
-         return np.zeros((1, m), dtype=output_dtype)
-
-    output_dtype = X.dtype if np.issubdtype(X.dtype, np.floating) else float
-    Y = np.zeros((n, m), dtype=output_dtype)
-
-    current_suffix_sum = np.zeros(m, dtype=output_dtype)
-
-    for k in range(n - 2, -1, -1):
-        i = k + 1.0 
-
-        sqrt_term_i_ip1 = np.sqrt(i * (i + 1.0))
-        coeff_pos = i / sqrt_term_i_ip1
-        coeff_neg = -1.0 / sqrt_term_i_ip1
 
 
-        Y[k + 1, :] = coeff_pos * X[k, :] + current_suffix_sum
-
-        current_suffix_sum += coeff_neg * X[k, :]
-
-    Y[0, :] = current_suffix_sum
-
-    return Y
-
-def lowrank_decomposition(X: np.ndarray, rel_eps=1e-15) -> LowrankDecomposition:
-    svd = jnp.linalg.svd
-    q, s, v = [np.array(t) for t in svd(X, full_matrices=False)]
-    if rel_eps is not None:
-        max_sv = max(s)
-        n = len(s)
-        for r in range(n):
-            if s[r] / max_sv < rel_eps:
-                r -= 1
-                break
-        r += 1
-        s = s[:r]
-        q = q[:, :r]
-        v = v[:r]
-    return LowrankDecomposition(q, s, v)
-
-def transform_data(data, std_y=False, std_b=False, helmert=True, weights=None) -> TransformedData:
+def transform_data(data, std_y=False, helmert=True, weights=None,
+                   loading_context: LoadingContext = None, drist: DRIST = None,
+                   loading_multipliers: LoadingMultipliers = None) -> TransformedData:
     try:
         B = data.B_orig
         Y = data.Y_orig
@@ -337,13 +168,17 @@ def transform_data(data, std_y=False, std_b=False, helmert=True, weights=None) -
         B = data.B
         Y = data.Y
         group_inds = data.group_inds
+    if drist is not None:
+        B = drist.transform(B)
+    if loading_context is not None:
+        B = loading_context.apply_correction(B, B, L=data.L)
+    if loading_multipliers is not None:
+        B = loading_multipliers.apply_correction(B)
     if weights is not None:
         B = B * weights.reshape(-1, 1)
         Y = Y * weights.reshape(-1, 1)
         if weights.std()  == 0:
             weights = None
-    if std_b:
-        B /= B.std(axis=0, keepdims=True)
     if helmert:
         if weights is None:
             # F_p = ones_nullspace(len(Y))
@@ -364,9 +199,14 @@ def transform_data(data, std_y=False, std_b=False, helmert=True, weights=None) -
     for i in sorted(d.keys()):
         group_inds_inv.append(d[i])
     group_inds_inv = np.array(group_inds_inv)
-    return TransformedData(Y=Y, B=B, 
+    X = getattr(data, 'X', None)
+    if X is None:
+        X = np.ones((1, Y.shape[1]), dtype=float)
+    return TransformedData(Y=Y, B=B,
                            group_inds=group_inds,
-                           group_inds_inv=group_inds_inv)
+                           group_inds_inv=group_inds_inv,
+                           L=data.L,
+                           X=np.asarray(X, dtype=float))
 
 def loglik_error(d: jnp.ndarray, Qn_Y: jnp.ndarray, group_inds_inv: jnp.ndarray) -> float:
     d = d.at[group_inds_inv].get()
@@ -399,33 +239,9 @@ def loglik_error_full(x: jnp.ndarray, Y: jnp.ndarray, Q_C: jnp.ndarray, group_in
     YS = YS - YS @ Q_C @ jnp.linalg.inv(M) @ Q_C.T * S
     vec = jnp.einsum('ij,ji->', YD, YS)
     logdet_D = (p-r) * (-jnp.log(D).sum()  + jnp.log(w_D))
-    logdet_S = (s-1) * (jnp.linalg.slogdet(M)[0] - jnp.log(S).sum())
+    logdet_S = (s-1) * (jnp.linalg.slogdet(M)[1] - jnp.log(S).sum())
     logdet = logdet_D + logdet_S
     return vec + logdet
-
-# def loglik_error_full(x: jnp.ndarray, Y: jnp.ndarray, Q_C: jnp.ndarray, group_inds_inv: jnp.ndarray, D_fix_val: float, D_fix_ind: int) -> float:
-#     p, s = Y.shape
-#     x = x ** 2
-#     D = x.at[:-p].get()
-#     if D_fix_ind is not None:
-#         D = jnp.insert(D, D_fix_ind, D_fix_val)
-#     S = x.at[-p:].get()
-#     S = 1 / S
-#     D = 1 / D
-#     D = D.at[group_inds_inv].get()
-#     w_D = D.sum()
-#     M = (Q_C.T * S) @ Q_C
-
-#     YD = Y * D
-#     YS = Y.T * S
-#     YD = YD - jnp.outer(YD.sum(axis=-1), D / w_D)
-#     YS = YS - YS @ Q_C @ jnp.linalg.inv(M) @ Q_C.T
-#     vec = jnp.einsum('ij,ji->', YD, YS)
-#     logdet_D = -(p-1) * (jnp.log(D).sum()  - w_D)
-#     logdet_S = (s-1) * (jnp.linalg.slogdet(M)[0] - jnp.log(S).sum())
-#     logdet = logdet_D + logdet_S
-#     return vec + logdet
-    
     
 def loglik_error_grad(d: jnp.ndarray, Qn_Y: jnp.ndarray, group_inds_inv: jnp.ndarray,
                       group_inds: jnp.ndarray) -> jnp.ndarray:
@@ -463,70 +279,6 @@ def loglik_motifs(x: jnp.ndarray, Z: jnp.ndarray, BTB: jnp.ndarray,
     v = (Q_B.T * Sigma @ Z * G @ Q_A).flatten('F')
     loglik = -(v ** 2 / cov).sum() + logdet
     return loglik 
-
-def loglik_motifs_joint(x: jnp.ndarray, Z: jnp.ndarray, Sigma_hat: jnp.ndarray,
-                        group_inds_inv: jnp.ndarray, g: int):
-    p, s = Z.shape
-    
-    # --- Setup S ---
-    x_sq = x ** 2
-    D_diag = x_sq[:g][group_inds_inv]
-    G_diag = x_sq[g:][group_inds_inv]
-    
-    # S is diagonal, so we only work with the (ps,)-shaped diagonal vector
-    S_diag = jnp.kron(G_diag, Sigma_hat) + jnp.kron(D_diag, jnp.ones_like(Sigma_hat))
-    S_inv_diag = 1.0 / S_diag
-
-    # --- Log-Determinant Term ---
-    # log(det(S)) + log(det(D_N))
-    # D_N = (1/s) * sum(S_i^-1), so log(det(D_N)) = p*log(1/s) + log(det(sum(S_i^-1)))
-    # We ignore the constant p*log(1/s)
-    logdet_S = jnp.log(S_diag).sum()
-    
-    # Reshape S_inv_diag to (p, s) to easily sum the blocks
-    S_inv_reshaped = S_inv_diag.reshape(p, s, order='F')
-    U_diag = S_inv_reshaped.sum(axis=1)  # U = sum(S_i^-1), shape (p,)
-    
-    logdet_DN = jnp.log(U_diag).sum()
-    logdet_term = logdet_S + logdet_DN
-
-    # --- Quadratic Term ---
-    # vec(Z)^T S^-1 vec(Z) - (v^T U^-1 v), where v = sum(S_i^-1 z_i)
-
-    # Term 1: vec(Z)^T S^-1 vec(Z)
-    # This is an element-wise product summed over all ps elements.
-    term1 = (Z**2 * S_inv_reshaped).sum()
-
-    # Term 2 (Correction): -v^T U^-1 v
-    # v = sum_{i=1 to s} S_i^{-1} z_i
-    v_vec = (S_inv_reshaped * Z).sum(axis=1) # Shape (p,)
-    
-    # U is diagonal with diagonal elements U_diag. U^-1 is diagonal with 1/U_diag.
-    # v^T U^-1 v is a sum over p elements.
-    term2 = -(v_vec**2 / U_diag).sum()
-
-    quadratic_term = term1 + term2
-    
-    # --- Final Log-Likelihood ---
-    # The formula for a Gaussian log-likelihood has a negative sign.
-    # loglik = -0.5 * (quadratic_term + logdet_term)
-    # If you are minimizing the negative log-likelihood, you would return 0.5 * (...)
-    return 0.5 * (quadratic_term + logdet_term)
-    
-    
-
-def loglik_motifs_naive(x: jnp.ndarray, Y_Fn: jnp.ndarray, B, BTB, FDF, Fn,
-                        group_inds_inv, fix_group, fix_val):
-    x = jnp.array(x)
-    Sigma = x.at[:len(BTB)].get() 
-    G = x.at[len(BTB):].get() 
-    if fix_group is not None:
-        G = jnp.insert(G, fix_group, fix_val)
-    G = G.at[group_inds_inv].get()
-    mx = jnp.kron(Fn * G @ Fn.T, B * Sigma @ B.T)
-    mx = mx + jnp.kron(FDF, jnp.identity(len(B)))
-    Y_Fn = Y_Fn.reshape((-1, 1), order='F')
-    return (Y_Fn.T @ jnp.linalg.inv(mx) @ Y_Fn).flatten()[0] + jnp.linalg.slogdet(mx)[1]
 
 def loglik_motifs_grad(x: jnp.ndarray, Z: jnp.ndarray, BTB: jnp.ndarray,
                   D_product_inv: jnp.ndarray, group_inds_inv: jnp.ndarray,
@@ -572,36 +324,6 @@ def loglik_motifs_grad(x: jnp.ndarray, Z: jnp.ndarray, BTB: jnp.ndarray,
     if drop_sigma:
         grad = grad[len(BTB):]
     return grad 
-
-def loglik_motifs_fim_naive(x: jnp.ndarray, B: jnp.ndarray, 
-                      D: jnp.ndarray, group_inds_inv: jnp.ndarray,
-                      group_inds: jnp.ndarray, G_fix_ind=None, G_fix_val=1.0):
-    def cov(x):
-        Sigma = x.at[:B.shape[1]].get() 
-        G = x.at[B.shape[1]:].get()
-        if G_fix_ind is not None:
-            G = jnp.insert(G, G_fix_ind, G_fix_val)
-        G = G.at[group_inds_inv].get()
-        tD = D.at[group_inds_inv].get()
-        H = ones_nullspace(len(tD))
-        L = jnp.linalg.cholesky(H * tD @ H.T)
-        L = jnp.linalg.inv(L)
-        A = L @ H * G @ H.T @ L.T
-        C = B * Sigma @ B.T
-        S_hat = jnp.kron(A, C)
-        S_hat = S_hat + np.identity(len(S_hat))
-        return S_hat
-    S_hat = cov(x)
-    S_hat = np.linalg.inv(S_hat)
-    grad = jax.jacrev(cov)(x)
-    fim = np.zeros((len(x), len(x)), dtype=float)
-    vec = S_hat @ grad
-    for i in range(len(x)):
-        for j in range(i, len(x)):
-            fim[i, j] = jnp.trace(vec[..., i] @ vec[..., j]) / 2
-            fim[j, i] = fim[i, j]
-    return fim
-        
 
 def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray, 
                       D_product_inv: jnp.ndarray, group_inds_inv: jnp.ndarray,
@@ -703,7 +425,7 @@ def calc_error_variance_fim(data: TransformedData, error_variance: jnp.ndarray):
     return group_loadings.T @ fim @ group_loadings
 
 def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
-                            verbose=False) -> ErrorVarianceEstimates:
+                            error_lowrank: int = 0, verbose=False) -> ErrorVarianceEstimates:
     p = B_decomposition.Q.shape[0]
     Y = B_decomposition.null_space_transform(data.Y)
     d0 = jnp.array([np.var(Y[:, inds]) for inds in data.group_inds])
@@ -713,19 +435,35 @@ def estimate_error_variance(data: TransformedData, B_decomposition: LowrankDecom
                    group_inds=data.group_inds)
     fun = jax.jit(fun)
     grad = jax.jit(grad)
-    opt = MetaOptimizer(fun, grad,  num_steps_momentum=15, 
+    opt = MetaOptimizer(fun, grad,  num_steps_momentum=15,
                         )
     res = opt.optimize(d0)
     if verbose:
         print('-' * 15)
         print(res)
         print('-' * 15)
-    
-    fim = calc_error_variance_fim(data, res.x)
-    return ErrorVarianceEstimates(np.array(res.x), np.ones(p),
+
+    sigma = np.array(res.x)
+    loglik = res.fun
+    W = None
+    if error_lowrank and error_lowrank > 0:
+        # Jointly refine the group variances together with an (s x k) low-rank update to
+        # the error column-covariance via the same REML deviance (Woodbury / Gram form).
+        G_Y = np.asarray(Y).T @ np.asarray(Y)          # s x s sufficient statistic
+        ptilde = Y.shape[0]
+        sigma, W, loglik = _lowrank.estimate_error_lowrank(
+            G_Y, ptilde, data.group_inds_inv, data.group_inds,
+            k=int(error_lowrank), sigma0=np.array(res.x), verbose=verbose)
+        if verbose:
+            print(f'[error-lowrank k={error_lowrank}] REML deviance '
+                  f'{res.fun:.3f} -> {loglik:.3f} (gain {res.fun - loglik:+.3f})')
+
+    fim = calc_error_variance_fim(data, sigma)
+    return ErrorVarianceEstimates(sigma, np.ones(p),
                                   np.array(fim),
                                   loglik_start=res.start_loglik,
-                                  loglik=res.fun)
+                                  loglik=loglik,
+                                  lowrank=(np.asarray(W) if W is not None and W.shape[1] else None))
 
 
 def estimate_error_variance_full(data: TransformedData,
@@ -747,7 +485,7 @@ def estimate_error_variance_full(data: TransformedData,
         Y0 = Y0 - Y0.mean(axis=0, keepdims=True) - Y0.mean(axis=1, keepdims=True) + Y0.mean()
         D = error_variance.variance
         D = D[original_data.group_inds_inv]
-        Y0 = Y0 / D ** (-0.5)
+        Y0 = Y0 * D ** (-0.5)
         prom_x0 = Y0.var(axis=1)
     else:
         prom_x0 = jnp.ones(len(data.Y))
@@ -761,9 +499,14 @@ def estimate_error_variance_full(data: TransformedData,
         print(res)
         print('-' * 15)
     x = res.x ** 2
-    D = x[:-len(data.Y)] + 1e-4
+    D = x[:-len(data.Y)] 
     D = np.insert(D, D_fix_ind, D_fix_val)
-    S = x[-len(data.Y):] + 1e-3
+    S = x[-len(data.Y):]# + 1e-4
+    
+    # Transforming to weights
+    S = 1 - S / (original_data.Y * D[original_data.group_inds_inv] ** (-0.5)).var(axis=1)
+    S = 1.0 / np.clip(S, 1e-8, 1.0)
+    
     fim = error_variance.fim # TODO
     
     return ErrorVarianceEstimates(np.array(D), np.array(S), np.array(fim),
@@ -778,8 +521,14 @@ def estimate_promoter_mean(data: TransformedData,
     D = error_variance.variance[data.group_inds_inv]
     Y = jnp.array(data.Y)
     Q_C = jnp.array(B_decomposition.Q)
-    w = (1 / D).sum()
-    mean = Y @ (1 / D.reshape(-1, 1))
+    W = _error_lowrank_W(error_variance)
+    if W is None:
+        dvec = (1.0 / D).reshape(-1, 1)              # Theta^{-1} 1_s  (diagonal case)
+    else:
+        # GLS weighting with the full error covariance Theta = D + W W^T.
+        dvec = (_lowrank.theta_inv(D, W) @ jnp.ones((len(D), 1)))
+    w = float(jnp.sum(dvec))                         # 1_s^T Theta^{-1} 1_s  (dvec = Theta^{-1} 1)
+    mean = Y @ dvec
     mean = mean - Q_C @ (Q_C.T @ mean)
     weights = error_variance.promotor ** -0.5
     if np.std(weights) > 1e-12:
@@ -847,6 +596,7 @@ def _estimate_motif_variance_mom(Y, B, ind_fix, fix_value, eps=1e-14):
 def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
                              error_variance: ErrorVarianceEstimates,
                              original_data: TransformedData = None,
+                             activity_lowrank: int = 0,
                              verbose=False) -> MotifVarianceEstimates:
     multiplier = 1e-2
     D = jnp.array(error_variance.variance)
@@ -870,12 +620,16 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
         G0 = np.delete(G0, j)
     else:
         Sigma0, G0 = jnp.ones(len(BTB), dtype=float), np.repeat(fix, len(D) - 1)
-    
-    d = d / d.sum() ** 0.5
-    D_product_inv = jnp.outer(-d, d)
-    D_product_inv = jnp.fill_diagonal(D_product_inv,
-                                      D_product_inv.diagonal() + d * d.sum(),
-                                      inplace=False )
+
+    # H_X^T (H_X Theta H_X^T)^{-1} H_X : projects out the full covariate row space X
+    # (which contains 1_s), thereby removing both mu_p 1_s^T and the B M X mean.
+    # With a low-rank error correction, Theta = D + W W^T (else Theta = D).
+    W_err = _error_lowrank_W(error_variance)
+    D_n = D.at[data.group_inds_inv].get()
+    if W_err is None:
+        D_product_inv = covariate_projection(D_n, data.X)
+    else:
+        D_product_inv = _lowrank.covariate_projection_theta(D_n, W_err, data.X)
     Z = data.B.T @ data.Y @ D_product_inv
 
     x0 = jnp.append(Sigma0, G0)
@@ -924,9 +678,27 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
         fim = fim(x)
     else:
         fim = f
+    V_act = None
+    loglik = res.fun
+    if activity_lowrank and activity_lowrank > 0:
+        # Refine (Sigma, nu, V) jointly with a rank-k correction to the activity covariance
+        # G = diag(nu) + V V^T, using the safe-eigh REML (nan-free gradient even when grouped).
+        from . import lowrank_g as _lrg
+        Sigma_lr, nu_lr, V_act, loglik = _lrg.estimate_activity_lowrank(
+            np.asarray(Z), np.asarray(BTB), np.asarray(D_product_inv),
+            data.group_inds_inv, data.group_inds, k=int(activity_lowrank),
+            Sigma0=np.asarray(Sigma), nu0=np.asarray(G),
+            fix_ind=int(j), fix_val=float(fix), verbose=verbose)
+        Sigma = Sigma_lr
+        G = nu_lr
+        if verbose:
+            print(f'[activity-lowrank k={activity_lowrank}] Sigma/G REML deviance '
+                  f'{res.fun:.3f} -> {loglik:.3f} (gain {res.fun - loglik:+.3f})')
     return MotifVarianceEstimates(motif=np.array(Sigma), group=np.array(G), fim=np.array(fim),
                                   fixed_group=j, loglik_start=res.start_loglik,
-                                  loglik=res.fun)
+                                  loglik=loglik,
+                                  lowrank=(np.asarray(V_act) if V_act is not None
+                                           and np.asarray(V_act).shape[1] else None))
 
 
 def estimate_motif_variance_identity(data: TransformedData, B_decomposition: LowrankDecomposition,
@@ -934,14 +706,12 @@ def estimate_motif_variance_identity(data: TransformedData, B_decomposition: Low
                                      verbose=False) -> MotifVarianceEstimates:
     D = jnp.array(error_variance.variance)
     BTB = B_decomposition.V.T * B_decomposition.S ** 2 @ B_decomposition.V
-    d = 1 / D.at[data.group_inds_inv].get()
-    d = d / d.sum() ** 0.5
-    D_product_inv = jnp.outer(-d, d)
-    D_product_inv = jnp.fill_diagonal(D_product_inv,
-                                      D_product_inv.diagonal() + d * d.sum(),
-                                      inplace=False )
-    # d = 1 / D.at[data.group_inds_inv].get()
-    # D_product_inv_alt = jnp.diag(d) - jnp.outer(d, d) / d.sum()
+    W_err = _error_lowrank_W(error_variance)
+    D_n = D.at[data.group_inds_inv].get()
+    if W_err is None:
+        D_product_inv = covariate_projection(D_n, data.X)
+    else:
+        D_product_inv = _lowrank.covariate_projection_theta(D_n, W_err, data.X)
 
     Z = data.B.T @ data.Y @ D_product_inv
     x0 = np.repeat(0.1, len(D))
@@ -975,56 +745,238 @@ def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposi
                          error_variance: ErrorVarianceEstimates,
                          motif_variance: MotifVarianceEstimates,
                          promoter_mean: PromoterMeanEstimates) -> MotifMeanEstimates:
+    """BLUE/GLS estimate of the motif-mean matrix M (m x c) in the model
+    U ~ MN(M X, Sigma, G). Generalizes the classic mu_m (c == 1, X == 1_s^T).
+
+    Solves vec(M) = (W^T S^{-1} W)^{-1} W^T S^{-1} vec(Ytilde) with W = Xt^T (x) B and
+    S = Ghat (x) (B Sigma B^T) + I, exploiting the eigenstructure of sqrt(Sigma) B^T B
+    sqrt(Sigma) so that no n*p sized objects are ever formed. The stored Fisher
+    information `fim` is mc x mc with column-major vec(M) ordering, so the intercept
+    (mu_m) sub-block is fim[:m, :m].
+    """
     D = jnp.array(error_variance.variance)
     Sigma = jnp.array(motif_variance.motif)
     G = jnp.array(motif_variance.group)
     mu_p = jnp.array(promoter_mean.mean)
-    
-    d = D ** 0.5
-    d = d.at[data.group_inds_inv].get()
-    g = G ** 0.5
-    g = g.at[data.group_inds_inv].get()
-    R = G ** 0.5 / D
-    r = R.at[data.group_inds_inv].get()
+    X = jnp.asarray(data.X, dtype=float)            # (c, n)
+    c = X.shape[0]
+    m = len(Sigma)
+
+    d = (D ** 0.5).at[data.group_inds_inv].get()    # (n,) sqrt(D)
+    Ghat = (G / D).at[data.group_inds_inv].get()    # (n,) nu/D per sample
 
     BTB = B_decomposition.V.T * B_decomposition.S ** 2 @ B_decomposition.V
-    A = jnp.sqrt(Sigma).reshape(-1, 1) * BTB
-    # Fp = ones_nullspace(len(data.Y) + 1)
-    # Y_tilde = (data.Y - Fp @ mu_p.reshape(-1, 1)) / d
+    sig = jnp.sqrt(Sigma)
+    A = sig.reshape(-1, 1) * BTB                     # sqrt(Sigma) B^T B  (m, m)
+
     weights = error_variance.promotor ** -0.5
     if np.std(weights) > 1e-12:
-        # Weighted case: Use Householder transform matching the weights
-        # Normalize weights to get the projection vector Q
+        # Weighted (promoter-variance) case: Householder transform matching weights.
         q = weights / np.linalg.norm(weights)
-        # Apply the transform
-        # null_space_transform expects Q as (p, r) and Y as (p, n)
         mu_p_transformed = null_space_transform(q.reshape(-1, 1), mu_p.reshape(-1, 1))
     else:
-        # Standard case: Use Helmert transform
+        # Standard case: Helmert transform.
         mu_p_transformed = ones_nullspace_transform(mu_p.reshape(-1, 1))
-    Y_tilde = (data.Y - mu_p_transformed) / d
-    Y_hat = jnp.sqrt(Sigma).reshape(-1,1) *  data.B.T @ Y_tilde * g / d
-    D_B, Q_B = jnp.linalg.eigh(jnp.sqrt(Sigma).reshape(-1, 1) * BTB * jnp.sqrt(Sigma))
-    At_QB = A.T @ Q_B
-    w = (1 / d ** 2).sum()
-    hat_g = (d / g) ** 2
-    S = 1 / (hat_g.reshape(-1,1) + D_B) / d.reshape(-1,1) ** 2
-    S = S.T
-    mx = w * BTB - At_QB * S.sum(axis=-1) @ At_QB.T
-    b = data.B.T @ (Y_tilde @ (1 / d).reshape(-1, 1))
-    b = b - At_QB @ ((S / r) * (Q_B.T @ Y_hat)).sum(axis=-1, keepdims=True) 
-    fim = mx
-    mx = jnp.linalg.pinv(mx)
-    mu_m = mx @ b
-    return MotifMeanEstimates(np.array(mu_m), np.array(fim))
+    Y_tilde = (data.Y - mu_p_transformed) / d       # (p-1, n)  =  (Yhat - mu_p) sqrt(D^-1)
+    Xt = X / d                                       # (c, n)    =  X sqrt(D^-1)
+
+    D_B, Q_B = jnp.linalg.eigh(sig.reshape(-1, 1) * BTB * sig)   # eig of sqrt(Sig) B^TB sqrt(Sig)
+    At_QB = A.T @ Q_B                                # (m, m), columns a_k
+    BTY = data.B.T @ Y_tilde                         # (m, n)
+    QY = Q_B.T * sig @ BTY                           # Q_B^T sqrt(Sig) B^T Ytilde  (m, n)
+
+    XDX = Xt @ Xt.T                                  # (c, c) = X D^{-1} X^T
+    w_jk = Ghat.reshape(-1, 1) / (1.0 + Ghat.reshape(-1, 1) * D_B.reshape(1, -1))   # (n, m)
+    # Phi[k] = sum_j w_jk[j,k] xt_j xt_j^T   (c x c per eigen-direction k)
+    Phi = jnp.einsum('an,nk,bn->kab', Xt, w_jk, Xt)                                 # (m, c, c)
+
+    # Hessian (== Fisher information), assembled block-wise in column-major vec(M)
+    # ordering: H[a*m + i, b*m + j].
+    H_blocks = [[XDX[a, b] * BTB - (At_QB * Phi[:, a, b]) @ At_QB.T
+                 for b in range(c)] for a in range(c)]
+    H = jnp.block(H_blocks)                          # (mc, mc)
+
+    # Right-hand side g, shape (m, c).
+    g1 = BTY @ Xt.T                                  # (m, c)
+    T = w_jk.T * QY                                  # (m, n)
+    g2 = At_QB @ (T @ Xt.T)                          # (m, c)
+    Grhs = g1 - g2                                   # (m, c)
+    g_flat = Grhs.T.reshape(-1)                      # column-major: index a*m + i
+
+    vecM = jnp.linalg.pinv(H) @ g_flat
+    M = vecM.reshape(c, m).T                         # (m, c)
+    return MotifMeanEstimates(np.array(M), np.array(H))
+
+def estimate_mixture(Y: np.ndarray, B: np.ndarray, pi_mode=None, max_iter=100, tol=1e-5) -> np.ndarray:
+    """
+    EM algorithm for the corrected mixture model:
+    Signal: Y_i ~ N(X_i U, D)
+    Noise:  Y_i ~ N(mu, Sigma)
+    D and Sigma are diagonal s x s matrices shared across their respective gene sets.
+    """
+    p, s = Y.shape
+    # Y = Y - Y.mean(axis=1, keepdims=True) - Y.mean(axis=0, keepdims=True) + Y.mean()
+    # X = B - B.mean(axis=0, keepdims=True)
+    m = B.shape[1]
+    # X = [B, 1] to allow for a baseline promoter mean in the signal model
+    X = np.hstack([B, np.ones((p, 1))])
+    
+    Y_c = Y - Y.mean(axis=1, keepdims=True)
+    var_y = (Y_c ** 2).mean(axis=1)
+    
+    # 2. Prevent division by zero
+    var_y = np.clip(var_y, 1e-12, None)
+    
+    # 3. Create a soft weighting curve
+    # E.g., genes near the median variance get weight ~1.0.
+    # Genes with tiny variance (housekeeping) get lower weight.
+    med_var = np.median(var_y)
+    
+    # This specific formula smoothly downweights low-variance genes
+    # while keeping normal/high variance genes near 1.0.
+    gamma = 1.0 - np.exp(-var_y / med_var)
+    
+    # Clip to avoid complete zeroes, which cause matrix conditioning issues
+    gamma = np.clip(gamma, 1e-3, 1.0)
+    
+    return gamma
+    # Old smart code for estimating gamma
+    # 1. Initialize parameters
+    pi = 0.5 if pi_mode is None or isinstance(pi_mode, tuple) else float(pi_mode)
+    
+    # Initial guess for U and mu
+    U = np.linalg.solve(X.T @ X + 1e-5 * np.eye(X.shape[1]), X.T @ Y)
+    mu = np.mean(Y, axis=0)
+    
+    # Initial guess for Variances (D and Sigma)
+    v_floor = np.var(Y) * 1e-6
+    D = np.var(Y - X @ U, axis=0) + v_floor
+    Sigma = np.var(Y - mu[None, :], axis=0) + v_floor
+    
+    loglik_old = -np.inf
+    
+    for it in range(max_iter):
+        # --- E-step ---
+        # Signal log-density
+        res_sig = Y - X @ U
+        # (Y - XU)^2 / D -> sum over samples
+        ll_sig = -0.5 * np.sum(res_sig**2 / D[None, :], axis=1) - 0.5 * np.sum(np.log(D))
+        
+        # Noise log-density
+        res_noise = Y - mu[None, :]
+        ll_noise = -0.5 * np.sum(res_noise**2 / Sigma[None, :], axis=1) - 0.5 * np.sum(np.log(Sigma))
+        
+        # Posterior Responsibility gamma_i = Prob(Signal | Y_i)
+        l_pi = np.log(pi + 1e-15)
+        l_1_pi = np.log(1 - pi + 1e-15)
+        
+        s1 = l_pi + ll_sig
+        s2 = l_1_pi + ll_noise
+        
+        # Log-sum-exp trick for stability
+        max_s = np.maximum(s1, s2)
+        log_sum = max_s + np.log(np.exp(s1 - max_s) + np.exp(s2 - max_s))
+        gamma = np.exp(s1 - log_sum)
+        
+        current_loglik = np.sum(log_sum)
+        if it > 0 and 0 <= (current_loglik - loglik_old) < tol:
+            break
+        print(it, current_loglik, (current_loglik - loglik_old))
+        loglik_old = current_loglik
+
+        # --- M-step ---
+        sum_gamma = np.sum(gamma)
+        sum_1_gamma = p - sum_gamma
+        
+        # A. Update Signal Model (U and D)
+        # Weight genes by gamma_i
+        # U = (X^T diag(gamma) X)^-1 (X^T diag(gamma) Y)
+        Xt_W = X.T * gamma
+        U = np.linalg.solve(Xt_W @ X + 1e-8 * np.eye(X.shape[1]), Xt_W @ Y)
+        
+        # D is diagonal sample-wise variance
+        D = np.sum(gamma[:, None] * (Y - X @ U)**2, axis=0) / (sum_gamma + 1e-12)
+        D = np.clip(D, v_floor, None)
+        
+        # B. Update Noise Model (mu and Sigma)
+        # mu is shared across genes in the noise model
+        w_noise = (1 - gamma)[:, None]
+        mu = np.sum(w_noise * Y, axis=0) / (sum_1_gamma + 1e-12)
+        
+        # Sigma is diagonal sample-wise variance
+        Sigma = np.sum(w_noise * (Y - mu[None, :])**2, axis=0) / (sum_1_gamma + 1e-12)
+        Sigma = np.clip(Sigma, v_floor, None)
+        
+        # C. Update mixing proportion pi
+        if pi_mode is None:
+            pi = sum_gamma / p
+        elif isinstance(pi_mode, tuple):
+            a, b = pi_mode
+            pi = (sum_gamma + a - 1) / (p + a + b - 2)
+        pi = np.clip(pi, 1e-5, 1.0)
+
+    return gamma
+
+def estimate_error_variance_weighted(data: TransformedData, 
+                                     gamma: np.ndarray,
+                                     verbose=False) -> ErrorVarianceEstimates:
+    """
+    Estimates sample-wise error variances D using gene-wise weights Gamma^-1.
+    We transform the system by sqrt(gamma_i) so that the new error is MN(0, I, D).
+    """
+    # gamma_i is the probability of being signal. 
+    # We treat Gamma_ii = 1/gamma_i as the variance.
+    # Therefore, weights for whitening are sqrt(gamma_i).
+    weights = np.sqrt(gamma)
+    
+    # 1. Manually whiten the data
+    Y_weighted = data.Y * weights.reshape(-1, 1)
+    B_weighted = data.B * weights.reshape(-1, 1)
+    
+    # 2. Re-calculate the low-rank decomposition for the whitened B
+    # This is crucial because the null space changes when rows are scaled
+    B_weighted_aug = np.append(B_weighted, weights.reshape(-1, 1), axis=1)
+    B_decomp = lowrank_decomposition(B_weighted_aug)
+    
+    # 3. Project the weighted Y into the null space of weighted B
+    Qn_Y = B_decomp.null_space_transform(Y_weighted)
+    
+    # 4. Standard estimation on the transformed data
+    # The loglik_error function assumes Gamma=I, which is now true for (weights * Y)
+    d0 = jnp.array([np.var(Qn_Y[:, inds]) for inds in data.group_inds])
+
+    fun = partial(loglik_error, Qn_Y=Qn_Y, group_inds_inv=data.group_inds_inv)
+    grad = partial(loglik_error_grad, Qn_Y=Qn_Y, group_inds_inv=data.group_inds_inv,
+                   group_inds=data.group_inds)
+    
+    fun = jax.jit(fun)
+    grad = jax.jit(grad)
+    
+    opt = MetaOptimizer(fun, grad, num_steps_momentum=15)
+    res = opt.optimize(d0)
+    
+    if verbose:
+        print(f"Weighted Error Variance Fit: {res.fun}")
+
+    fim = calc_error_variance_fim(data, res.x)
+    
+    # We return the calculated Gamma = 1/gamma as the 'promoter' variance component
+    # so that subsequent steps (motif variance, etc.) use the correct weighting.
+    return ErrorVarianceEstimates(
+        variance=np.array(res.x), 
+        promotor=1.0 / (gamma + 1e-12), # This is Gamma_ii
+        fim=np.array(fim),
+        loglik_start=res.start_loglik,
+        loglik=res.fun
+    )
 
 def estimate_sample_mean(data: TransformedData, error_variance: ErrorVarianceEstimates, 
                          motif_variance: MotifVarianceEstimates, promoter_mean: PromoterMeanEstimates,
                          motif_mean: MotifMeanEstimates):
     Y = data.Y
     B = data.B
-    Y = Y - promoter_mean.mean.reshape(-1, 1) - B @ motif_mean.mean.reshape(-1, 1)
-    
+    Y = Y - promoter_mean.mean.reshape(-1, 1) - B @ motif_mean_matrix(motif_mean, data.X)
+
     Y = jnp.asarray(Y)
     B = jnp.asarray(B)
     Sigma = jnp.asarray(motif_variance.motif)
@@ -1075,8 +1027,19 @@ class ActivitiesPrediction:
     clustering: tuple[np.ndarray, np.ndarray] = None
     _cov: tuple[np.ndarray, np.ndarray, np.ndarray,
                 np.ndarray, np.ndarray, np.ndarray] = None
-    
+    # When the error covariance carries a low-rank correction, the per-group posterior
+    # covariances are no longer the simple diagonal-D form below; they are precomputed
+    # (full-Theta, see lowrank.blup_group_cov) and stored here.
+    _cov_lowrank: list = None
+
     def cov(self) -> np.ndarray:
+        cov_lr = getattr(self, '_cov_lowrank', None)
+        if cov_lr is not None:
+            # compact factors (M_eig, W_weights): cov_i = M_eig diag(W_weights[i]) M_eig^T
+            M_eig, W_weights = cov_lr
+            for i in range(len(W_weights)):
+                yield _lowrank.expand_group_cov(M_eig, W_weights[i])
+            return
         assert self._cov is not None
         Q_hat, S, sigma, nu, n, tau_mult = self._cov
         for sigma, nu, n, tau_mult in zip(sigma, nu, n, tau_mult):
@@ -1095,7 +1058,6 @@ def predict_activities(data: TransformedData, fit: FitResult,
                        cv_repeats=3, cv_splits=5,
                        pinv=False) -> ActivitiesPrediction:
 
-    # def _sol(BT_Y_sum, BT_B, Sigma, sigma, nu, n: int, tau_mult=1.0):
     def _sol(BT_Y_sum, Q_hat, S, sigma, nu, n: int, tau_mult=1.0, BT_B=None):
         tau = nu / sigma * tau_mult
         if pinv:
@@ -1113,24 +1075,18 @@ def predict_activities(data: TransformedData, fit: FitResult,
     group_inds = data.group_inds
     a_vec = fit.error_variance.promotor ** -0.5
     mu_p = (a_vec * fit.promoter_mean.mean.flatten()).reshape(-1, 1)
-    mu_m = fit.motif_mean.mean.reshape(-1, 1)
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
     B = data.B
     Y = data.Y
-    # Y = Y - Y.mean(axis=0, keepdims=True) - Y.mean(axis=1, keepdims=True) + Y.mean()
-    # B = B - B.mean(axis=0, keepdims=True)
-    Y = Y - mu_p - B @ mu_m - np.outer(a_vec, mu_s.flatten())
+    # Subtract the per-sample mean motif effect B M X (covariate-aware; reduces to
+    # B mu_m 1_s^T when there are no covariates).
+    Y = Y - mu_p - B @ motif_mean_matrix(fit.motif_mean, data.X) - np.outer(a_vec, mu_s.flatten())
 
-    w_norm_sq = np.dot(a_vec, a_vec)
-    weighted_col_means = (a_vec @ B) / w_norm_sq
-    
-    B = B - np.outer(a_vec, weighted_col_means)
-    # print(np.linalg.norm(B-B0))
+
     if filter_motifs:
         inds = np.log10(Sigma) >= (np.median(np.log10(Sigma)) - filter_order)
         B = B[:, inds]
         Sigma = Sigma[inds]
-        mu_m = mu_m[inds]
         filtered_motifs = np.where(~inds)[0]
     else:
         filtered_motifs = list()
@@ -1201,6 +1157,12 @@ def predict_activities(data: TransformedData, fit: FitResult,
         tau_groups = {g: min(v, key=lambda x: np.mean(v[x])) for g, v in tau_groups.items()}
     else:
         tau_groups = {i: 1.0 for i in range(len(group_inds))}
+    W_err = _error_lowrank_W(fit.error_variance)
+    V_act = _activity_lowrank_V(fit.motif_variance)
+    if V_act is not None and len(filtered_motifs):
+        # V lives in sample space (s x k); independent of motif filtering -> unchanged.
+        pass
+    B_unscaled = B                                   # keep loadings before sqrt(Sigma)
     BT_Y = B.T @ Y
     if not pinv:
         B = B * Sigma ** 0.5
@@ -1208,72 +1170,46 @@ def predict_activities(data: TransformedData, fit: FitResult,
     S, Q_hat = jnp.linalg.eigh(BT_B)
     Q_hat = (Sigma ** 0.5).reshape(-1, 1) * Q_hat
 
-    U = list()
-    U0 = list()
-    sizes = list()
-    all_inds = list()
-    tau_mults = list()
-    for i, (inds, sigma, nu) in enumerate(zip(group_inds, D, G)):
-        tau = tau_groups[i]
-        tau_mults.append(tau)
-        all_inds.extend(inds)
-        BT_Y_sub = BT_Y[:, inds]
-        sizes.append(len(inds))
-        U_pred = _sol(BT_Y_sub.sum(axis=-1, keepdims=True), Q_hat, S,
-                      sigma, nu, len(inds), tau_mult=tau,
-                      BT_B=BT_B)
-        U.append(U_pred)
-        U0.append(_sol(BT_Y_sub, Q_hat, S, sigma, nu, 1, tau_mult=tau, BT_B=BT_B))
-    U = np.concatenate(U, axis=-1)
-    U0 = np.concatenate(U0, axis=-1)[:, np.argsort(all_inds)]
+    sizes = [len(inds) for inds in group_inds]
+    tau_mults = [tau_groups[i] for i in range(len(group_inds))]
+
+    cov_lowrank = None
+    if W_err is None and V_act is None:
+        # -------- classic diagonal-D BLUP (unchanged) --------
+        U = list()
+        U0 = list()
+        all_inds = list()
+        for i, (inds, sigma, nu) in enumerate(zip(group_inds, D, G)):
+            tau = tau_groups[i]
+            all_inds.extend(inds)
+            BT_Y_sub = BT_Y[:, inds]
+            U_pred = _sol(BT_Y_sub.sum(axis=-1, keepdims=True), Q_hat, S,
+                          sigma, nu, len(inds), tau_mult=tau,
+                          BT_B=BT_B)
+            U.append(U_pred)
+            U0.append(_sol(BT_Y_sub, Q_hat, S, sigma, nu, 1, tau_mult=tau, BT_B=BT_B))
+        U = np.concatenate(U, axis=-1)
+        U0 = np.concatenate(U0, axis=-1)[:, np.argsort(all_inds)]
+    else:
+        # -------- full-Theta / full-G BLUP with the low-rank corrections --------
+        # Joint (sample-correlated) posterior means; reduces to the loop above at W=V=0.
+        tau_arr = np.asarray(tau_mults, dtype=float)
+        U0, U = _lowrank.blup_activities(Y, B_unscaled, np.asarray(Sigma), group_inds,
+                                         np.asarray(D), np.asarray(G), W_err,
+                                         tau_mult=tau_arr, V_act=V_act)
+        # per-group posterior covariances (for export z-scores / ANOVA / contrasts), stored
+        # as compact factors and expanded lazily.  The activity low-rank V enters the prior
+        # only through its diagonal here (the point estimates above use the full G).
+        cov_lowrank = _lowrank.blup_group_cov_factors(group_inds, np.asarray(D), np.asarray(G),
+                                                      W_err, np.asarray(Sigma), B_unscaled,
+                                                      tau_mult=tau_arr)
     return ActivitiesPrediction(U, U_raw=U0,
                                 filtered_motifs=filtered_motifs,
                                 tau_groups=tau_groups,
                                 clustering=(B, clust) if clust is not None else None,
-                                _cov=(Q_hat, S, D, G, sizes, tau_mults))
-def solve_als(
-    Z: np.ndarray,
-    S: np.ndarray,
-    c: np.ndarray,
-    d: np.ndarray,
-    mu_0: np.ndarray,
-    nu_0: np.ndarray,
-    max_iter: int = 100,
-    tol: float = 1e-9,
-    orthogonalize: bool = True
-) -> tuple[np.ndarray, np.ndarray]:
-    p, s = Z.shape
-    W = S.reshape((p, s), order='F')
-    c = c.flatten()
-    d = d.flatten()
-    mu = mu_0.flatten().astype(float)
-    nu = nu_0.flatten().astype(float)
-    epsilon = 1e-14
-    mu_denominators = np.sum(W * (c**2)[:, np.newaxis], axis=0) + epsilon
-    nu_denominators = np.sum(W * (d**2), axis=1) + epsilon
+                                _cov=(Q_hat, S, D, G, sizes, tau_mults),
+                                _cov_lowrank=cov_lowrank)
 
-    for i in range(max_iter):
-        mu_old = mu.copy()
-        nu_old = nu.copy()
-        term1_mu = np.sum(W * c[:, np.newaxis] * Z, axis=0)
-        sum_Wcn = np.sum(W * c[:, np.newaxis] * nu[:, np.newaxis], axis=0)
-        term2_mu = d * sum_Wcn
-        mu = (term1_mu - term2_mu) / mu_denominators
-        term1_nu = np.sum(W * d * Z, axis=1)
-        sum_Wdm = np.sum(W * d * mu, axis=1)
-        term2_nu = c * sum_Wdm
-        nu = (term1_nu - term2_nu) / nu_denominators
-        mu_change = np.linalg.norm(mu - mu_old) / (np.linalg.norm(mu_old) + epsilon)
-        nu_change = np.linalg.norm(nu - nu_old) / (np.linalg.norm(nu_old) + epsilon)
-        if mu_change < tol and nu_change < tol:
-            # Quieting the output for this run
-            print(f"ALS converged successfully after {i+1} iterations.")
-            break
-    if orthogonalize:
-        a = np.dot(mu, d) / (np.dot(d, d) + 1e-12)
-        mu = mu - a * d
-        nu = nu + a * c
-    return mu[..., None], nu[..., None]
 
 def null_space_transform_jax(Q: jax.Array, Y: jax.Array) -> jax.Array:
     p, r = Q.shape
@@ -1309,161 +1245,6 @@ def null_space_transform_jax(Q: jax.Array, Y: jax.Array) -> jax.Array:
     _, final_Y = jax.lax.fori_loop(0, r, _householder_loop_body, initial_state)
     return final_Y[r:, :]
 
-def gls_loglik(x: jnp.ndarray, Y: jnp.ndarray,  d: jnp.ndarray, Q_C: jnp.ndarray,
-               S: jnp.ndarray):
-    p, s = Y.shape
-    # m = B.shape[-1]
-    a = 0; b = p
-    # mu_m = x[a:b]; a = b; b = b + p;
-    mu_p = x[a:b]; a = b; b = b + s;
-    mu_s = x[a:b]
-    Y = Y - jnp.outer(jnp.ones(p), (mu_s * d)) - jnp.outer(mu_p, d)
-    Y = jnp.append(Q_C.T @ Y, null_space_transform_jax(Q_C, Y), axis=0)
-    Y = Y.flatten('F')
-    return (Y ** 2 * S).sum()
-    
-    
-
-def gls_fixed_effects(data: TransformedData, 
-                      error_variance: ErrorVarianceEstimates,
-                      motif_variance: MotifVarianceEstimates,
-                      promoter_mean: PromoterMeanEstimates, 
-                      motif_mean: MotifMeanEstimates, 
-                      sample_mean: SampleMeanEstimates,):
-    Sigma = motif_variance.motif
-    G = motif_variance.group / error_variance.variance
-    d = error_variance.variance ** (-0.5)
-    Y = data.Y * d
-    B_decomposition = lowrank_decomposition(data.B * Sigma ** 0.5, rel_eps=None)
-    n = len(B_decomposition.Q) - len(B_decomposition.S)
-    S = jnp.kron(G, jnp.append(B_decomposition.S ** 2, jnp.zeros(n))) + 1
-    S = 1 / S
-    mu_s = sample_mean.mean.flatten() 
-    mu_p = promoter_mean.mean.flatten()
-    mu_m = motif_mean.mean.flatten()
-    mu_p = mu_p + data.B @ mu_m
-    x0 = jnp.concatenate((mu_p, mu_s))
-    fun = partial(gls_loglik, Y=Y, d=d, Q_C=B_decomposition.Q,
-                  S=S)
-    
-    fun_and_grad = jax.jit(jax.value_and_grad(fun))
-    from scipy.optimize import minimize
-    res = minimize(fun_and_grad, x0, jac=True, method='L-BFGS-B')
-    print(res)
-    
-    m = len(mu_m); p = len(mu_p); s = len(mu_s) 
-    # a = 0; b = m; mu_m = res.x[a:b].reshape(-1, 1)
-    a = 0; b = p; mu_p = res.x[a:b].reshape(-1, 1)
-    a = b; b = b + s; mu_s = res.x[a:b].reshape(-1, 1)
-    mu_m = (jnp.linalg.pinv(data.B) @ mu_p)
-    mu_p = mu_p - data.B @ mu_m
-    promoter_mean = PromoterMeanEstimates(mu_p)
-    sample_mean = SampleMeanEstimates(mu_s)
-    motif_mean = MotifMeanEstimates(mu_m, motif_mean.fim)
-
-    return promoter_mean, motif_mean, sample_mean
-
-def mle_g_loglik(G: jnp.ndarray, S: jnp.ndarray, y2: jnp.ndarray,
-                 group_inds_inv: jnp.ndarray):
-    G = G ** 2
-    G = G[group_inds_inv]
-    S = jnp.kron(G, S) + 1.0
-    logdet = jnp.log(S).sum()
-    S = 1 / S
-    return (y2 * S).sum() + logdet
-
-
-def gls_refinement(data: TransformedData, 
-                   error_variance: ErrorVarianceEstimates,
-                   motif_variance: MotifVarianceEstimates,
-                   promoter_mean: PromoterMeanEstimates, 
-                   motif_mean: MotifMeanEstimates, 
-                   sample_mean: SampleMeanEstimates,):
-    from scipy.optimize import minimize
-    Sigma = motif_variance.motif
-    d = error_variance.variance ** (-0.5)
-    Y = data.Y * d
-    B_decomposition = lowrank_decomposition(data.B * Sigma ** 0.5, rel_eps=None)
-    B_pinv = jnp.linalg.pinv(data.B)
-    n = len(B_decomposition.Q) - len(B_decomposition.S)
-    S_B = jnp.append(B_decomposition.S ** 2, jnp.zeros(n))
-    fun_gls = partial(gls_loglik,Y=Y, d=d, Q_C=B_decomposition.Q)
-    fun_gls = jax.jit(jax.value_and_grad(fun_gls, argnums=0))
-    fun_mle = partial(mle_g_loglik, S=S_B, group_inds_inv=data.group_inds_inv)
-    fun_mle = jax.jit(jax.value_and_grad(fun_mle, argnums=0))
-    
-    
-    for it in range(10):
-        G = motif_variance.group / error_variance.variance
-        S = jnp.kron(G, S_B) + 1
-        S = 1 / S
-        mu_s = sample_mean.mean.flatten() 
-        mu_p = promoter_mean.mean.flatten()
-        mu_m = motif_mean.mean.flatten()
-        mu_p = mu_p + data.B @ mu_m
-        x0 = jnp.concatenate((mu_p, mu_s))
-        fun = partial(fun_gls, S=S)
-        res = minimize(fun, x0, jac=True, method='L-BFGS-B')
-        
-        m = len(mu_m); p = len(mu_p); s = len(mu_s) 
-        a = 0; b = p; mu_p = res.x[a:b].reshape(-1, 1)
-        a = b; b = b + s; mu_s = res.x[a:b].reshape(-1, 1)
-        
-        
-        Y_hat = (data.Y - mu_p - mu_s.T) * d
-        Y_hat = jnp.append(B_decomposition.Q.T @ Y_hat, 
-                           B_decomposition.null_space_transform(Y_hat),
-                           axis=0).flatten('F') ** 2
-        fun = partial(fun_mle, y2=Y_hat)
-        res = minimize(fun, G ** 0.5, jac=True, method='L-BFGS-B')
-        G = (res.x ** 2) * error_variance.variance
-        motif_variance = MotifVarianceEstimates(motif=motif_variance.motif,
-                                                group=G,
-                                                fim=motif_variance.fim,
-                                                fixed_group=None,
-                                                loglik=motif_variance.loglik,
-                                                loglik_start=motif_variance.loglik_start)
-        # print(res)
-        # print(G)
-        
-        mu_m = B_pinv @ mu_p
-        mu_p = mu_p - data.B @ mu_m
-        promoter_mean = PromoterMeanEstimates(mu_p)
-        sample_mean = SampleMeanEstimates(mu_s)
-        motif_mean = MotifMeanEstimates(mu_m, motif_mean.fim)
-
-    return promoter_mean, motif_mean, sample_mean, motif_variance
-
-def joint_refinement(data: TransformedData, 
-                     error_variance: ErrorVarianceEstimates,
-                     motif_variance: MotifVarianceEstimates):
-    from scipy.optimize import minimize
-    Sigma = motif_variance.motif
-    B_decomposition = lowrank_decomposition(data.B * Sigma ** 0.5, rel_eps=None)
-    Y = data.Y - data.Y.mean(axis=1, keepdims=True)
-    Z = jnp.append(B_decomposition.Q.T @ Y, 
-                   B_decomposition.null_space_transform(Y),
-                   axis=0)
-    p = len(Y)
-    g = len(error_variance.variance)
-    fun = partial(loglik_motifs_joint, Z=Z, g=g, 
-                                      group_inds_inv=data.group_inds_inv,
-                                      Sigma_hat=jnp.append(B_decomposition.S ** 2, jnp.zeros(p - len(B_decomposition.S))))
-    fun = jax.jit(jax.value_and_grad(fun, argnums=0))
-    x0 = jnp.append(error_variance.variance, motif_variance.group) ** 0.5
-    res = minimize(fun, x0, jac=True, method='SLSQP', options={'maxiter': 1000})
-    print(res)
-    D = res.x[:g] ** 2
-    G = res.x[g:] ** 2
-    error_variance = ErrorVarianceEstimates(D, error_variance.fim, error_variance.loglik, error_variance.loglik_start)
-    motif_variance = MotifVarianceEstimates(motif=motif_variance.motif,
-                                            group=G,
-                                            fim=motif_variance.fim,
-                                            fixed_group=None,
-                                            loglik=motif_variance.loglik,
-                                            loglik_start=motif_variance.loglik_start)
-    return error_variance, motif_variance
-
 
 class ClusteringMode(str, Enum):
     none = 'none'
@@ -1496,11 +1277,73 @@ def cluster_data(B: np.ndarray, mode=ClusteringMode.none, num_clusters=200,
         clustering = None
     return B, clustering
 
+from sklearn.decomposition import PCA, NMF
+
+def construct_x(B, inds, n_pca: int = 4, n_nmf: int = 8):
+    """
+    Constructs feature matrices X_train and X_test from B using PCA, NMF, 
+    and specific feature engineering rules.
+
+    Parameters:
+    B (np.ndarray): Input data matrix (n_samples, n_features).
+    inds (array-like): Indices of the test samples.
+    n_pca (int): Number of PCA components.
+    n_nmf (int): Number of NMF components.
+
+    Returns:
+    X_train (np.ndarray): Training feature matrix.
+    X_test (np.ndarray): Test feature matrix.
+    """
+    
+    # 1. PCA Decomposition
+    # pca.fit_transform returns (n_samples, n_pca)
+    pca = PCA(n_components=n_pca)
+    X_pca = pca.fit_transform(B)
+    
+    # 2. NMF Decomposition
+    # nmf.fit_transform returns W matrix (n_samples, n_nmf)
+    # We assume B is non-negative as required by NMF.
+    nmf = NMF(n_components=n_nmf, init='nndsvda', random_state=0, max_iter=1000)
+    W = nmf.fit_transform(B)
+    
+    # 3. Process NMF components
+    # Divide by their sum (Probabilistic interpretation)
+    # Sum along the components axis (axis=1). Keep dimensions for broadcasting.
+    # We add a small epsilon to the denominator to avoid division by zero.
+    W_sum = np.sum(W, axis=1, keepdims=True)
+    W_norm = W / (W_sum + 1e-9)
+    
+    # 4. Create the extra component
+    # "sum of NMF components in the power {-1}"
+    # Grammatically interpreted as: Sum(Components^(-1)) -> element-wise inverse, then sum.
+    # Equivalent to sum(1/W) along axis 1.
+    # We add epsilon to W to prevent division by zero.
+    W_inv_sum = np.sum(1.0 / (W + 1e-4), axis=1, keepdims=True)
+    
+    # 5. Concatenate all features
+    # Order: PCA, NMF (raw), NMF (normalized), Extra component
+    # Shape: (p, n_pca + n_nmf + n_nmf + 1)
+    X = np.hstack([X_pca, W, W_norm, W_inv_sum, np.ones((len(X_pca), 1))])
+    
+    # 6. Split into Train and Test
+    # inds are the test indices.
+    # We create a mask to separate train and test data.
+    n_samples = B.shape[0]
+    mask = np.zeros(n_samples, dtype=bool)
+    mask[inds] = True
+    
+    X_test = X[mask]
+    X_train = X[~mask]
+    
+    return X_train, X_test
+
 def fit(project: str, clustering: ClusteringMode,
         num_clusters: int, test_chromosomes: list, 
         gpu: bool, gpu_decomposition: bool, x64=True, true_mean=None, motif_variance: bool = True,
         promoter_variance: bool = False, test_promoters_filename: str = None,
-        refinement: GLSRefinement = GLSRefinement.none, verbose=True, dump=True) -> ActivitiesPrediction:
+        context_r: int = 0, drist: bool = False, error_lowrank: int = 0,
+        activity_lowrank: int = 0,
+        verbose=True, dump=True) -> ActivitiesPrediction:
     if x64:
         jax.config.update("jax_enable_x64", True)
     data = read_init(project)
@@ -1508,6 +1351,7 @@ def fit(project: str, clustering: ClusteringMode,
     group_names = data.group_names
     if clustering != clustering.none:
         logger_print('Clustering data...', verbose)
+    promoter_names_train = data.promoter_names
     data.B, clustering = cluster_data(data.B, mode=clustering, 
                                       num_clusters=num_clusters)
     
@@ -1526,11 +1370,38 @@ def fit(project: str, clustering: ClusteringMode,
                                  if pattern.search(p).group() in test_chromosomes]
     else:
         promoter_inds_to_drop = None
-    if promoter_inds_to_drop is not None:
-        data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
-        data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
+    promoter_names_test = list(np.array(promoter_names_train)[promoter_inds_to_drop])
+    promoter_names_train = list(np.array(promoter_names_train)[np.setdiff1d(np.arange(0, len(promoter_names_train), True), 
+                                                                            np.array(promoter_inds_to_drop))])
+    # print('Loadings seqs [train]')
+    # from .genread import read_seqs
+    # X_train = read_seqs(promoter_names_train, 'susScr11.fa')
+    # print('Loadings seqs [test]')
+    # X_test = read_seqs(promoter_names_test, 'susScr11.fa')
+    # data, data_test = split_data(data, promoter_inds_to_drop)
+    drist = False
+    if drist:
+        logger_print('Imma DRISTing right now...', verbose)
+        drist = DRIST(verbose=True, init=None, share_function=False).fit(data.B, data.Y)
+    else:
+        drist = None
+    
+    if context_r > 1:
+        if data.L is not None:
+            context_r = data.L.shape[1]
+        logger_print('Estimating motif loading matrix context vectors...', verbose)
+        loading_context = estimate_context(data.Y, data.B, r=context_r, gpu=gpu, L=data.L)
+    else:
+        loading_context = None
+    # logger_print('Estimating motif loading matrix multipliers...', verbose)
+    # loading_multipliers = estimate_multipliers(data.Y, data.B, gpu=gpu,)
+    loading_multipliers = None
     logger_print('Transforming data...', verbose)
-    data_orig = transform_data(data, helmert=False)
+    data_orig = transform_data(data, helmert=False, loading_context=loading_context,
+                               drist=drist, loading_multipliers=loading_multipliers)
+    # data_test= transform_data(data_test, helmert=False, loading_context=loading_context,
+    #                            drist=drist, loading_multipliers=loading_multipliers)
+
     if gpu_decomposition:
         device = jax.devices()
     else:
@@ -1546,22 +1417,45 @@ def fit(project: str, clustering: ClusteringMode,
     else:
         device = jax.devices('cpu')
     device = next(iter(device))
-    # print(data.B.shape, data_orig.B.shape)
+
     with jax.default_device(device):
 
         logger_print('Estimating error variances...', verbose)
-        error_variance = estimate_error_variance(data_orig, B_decomposition_orig, 
+        error_variance = estimate_error_variance(data_orig, B_decomposition_orig,
+                                                  error_lowrank=error_lowrank,
                                                   verbose=verbose)
+        if error_lowrank and error_lowrank > 0:
+            W_err = _error_lowrank_W(error_variance)
+            kk = 0 if W_err is None else W_err.shape[1]
+            logger_print(f'  error covariance: diagonal D + rank-{kk} update '
+                         f'(REML deviance {error_variance.loglik:.2f}).', verbose)
         if promoter_variance:
+            if error_lowrank and error_lowrank > 0:
+                logger_print('  [warning] --error-lowrank is not jointly estimated with '
+                             '--promoter-variance; the low-rank error correction is ignored '
+                             'when promoter variances are estimated.', verbose)
+            # logger_print('Estimating FULL error variances...', verbose)
+            # error_variance = estimate_error_variance_full(data_orig, B_decomposition_orig, error_variance,
+            #                                               original_data=data_orig,
+            #                                               verbose=verbose)
+            logger_print('Estimating mixture...', verbose)
+            gamma = estimate_mixture(data_orig.Y, data_orig.B, pi_mode=0.9)
             logger_print('Estimating FULL error variances...', verbose)
-            error_variance = estimate_error_variance_full(data_orig, B_decomposition_orig, error_variance,
-                                                          original_data=data_orig,
-                                                          verbose=verbose)
-            data_orig = transform_data(data, helmert=False, weights=error_variance.promotor ** (-0.5))
-            data = transform_data(data, helmert=True, weights=error_variance.promotor ** (-0.5))
+            error_variance = estimate_error_variance_weighted(data_orig, gamma,
+                                                              verbose=verbose)
+            
+            
+            data_orig = transform_data(data, helmert=False, weights=error_variance.promotor ** (-0.5), 
+                                       loading_context=loading_context, drist=drist,
+                                       loading_multipliers=loading_multipliers)
+            data = transform_data(data, helmert=True, weights=error_variance.promotor ** (-0.5),
+                                  loading_context=loading_context, drist=drist,
+                                  loading_multipliers=loading_multipliers)
         else:
-            data_orig = transform_data(data, helmert=False,)
-            data = transform_data(data, helmert=True,)
+            data_orig = transform_data(data, helmert=False, loading_context=loading_context, drist=drist,
+                                       loading_multipliers=loading_multipliers)
+            data = transform_data(data, helmert=True, loading_context=loading_context, drist=drist,
+                                  loading_multipliers=loading_multipliers)
         B_decomposition = lowrank_decomposition(data.B)
     
         logger_print('Estimating promoter-wise means...', verbose)
@@ -1573,13 +1467,19 @@ def fit(project: str, clustering: ClusteringMode,
             motif_variance = estimate_motif_variance(data, B_decomposition,
                                                       error_variance=error_variance,
                                                       original_data=data_orig,
+                                                      activity_lowrank=activity_lowrank,
                                                       verbose=verbose)
         else:
+            if activity_lowrank and activity_lowrank > 0:
+                logger_print('  [warning] --activity-lowrank requires per-motif variances; '
+                             'ignored because --no-motif-variance was set.', verbose)
             motif_variance = estimate_motif_variance_identity(data, B_decomposition,
                                                               error_variance=error_variance,
                                                               verbose=verbose)
-        # logger_print('Jointly refining variances of errors and motif activities...', verbose)
-        # error_variance, motif_variance = joint_refinement(data, error_variance, motif_variance)
+        if activity_lowrank and activity_lowrank > 0 and motif_variance.lowrank is not None:
+            logger_print(f'  activity covariance: diagonal G + rank-'
+                         f'{motif_variance.lowrank.shape[1]} update '
+                         f'(REML deviance {motif_variance.loglik:.2f}).', verbose)
         
         logger_print('Estimating motif means...', verbose)
         motif_mean = estimate_motif_mean(data, B_decomposition, error_variance=error_variance,
@@ -1590,20 +1490,12 @@ def fit(project: str, clustering: ClusteringMode,
                                            motif_variance=motif_variance, motif_mean=motif_mean,
                                            promoter_mean=promoter_mean)
 
-        # if refinement == GLSRefinement.fixed:
-        #     logger_print('Refining fixed effects...', verbose)
-        #     promoter_mean, motif_mean, sample_mean = gls_fixed_effects(data_orig, error_variance, motif_variance,
-        #                                                                promoter_mean, motif_mean, sample_mean)
-        # elif refinement == GLSRefinement.full:
-        #     logger_print('Refining fixed effects and G...', verbose)
-        #     promoter_mean, motif_mean, sample_mean, motif_variance = gls_refinement(data_orig, error_variance, motif_variance,
-        #                                                                                promoter_mean, motif_mean, sample_mean)
-    # print(promoter_mean.mean.shape, error_variance.promotor.shape)
     promoter_mean = PromoterMeanEstimates(promoter_mean.mean.flatten() * error_variance.promotor ** 0.5)
     res = FitResult(error_variance=error_variance, motif_variance=motif_variance,
                     motif_mean=motif_mean, promoter_mean=promoter_mean,
                     sample_mean=sample_mean, clustering=clustering,
-                    group_names=group_names, promoter_inds_to_drop=promoter_inds_to_drop)    
+                    group_names=group_names, promoter_inds_to_drop=promoter_inds_to_drop,
+                    loading_context=loading_context, drist=drist, loading_multipliers=loading_multipliers)    
     if dump:
         with openers[fmt](f'{project}.fit.{fmt}', 'wb') as f:
             dill.dump(res, f)
@@ -1616,17 +1508,29 @@ def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]
     B = data.B[inds]
     Y_d = np.delete(data.Y, inds, axis=0)
     Y = data.Y[inds]
+    if data.L is not None:
+        L_d = np.delete(data.L, inds, axis=0)
+        L = data.L[inds]
+    else:
+        L_d = None
+        L = None
     promoter_names_d = np.delete(data.promoter_names, inds)
     promoter_names = list(np.array(data.promoter_names)[inds])
+    # Splitting is on the promoter (row) axis; the covariate design X (sample axis)
+    # is identical for both halves and must be carried over.
     data_d = ProjectData(Y=Y_d, B=B_d, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names_d,
                          motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
+                         L=L_d, X=getattr(data, 'X', None),
+                         covariate_names=getattr(data, 'covariate_names', None),
                          fmt=data.fmt)
     data = ProjectData(Y=Y, B=B, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
                          motif_names=data.motif_names, promoter_names=promoter_names,
                          motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
+                         L=L, X=getattr(data, 'X', None),
+                         covariate_names=getattr(data, 'covariate_names', None),
                          fmt=data.fmt)
     return data_d, data
 
@@ -1640,9 +1544,13 @@ def predict(project: str, filter_motifs: bool, filter_order: int,
     data = read_init(project)
     fmt = data.fmt
     with openers[fmt](f'{project}.fit.{fmt}', 'rb') as f:
-        fit = dill.load(f)
+        fit: FitResult = dill.load(f)
+    loading_context = fit.loading_context
+    loading_multipliers = fit.loading_multipliers
+    drist = fit.drist
     data, _ = split_data(data, fit.promoter_inds_to_drop)
-    data = transform_data(data, helmert=False, weights=fit.error_variance.promotor ** (-0.5))
+    data = transform_data(data, helmert=False, weights=fit.error_variance.promotor ** (-0.5),
+                          loading_context=loading_context, drist=drist, loading_multipliers=loading_multipliers)
     if gpu:
         device = jax.devices()
     else:
@@ -1679,10 +1587,9 @@ def _groupify(X: np.ndarray, groups: list[np.ndarray]) -> np.ndarray:
     return np.concatenate(res, axis=-1)
 
 def compute_mu_mle(data: TransformedData, fit: FitResult):
-    U_m = fit.motif_mean.mean.reshape(-1, 1)
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
     Y = data.Y - mu_s.T
-    Y = Y - data.B @ U_m
+    Y = Y - data.B @ motif_mean_matrix(fit.motif_mean, data.X)
     
     Sigma = fit.motif_variance.motif
     G = fit.motif_variance.group
@@ -1750,7 +1657,6 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
             return FOVResult(total, prom, sample)
         B = data.B
         drops = activities.filtered_motifs
-        U_m = fit.motif_mean.mean.reshape(-1, 1)
         if mu_p is None:
             mu_p = fit.promoter_mean.mean
         mu_s = fit.sample_mean.mean.reshape(-1, 1)
@@ -1760,15 +1666,15 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
             if a_vec is None:
                 a_vec = fit.error_variance.promotor ** (-0.5)
                 if len(a_vec) != len(Y):
-                    a_vec = np.ones(len(Y))
+                    a_vec = np.ones(len(Y)) * np.median(a_vec)
             Y = a_vec.reshape(-1, 1) * Y
             B = a_vec.reshape(-1, 1) * B
             mu_p = a_vec.reshape(-1, 1) * mu_p
         else:
             a_vec = jnp.ones(len(Y))
         d1 = mu_p.reshape(-1, 1) + jnp.outer(a_vec, mu_s.flatten())
-        d2 = B @ U_m
-        d2 = d2.repeat(len(mu_s), -1)
+        # Per-sample mean motif effect B M X (a_vec already folded into B above).
+        d2 = B @ motif_mean_matrix(fit.motif_mean, data.X)
         # Y1 = Y0 - mu_p.reshape(-1, 1) - mu_s.reshape(1, -1)
         if use_groups:
             U = activities.U
@@ -1795,14 +1701,19 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
     fmt = data.fmt
     with openers[fmt](f'{project}.fit.{fmt}', 'rb') as f:
         fit : FitResult = dill.load(f)
+        loading_context = fit.loading_context
+        drist = fit.drist
+        loading_multipliers = fit.loading_multipliers
     with openers[fmt](f'{project}.predict.{fmt}', 'rb') as f:
         activities : ActivitiesPrediction = dill.load(f)
     data, data_test = split_data(data, fit.promoter_inds_to_drop)
     if x64:
         jax.config.update("jax_enable_x64", True)
-    data = transform_data(data, helmert=False, )
+    data = transform_data(data, helmert=False, loading_context=loading_context, drist=drist,
+                          loading_multipliers=loading_multipliers)
     if data_test is not None:
-        data_test = transform_data(data_test, helmert=False)
+        data_test = transform_data(data_test, helmert=False, loading_context=loading_context, drist=drist,
+                                   loading_multipliers=loading_multipliers)
     if gpu:
         device = jax.devices()
     else:

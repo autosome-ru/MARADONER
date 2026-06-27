@@ -29,6 +29,8 @@ def _fit(name: str = Argument(..., help='Project name.'),
         clustering: ClusteringMode = Option(ClusteringMode.none, help='Clustering method.'),
         num_clusters: int = Option(200, help='Number of clusters if [orange]clustering[/orange] is not [orange]none[/orange].'),
         test_chromosomes: List[str] = Option(None, '--test-chromosomes', '-t', help='Test chromosomes'),
+        test_promoters_filename: Path = Option(None, '--test-promoters-filename', help='Path to a text file containing gene/promoter names,'
+                                                                                        ' separated by a newline character, to be used as a testing set.'),
         gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
         gpu_decomposition: bool = Option(False, help='Use GPU if available or SVD decomposition.'), 
         x64: bool = Option(True, help='Use high precision algebra.')):
@@ -42,7 +44,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
     p.start()
     fit(name, tau_mode=tau_mode, tau_estimation=tau_estimation, tau_fix=tau_fix, 
         clustering=clustering, num_clusters=num_clusters,
-        gpu=gpu, test_chromosomes=test_chromosomes,
+        gpu=gpu, test_chromosomes=test_chromosomes, test_promoters_filename=test_promoters_filename,
         gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
     dt = time() - t0

@@ -3,7 +3,7 @@
 from pandas import DataFrame as DF
 # add dot
 from .utils import read_init, openers, ProjectData, subs_zeros
-from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data
+from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix
 from .grn import grn
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from scipy.linalg import eigh, lapack, cholesky, solve
@@ -218,9 +218,11 @@ def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
     istds = np.array(istds).T 
     if groups:
         stats = stats[:, np.array(groups)]
+    # print(stats, stats.shape, np.array(groups))
     stats = stats * istds
     stats = stats ** 2
     stats = stats.sum(axis=-1)
+    # print(stats)
     pvalues = chi2.sf(stats, len(precs) - 1)
     fdr = multitest.multipletests(pvalues, alpha=0.05, method='fdr_by')[1] 
     return stats, pvalues, fdr, bad_inds
@@ -231,9 +233,11 @@ def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPre
     sample_names = data.sample_names
     group_names = data.group_names
     promoter_names = data.promoter_names
-    data = transform_data(data, helmert=False)
+    data = transform_data(data, helmert=False, loading_context=fit.loading_context, 
+                          drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     B = data.B
-    mu_m = B @ fit.motif_mean.mean.reshape(-1, 1)
+    # Per-sample mean motif effect B M X (covariate-aware; p x s).
+    mu_m = B @ motif_mean_matrix(fit.motif_mean, data.X)
     B = np.delete(B, activities.filtered_motifs, axis=1)
     mu_s = fit.sample_mean.mean.reshape(1, -1)
     if mu_p is None:
@@ -248,10 +252,13 @@ def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPre
         U = activities.U_raw
     else:
         lt = list()
+        mu_m_lt = list()
         mu_s = mu_s.flatten()
         for inds in data.group_inds:
             lt.append(np.mean(mu_s[inds]))
+            mu_m_lt.append(mu_m[:, inds].mean(axis=1))
         mu_s = np.array(lt).reshape(1, -1)
+        mu_m = np.array(mu_m_lt).T          # p x g, group-averaged covariate effect
         cols = group_names
         U = activities.U
     log_counts = mu_s + mu_m + B @ U + mu_p
@@ -338,11 +345,26 @@ def export_results(project_name: str, output_folder: str,
     motif_group_variance_std = motif_group_variance_fim.covariance().diagonal() ** 0.5
     
     
-    motif_mean = fit.motif_mean.mean.flatten()
-    motif_mean_fim = Information(fit.motif_mean.fim)
-    motif_mean_stat, motif_mean_std = motif_mean_fim.standardize(motif_mean,
-                                                                 mode=Standardization.std)
-    
+    # motif_mean.mean is the (m, c) matrix M (U ~ MN(M X, Sigma, G)); column 0 is
+    # the intercept mu_m (average activity). Its Fisher block is fim[:m, :m].
+    M_matrix = np.asarray(fit.motif_mean.mean)
+    if M_matrix.ndim == 1:
+        M_matrix = M_matrix.reshape(-1, 1)
+    n_motifs = M_matrix.shape[0]
+    covariate_names = getattr(data, 'covariate_names', None) or \
+        ['intercept'] + [f'cov_{i}' for i in range(1, M_matrix.shape[1])]
+    motif_mean = M_matrix[:, 0]
+    motif_mean_fim = Information(fit.motif_mean.fim[:n_motifs, :n_motifs])
+    # Joint standard errors from the FULL Fisher matrix. Inverting each covariate's
+    # m x m diagonal block in isolation (as a per-block inverse) ignores correlations
+    # *between* covariates and severely underestimates the standard errors when
+    # covariates are collinear (e.g. sex vs sex-specific male_age/female_age). The
+    # correct SE is the diagonal of the inverse of the full mc x mc matrix. vec(M) is
+    # stored column-major, so coefficient (motif i, covariate a) is index a*m + i.
+    cov_full = np.linalg.pinv(np.asarray(fit.motif_mean.fim, dtype=np.float64), hermitian=True)
+    joint_std = np.sqrt(np.clip(np.diag(cov_full), 0.0, None)).reshape(M_matrix.shape[1], n_motifs).T
+    motif_mean_std = joint_std[:, 0]
+
     promoter_mean = fit.promoter_mean.mean.flatten()
     # del fit
     
@@ -369,6 +391,11 @@ def export_results(project_name: str, output_folder: str,
                                                               ))
     with open(os.path.join(folder, 'filtered_motif_variances.tsv'), 'w') as f:
         f.write(s)
+    
+    if fit.loading_context is not None:
+        R = fit.loading_context.R.T
+        DF(R, index=motif_names).to_csv(os.path.join(folder, 'motif_context.tsv'), sep='\t')
+    
     if promoter_variance is None or promoter_variance.var() == 0:
         DF(promoter_mean, index=prom_names, columns=['mean']).to_csv(os.path.join(folder, 'promoter_means.tsv'),
                                                                      sep='\t')
@@ -379,12 +406,31 @@ def export_results(project_name: str, output_folder: str,
     DF(np.array([motif_mean, motif_mean_std]).T,
        index=motif_names, columns=['mean', 'std']).to_csv(os.path.join(folder, 'motif_means.tsv'),
                                                           sep='\t')
+
+    # Per-covariate motif-mean effects: one TSV per covariate (intercept included)
+    # in params/covariates/, with columns effect, std, z, pvalue, fdr. The effect for
+    # the intercept is the average motif activity mu_m; for other covariates it is the
+    # change in motif activity per unit (z-scored numeric / encoded categorical).
+    cov_folder = os.path.join(folder, 'covariates')
+    os.makedirs(cov_folder, exist_ok=True)
+    # Clear stale per-covariate tables so a re-run with different covariates does not
+    # leave behind files for covariates no longer in the model.
+    for fname in os.listdir(cov_folder):
+        if fname.endswith('.tsv'):
+            os.remove(os.path.join(cov_folder, fname))
+    for a in range(M_matrix.shape[1]):
+        eff = M_matrix[:, a]
+        eff_std = joint_std[:, a]            # joint SE (accounts for covariate collinearity)
+        z = eff / eff_std
+        pvalue = 2 * norm.sf(np.abs(z))
+        fdr = multitest.multipletests(pvalue, method='fdr_bh')[1]
+        cname = covariate_names[a] if a < len(covariate_names) else f'cov_{a}'
+        DF({'effect': eff, 'std': eff_std, 'z': z, 'pvalue': pvalue, 'fdr': fdr},
+           index=motif_names).to_csv(os.path.join(cov_folder, f'{cname}.tsv'), sep='\t')
     
                                                           
     mu_p_test = None
-    print(f'{project_name}.promoter_mean.{fmt}')
     if os.path.isfile(f'{project_name}.promoter_mean.{fmt}'):
-        print(folder)
         with open(f'{project_name}.promoter_mean.{fmt}', 'rb') as f:
             mu_p_test = dill.load(f)
         DF(mu_p_test, index=prom_names_test, columns=['mean']).to_csv(os.path.join(folder, 'test_promoter_means.tsv'),
@@ -494,6 +540,8 @@ def export_results(project_name: str, output_folder: str,
             promoter_names_test = np.array(data.promoter_names)[fit.promoter_inds_to_drop]
             export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
                        sample_names=sample_names)
+    
+    
     
     if export_counts:
         inds = fit.promoter_inds_to_drop
@@ -669,8 +717,11 @@ def export_loadings_product(project_name: str, output_folder: str,
     
     U = act.U
     B = data.B
-    mu = fit.motif_mean.mean 
-    
+    # Intercept (average) motif activity mu_m = M[:, 0]; covariate components are
+    # group-specific and not folded into this static loadings-product tensor.
+    mu = np.asarray(fit.motif_mean.mean)
+    mu = mu[:, 0] if mu.ndim > 1 else mu
+
     if act.filtered_motifs is not None:
         motif_names = np.delete(motif_names, act.filtered_motifs)
         B = np.delete(B, act.filtered_motifs, axis=1)

@@ -69,10 +69,70 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
         raise Exception('Unknown transformation mode ' + str(mode))
     return df
 
+def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int = 1,
+                     verbose: bool = True):
+    """Read a covariate/metadata table and build the design matrix X of shape
+    (c, s) aligned to ``sample_names``.
+
+    The first column of the file is treated as the sample identifier (index).
+    Remaining columns are covariates. Numeric covariates are z-scored; categorical
+    covariates are one-hot encoded (first level dropped) and centred. An intercept
+    row of ones is always prepended, so the returned X always has at least one row.
+    Samples missing from the table are imputed with the column mean (numeric) /
+    most-frequent level (categorical).
+
+    Returns (X, covariate_names).
+    """
+    df = dt.fread(covariates_filename, nthreads=n_jobs).to_pandas()
+    df = df.set_index(df.columns[0])
+    # Metadata files may contain (many) duplicate rows; keep the first occurrence
+    # per sample id.
+    df = df[~df.index.duplicated(keep='first')]
+    sample_names = list(sample_names)
+    n_missing = len([s for s in sample_names if s not in df.index])
+    if n_missing:
+        logger_print(f'Warning: {n_missing}/{len(sample_names)} samples are absent from the '
+                     'covariate table; their covariates will be imputed.', verbose)
+    # Align (and create NaN rows for missing samples).
+    df = df.reindex(sample_names)
+    rows = [np.ones(len(sample_names), dtype=float)]
+    names = ['intercept']
+    for col in df.columns:
+        series = df[col]
+        numeric = pd.to_numeric(series, errors='coerce')
+        is_numeric = numeric.notna().sum() >= series.notna().sum() and series.notna().any()
+        if is_numeric:
+            v = numeric.astype(float)
+            v = v.fillna(v.mean())
+            std = v.std()
+            if std == 0 or not np.isfinite(std):
+                logger_print(f'Warning: dropping constant covariate "{col}".', verbose)
+                continue
+            v = (v - v.mean()) / std
+            rows.append(v.values.astype(float))
+            names.append(str(col))
+        else:
+            s = series.astype('object')
+            mode = s.dropna()
+            mode = mode.mode().iloc[0] if len(mode) else ''
+            s = s.fillna(mode)
+            dummies = pd.get_dummies(s, prefix=str(col), drop_first=True)
+            for dcol in dummies.columns:
+                v = dummies[dcol].astype(float)
+                if v.std() == 0:
+                    continue
+                v = v - v.mean()
+                rows.append(v.values.astype(float))
+                names.append(str(dcol))
+    X = np.vstack(rows)
+    return X, names
+
+
 def create_project(project_name: str, promoter_expression_filename: str, loading_matrix_filenames: list[str],
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
                    promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None, promoter_filter_max=True,
-                   sample_groups_subset=False,  motif_names_filename=None, n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
+                   sample_groups_subset=False,  motif_names_filename=None, covariates_filename=None,
+                   n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
     if not os.path.isfile(promoter_expression_filename):
         raise FileNotFoundError(f'Promoter expression file {promoter_expression_filename} not found.')
     if type(loading_matrix_filenames) is str:
@@ -189,7 +249,13 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
         sample_groups = {n: [i] for i, n in enumerate(sample_names)}
     else:
         sample_groups = {n: sorted([sample_names.index(i) for i in inds]) for n, inds in sample_groups.items()}
-    res = {'expression': promoter_expression, 
+    if covariates_filename:
+        logger_print('Building covariate design matrix...', verbose)
+        covariates, covariate_names = build_covariates(covariates_filename, sample_names,
+                                                       n_jobs=n_jobs, verbose=verbose)
+    else:
+        covariates, covariate_names = None, None
+    res = {'expression': promoter_expression,
            'loadings': loading_matrices,
            'motif_expression': motif_expression,
            'motif_postfixes': motif_postfixes,
@@ -197,6 +263,8 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
            'sample_names': sample_names,
            'motif_names': motif_names,
            'weights': weights,
+           'covariates': covariates,
+           'covariate_names': covariate_names,
            'groups': sample_groups}
     if dump:
         folder = os.path.split(project_name)[0]

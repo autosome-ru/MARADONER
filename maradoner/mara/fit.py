@@ -146,7 +146,7 @@ def predict_activities(data: TransformedData, fit: FitResult,
 
 def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
         tau_fix: float, clustering: ClusteringMode,
-        num_clusters: int, test_chromosomes: list,
+        num_clusters: int, test_chromosomes: list, test_promoters_filename: str,
         gpu: bool, gpu_decomposition: bool, x64=True,
         verbose=True, dump=True) -> ActivitiesPrediction:
     if x64:
@@ -158,17 +158,25 @@ def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
         logger_print('Clustering data...', verbose)
     data.B, clustering = cluster_data(data.B, mode=clustering, 
                                       num_clusters=num_clusters)
-    if test_chromosomes:
+    if test_promoters_filename:
+        with open(test_promoters_filename, 'r') as f:
+            test_chromosomes = filter(lambda x: len(x), map(lambda x: x.strip(), f.readlines()))
+            test_chromosomes = set(test_chromosomes)
+            promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) 
+                                     if p in test_chromosomes]
+    elif test_chromosomes:
         import re
         pattern = re.compile(r'chr([0-9XYM]+|\d+)')
-        
+
         test_chromosomes = set(test_chromosomes)
         promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) 
                                  if pattern.search(p).group() in test_chromosomes]
-        data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
-        data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
     else:
         promoter_inds_to_drop = None
+    # if promoter_inds_to_drop is not None:
+    #     data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
+    #     data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
+    data, _ = split_data(data, promoter_inds_to_drop)
     logger_print('Transforming data...', verbose)
     data = transform_data(data)
     if gpu_decomposition:
@@ -281,9 +289,13 @@ def calculate_fov(project: str, gpu: bool,
                 prom = _cor(Y, effects, axis=1)
                 sample = _cor(Y, effects, axis=0)
             return FOVResult(total, prom, sample)
+        
         m2 = Bs[1].mean(axis=0, keepdims=True)
         m0 = Bs[1].mean()
         
+        B_hat = Bs[0] - Bs[0].mean(axis=0, keepdims=True)
+        Y_hat = Bs[1] - Bs[1].mean(axis=0, keepdims=True)
+        mu_m = (np.linalg.pinv(B_hat) @ Y_hat).mean(axis=1, keepdims=True)
         # Bs = None
         if Bs is None:
             # data = transform_data(data)
@@ -300,14 +312,17 @@ def calculate_fov(project: str, gpu: bool,
             # m0 = Y.mean(axis=1, keepdims=True)
             # m2 = 0
             # m0 = 0
+        m1 = Y.mean(axis=1, keepdims=True)
+        m1 = B @ mu_m
         if keep_motifs is not None:
             B = B[:, keep_motifs]
             U = U[keep_motifs]
+        
         # B = B - B.mean(axis=0, keepdims=True)
         d = B @ U
         # m2 = Y.mean(axis=0, keepdims=True)
         # m0 = Y.mean()
-        m = (Y.mean(axis=1, keepdims=True) + m2 - m0)
+        m = (m1 + m2 - m0)
         d = d + m
         stat_0 = sub(Y, d)
         return stat_0,

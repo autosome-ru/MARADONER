@@ -3,7 +3,7 @@ import numpy as np
 import jax.numpy as jnp
 import jax 
 from .utils import read_init, openers, ProjectData
-from .fit import ActivitiesPrediction, FitResult, split_data
+from .fit import ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix
 from scipy.optimize import minimize
 import os
 import dill
@@ -21,7 +21,7 @@ def estimate_promoter_prior_variance(data: ProjectData, activities: ActivitiesPr
     Y = data.Y
     group_inds = data.group_inds
     Y = Y - fit.promoter_mean.mean.reshape(-1, 1) - fit.sample_mean.mean.reshape(1, -1)
-    Y = Y -  B @ fit.motif_mean.mean.reshape(-1, 1)
+    Y = Y -  B @ motif_mean_matrix(fit.motif_mean, data.X)
     if activities.filtered_motifs is not None and len(activities.filtered_motifs):
         B = np.delete(B, activities.filtered_motifs, axis=1)
     Y = np.concatenate([Y[:, inds].mean(axis=1, keepdims=True) - B @ U.reshape(-1, 1)
@@ -156,13 +156,15 @@ def estimate_promoter_variance(project_name: str, span=0.1):
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
         activities: ActivitiesPrediction = dill.load(f)
     data, _ = split_data(data, fit.promoter_inds_to_drop)
+    data = transform_data(data, loading_context=fit.loading_context, drist=fit.drist,
+                          loading_multipliers=fit.loading_multipliers)
     B = data.B
     Y = data.Y
     group_inds = data.group_inds
     
     Y = Y - fit.sample_mean.mean.reshape(1, -1)
     M = fit.promoter_mean.mean.reshape(-1, 1)
-    M = M + B @ fit.motif_mean.mean.reshape(-1, 1) 
+    M = M + B @ motif_mean_matrix(fit.motif_mean, data.X)
     if activities.filtered_motifs is not None:
         M = M + np.delete(B, activities.filtered_motifs, axis=1) @ activities.U_raw
     else:
@@ -211,7 +213,7 @@ def estimate_promoter_variance_(project_name: str, prior_top=0.90):
     print('Piror standard deviation:', prior_var ** 0.5)
     prior_means = fit.error_variance.variance
     Y = Y - fit.promoter_mean.mean.reshape(-1, 1) - fit.sample_mean.mean.reshape(1, -1)
-    Y = Y - B @ fit.motif_mean.mean.reshape(-1, 1)
+    Y = Y - B @ motif_mean_matrix(fit.motif_mean, data.X)
     Y = Y ** 2
     B_hat = B ** 2 * fit.motif_variance.motif
     B_hat = B_hat.sum(axis=1)
@@ -288,26 +290,34 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
         activities: ActivitiesPrediction = dill.load(f)
     data, _ = split_data(data, fit.promoter_inds_to_drop)
+    # Capture name fields off the ProjectData before `data` is reassigned to a
+    # TransformedData (which only carries arrays, not name lists).
+    group_names = data.group_names
+    motif_names = data.motif_names
+    prom_names = data.promoter_names
+    data = transform_data(data, loading_context=fit.loading_context,
+                          drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     dtype = np.float64
     B = data.B.astype(dtype)
     Y = data.Y.astype(dtype)
     group_inds = data.group_inds
-    group_names = data.group_names
     nus = fit.motif_variance.group.astype(dtype)
-    motif_names = data.motif_names
-    prom_names = data.promoter_names
     U = activities.U_raw.astype(dtype)
-    motif_mean = fit.motif_mean.mean.flatten().astype(dtype)
+    # Per-sample covariate mean B M X for the residual; intercept column for the
+    # static per-promoter-motif BM tensor below.
+    BMX = (B @ motif_mean_matrix(fit.motif_mean, data.X)).astype(dtype)
+    _M = np.asarray(fit.motif_mean.mean)
+    motif_mean = (_M[:, 0] if _M.ndim > 1 else _M).flatten().astype(dtype)
     motif_variance = fit.motif_variance.motif.astype(dtype)
     promoter_mean = fit.promoter_mean.mean.astype(dtype)
     sample_mean = fit.sample_mean.mean.astype(dtype)
-    
+
     promvar = np.zeros((len(B), len(group_names)))
     for i, sigma in enumerate(fit.error_variance.variance):
         promvar[:, i] = sigma * fit.error_variance.promotor
-    
+
     Y = Y - promoter_mean.reshape(-1, 1) - sample_mean.reshape(1, -1)
-    Y = Y - B @ motif_mean.reshape(-1, 1)
+    Y = Y - BMX
     
     if activities.filtered_motifs is not None:
         motif_names = np.delete(motif_names, activities.filtered_motifs)

@@ -12,7 +12,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from .create import create_project
 from pathlib import Path
-from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode, GLSRefinement
+from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode
 from .promoter_mean_test import FOVMeanMode, estimate_promoter_mean
 from .grn import grn
 from .synthetic_data import generate_dataset
@@ -132,6 +132,10 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
                                                 help='String postfixes will be appeneded to the motifs from each of the supplied loading matrices'),
             motif_filename: Path = Option(None, '--motif-filename', help='If provided, then only motifs with names present in this fill will be kept'),
+            covariates: Path = Option(None, '--covariates', help='A path to a tabular file of sample covariates (first column: sample ids, '
+                                      'remaining columns: covariates). If supplied, motif activity means are modeled as M X (with an '
+                                      'intercept), i.e. covariates such as sex or age are accounted for. Numeric covariates are z-scored, '
+                                      'categorical ones are one-hot encoded.'),
             n_jobs: float = Option(0.5, help='Number of threads to use when reading datatables. If -1, maximal number of threads are used. If it is fractional in range (0, 1), '
                                    'the fraction maximal number is used.'),
             compression: Compression = Option(Compression.raw.value, help='Compression method used to store results.')):
@@ -147,15 +151,18 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
     p.start()
     if filter_plot:
         filter_plot = f'{name}.filter-plot.png'
-    r = create_project(name, expression, loading_matrix_filenames=loading, motif_expression_filenames=motif_expression, 
-                       loading_matrix_transformations=loading_transform, sample_groups=sample_groups, 
+    if covariates:
+        covariates = str(covariates)
+    r = create_project(name, expression, loading_matrix_filenames=loading, motif_expression_filenames=motif_expression,
+                       loading_matrix_transformations=loading_transform, sample_groups=sample_groups,
                        sample_groups_subset=sample_groups_subset,
                        promoter_filter_lowexp_cutoff=filter_lowexp_w,
-                       promoter_filter_plot_filename=filter_plot,               
+                       promoter_filter_plot_filename=filter_plot,
                        promoter_filter_max=filter_max_mode,
-                       compression=compression, 
+                       compression=compression,
                        motif_postfixes=loading_postfix,
                        motif_names_filename=motif_filename,
+                       covariates_filename=covariates,
                        n_jobs=n_jobs,
                        verbose=False)
     p.stop()
@@ -164,6 +171,9 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
     m = r['loadings'].shape[1]
     g = len(r['groups'])
     rprint(f'Number of promoters: {p}, number of motifs: {m}, number of samples: {s}, number of groups: {g}')
+    if r.get('covariates') is not None:
+        cov_names = [c for c in r['covariate_names'] if c != 'intercept']
+        rprint(f'Number of covariates (excl. intercept): {len(cov_names)} [{", ".join(cov_names)}]')
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
     
 
@@ -177,8 +187,16 @@ def _fit(name: str = Argument(..., help='Project name.'),
           motif_variance: bool = Option(True,  help='Estimate individual motif variances or assume them all equal.'
                                                   'The latter makes method more similar to (IS)MARA approach and might be beneficial when the data is small.'),
           promoter_variance: bool = Option(False, help='Estiamte individual promoter variances or assume them all equal.'),
-          refinement: GLSRefinement = Option(GLSRefinement.none, help='TODO help'),
-          gpu: bool = Option(False, help='Use GPU if available for most of computations.'), 
+          error_lowrank: int = Option(0, '--error-lowrank', help='Rank [orange]k[/orange] of a low-rank correction to the error '
+                                      'covariance: the error column-covariance becomes [cyan]Theta = D + W W^T[/cyan] with [cyan]W[/cyan] of shape '
+                                      '[blue]s x k[/blue], estimated jointly with [cyan]D[/cyan] inside the REML stage. Captures correlated '
+                                      '(e.g. batch / unmodeled-covariate) structure across samples that the diagonal [cyan]D[/cyan] misses. '
+                                      '[orange]0[/orange] (default) disables it and reproduces the classic diagonal model exactly.'),
+          activity_lowrank: int = Option(0, '--activity-lowrank', help='Rank [orange]k[/orange] of a low-rank correction to the motif '
+                                         'activity covariance: [cyan]G = diag(nu) + V V^T[/cyan] with [cyan]V[/cyan] of shape [blue]s x k[/blue], '
+                                         'estimated jointly with [cyan]Sigma[/cyan] and [cyan]nu[/cyan]. Captures latent sample-factors along '
+                                         'which motif activities co-vary. [orange]0[/orange] (default) disables it. Requires per-motif variances.'),
+          gpu: bool = Option(False, help='Use GPU if available for most of computations.'),
           gpu_decomposition: bool = Option(False, help='Use GPU if available or SVD decomposition.'), 
           x64: bool = Option(True, help='Use high precision algebra.')):
     """
@@ -193,8 +211,9 @@ def _fit(name: str = Argument(..., help='Project name.'),
         gpu=gpu, test_chromosomes=test_chromosomes,
         motif_variance=motif_variance,
         promoter_variance=promoter_variance,
-        refinement=refinement,
         test_promoters_filename=test_promoters_filename,
+        error_lowrank=error_lowrank,
+        activity_lowrank=activity_lowrank,
         gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
     dt = time() - t0
@@ -234,9 +253,9 @@ def _gof(name: str = Argument(..., help='Project name.'),
         title += ' (Residual)'
     else:
         title += ' (Total)'
-    t = Table('Set\n[cyan]Y = [/cyan]', 
+    t = Table('Set\n[cyan]Y = [/cyan]',
               'centering\n[cyan]mu_p 1_s^T + 1_p mu_s^T[/cyan]',
-              '+ mean motif activity\n[cyan]+ B mu_m 1_s^T[/cyan]',
+              '+ mean motif activity\n[cyan]+ B M X[/cyan]',
               '+ group-specific motif activity\n[cyan]+ B U[/cyan]',
               title=title)
     row = [f'{t.total:.6f}' for t in res.train]
@@ -316,6 +335,15 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
                 non_signficant_motifs_fraction: float = Option(0.20, help='Fraction of non-significant motifs.'),
                 sigma_rel: float = Option(1e-1, help='Ratio of nu to sigma. The higher this value, the higher is FOV.'),
                 means: bool = Option(True, help='Non-zero groupwise and promoter-wise intercepts'),
+                n_covariates: int = Option(0, help='Number of covariates (beyond the intercept) to simulate. If > 0, the '
+                                           'motif activity means follow M X and a covariates.tsv (plus ground-truth M_gt.tsv) is written.'),
+                cov_effect: float = Option(1.0, help='Scale of the simulated covariate effects (columns of M beyond the intercept).'),
+                error_lowrank: int = Option(0, '--error-lowrank', help='Inject a rank-[orange]k[/orange] correction W W^T into the error '
+                                            'covariance (correlated noise across samples). Ground-truth W is written to W_err_gt.tsv.'),
+                error_lowrank_scale: float = Option(1.0, help='Per-column scale of the injected error factor W, relative to mean sqrt(D).'),
+                activity_lowrank: int = Option(0, '--activity-lowrank', help='Inject a rank-[orange]k[/orange] correction V V^T into the '
+                                               'activity covariance G (correlated motif activities across samples). Ground-truth V -> V_act_gt.tsv.'),
+                activity_lowrank_scale: float = Option(1.0, help='Per-column scale of the injected activity factor V, relative to mean sqrt(nu).'),
                 seed: int = Option(1, help='Random seed.')
             ):
     t0 = time()
@@ -324,8 +352,11 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
     pr.start()
     generate_dataset(folder=output_folder, p=p, m=m, g=g, min_samples=min_samples, max_samples=max_samples,
                      non_signficant_motifs_fraction=non_signficant_motifs_fraction, sigma_rel=sigma_rel,
-                     means=means, 
+                     means=means,
                      B_cor=0, U_cor=0, E_cor=0, motif_cor=0,
+                     n_covariates=n_covariates, cov_effect=cov_effect,
+                     error_lowrank=error_lowrank, error_lowrank_scale=error_lowrank_scale,
+                     activity_lowrank=activity_lowrank, activity_lowrank_scale=activity_lowrank_scale,
                      seed=seed)
     pr.stop()
     dt = time() - t0

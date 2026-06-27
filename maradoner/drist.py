@@ -14,7 +14,7 @@ def _pava_kernel_serial(target, sort_idx, inv_sort_idx, weights):
 class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
     def __init__(self, mode='col_hetero', fit_intercept=True, optimizer='jacobi',
                  init='rank', share_function=False, max_iter=200, tol=1e-4, 
-                 learning_rate=0.25, verbose=False):
+                 learning_rate=0.1, verbose=False):
         """
         DRIST: Doubly Robust Isotonic Regression.
         
@@ -51,11 +51,8 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
             return np.random.randn(p, m)
         
         elif self.init == 'rank':
-            # Replace values with their rank (0..p-1)
             f_X = np.zeros_like(X)
             for j in range(m):
-                # argsort of argsort gives the rank
-                # We use 'ordinal' ranking (0 to p-1) for speed via pure numpy
                 idx = np.argsort(X[:, j])
                 inv = np.empty_like(idx)
                 inv[idx] = np.arange(p)
@@ -71,9 +68,6 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
                 inv[idx] = np.arange(p)
                 # Ranks 1..p
                 ranks = inv + 1.0
-                # Survival function: (p + 1 - rank) / (p + 1)
-                # Negative Log: -log(p+1-rank) + const
-                # We ignore constants/scaling as f_X is standardized later
                 f_X[:, j] = -np.log(p + 1.0 - ranks)
             return f_X
             
@@ -150,7 +144,6 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
         d_diag = np.ones(p, dtype=np.float32)
         update_d = (self.mode == 'doubly_hetero')
         prev_loss = np.inf
-        
         for it in range(self.max_iter):
             Y_eff = y - beta0
             
@@ -244,9 +237,9 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
                 d_diag = np.clip(d_diag, 1e-6, 1e6)
                 
             delta = (prev_loss - loss) / prev_loss if prev_loss != np.inf else 1.0
-            if np.abs(delta) < self.tol: break
-            if self.verbose and it % 10 == 0:
+            if self.verbose:
                 print(f"Iter {it}: Loss={loss:.4e}")
+            if np.abs(delta) < self.tol: break
             prev_loss = loss
             
         self.coef_ = U
@@ -372,7 +365,6 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
                 
                 f_X = (1.0 - self.learning_rate) * f_X + self.learning_rate * F_pava
                 
-                # Recalculate Y_pred fully after F update
                 Y_pred = f_X @ U + beta0
                 
             else:
@@ -428,7 +420,7 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
     def transform(self, X):
         check_is_fitted(self, 'fitted_')
         X = check_array(X)
-        X_trans = np.zeros_like(X, dtype=np.float32)
+        X_trans = np.zeros_like(X)
         
         if self.share_function:
             X_flat = X.ravel(order='F') if X.flags['F_CONTIGUOUS'] else X.flatten()

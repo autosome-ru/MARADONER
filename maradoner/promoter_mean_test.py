@@ -6,7 +6,7 @@ from enum import Enum
 import dill
 import pygam
 from .utils import read_init, openers
-from .fit import FitResult, ActivitiesPrediction, transform_data, split_data
+from .fit import FitResult, ActivitiesPrediction, transform_data, split_data, motif_mean_matrix
 
 class FOVMeanMode(str, Enum):
     null = 'null'
@@ -71,18 +71,22 @@ def estimate_promoter_mean(project: str,
         fit : FitResult = dill.load(f)
     with openers[fmt](f'{project}.predict.{fmt}', 'rb') as f:
         activities : ActivitiesPrediction = dill.load(f)
-    B0 = transform_data(data, helmert=False).B
+    B0 = transform_data(data, helmert=False, loading_context=fit.loading_context,
+                        drist=fit.drist, loading_multipliers=fit.loading_multipliers).B
     data, data_test = split_data(data, fit.promoter_inds_to_drop)
-    data = transform_data(data, helmert=False, )
+    data = transform_data(data, helmert=False, loading_context=fit.loading_context,
+                          drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     if data_test is not None:
-        data_test = transform_data(data_test, helmert=False)
+        data_test = transform_data(data_test, helmert=False, loading_context=fit.loading_context,
+                                   drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     drops = activities.filtered_motifs
     U = activities.U_raw
-    U_m = fit.motif_mean.mean.reshape(-1, 1)
+    # Per-sample mean motif effect B M X (covariate-aware).
+    BMX = data.B @ motif_mean_matrix(fit.motif_mean, data.X)
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
     mu_p = fit.promoter_mean.mean.flatten()
     if covariate:
-        ws = data.Y - mu_s.T - mu_p.reshape(-1, 1) - data.B @ U_m - np.delete(data.B, drops, axis=1) @ U
+        ws = data.Y - mu_s.T - mu_p.reshape(-1, 1) - BMX - np.delete(data.B, drops, axis=1) @ U
         ws = 1 / np.std(ws, axis=1)
         X = pd.read_csv(covariate, sep='\t', index_col=0)
         cols = X.columns
@@ -112,7 +116,7 @@ def estimate_promoter_mean(project: str,
         mu_p_d_train = 0
     if mean_mode == mean_mode.gls:
         Y = data_test.Y - mu_s.T
-        Y = Y - data_test.B @ U_m
+        Y = Y - data_test.B @ motif_mean_matrix(fit.motif_mean, data_test.X)
         Y = Y - np.delete(data_test.B, drops, axis=1) @ U
         D = (1 / fit.error_variance.variance)[data_test.group_inds_inv].reshape(-1, 1)
         mu_p = Y @ D / (D.sum()) 
