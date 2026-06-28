@@ -272,9 +272,9 @@ def _gof(name: str = Argument(..., help='Project name.'),
 
 @app.command('estimate-promoter-mean', help='Estimate promoter-specific mean expression values for a testing subset.')
 def _estimate_promoter_mean(name: str = Argument(..., help='Project name.'),
-                            mean_mode: FOVMeanMode = Option(FOVMeanMode.gls, help='Promoter-wise mean imputation method used for a testing set. '\
+                            mean_mode: FOVMeanMode = Option(FOVMeanMode.null, help='Promoter-wise mean imputation method used for a testing set. '\
                                                                                   '[orange]null[/orange] substitutes mu_p with zeros.'\
-                                                                                  '[orange]gls[/orange] uses a simple GLS estimator using only sample-wise variances after accounting for other effects. [red]leakge[/red]-prone '\
+                                                                                  '[orange]gls[/orange] uses a simple GLS estimator using only sample-wise variances after accounting for other effects - [red]leakge[/red]-prone. '\
                                                                                   '[orange]knn[/orange] employs KNN using principal components of the loading matrix and the total predicted effect matrices as features.'),
                             knn_n: int = Option(256, help='Number of nearest neighbours to use if [orange]mean_mode=gls[/orange].'),
                             pca_b: int = Option(64, help='Number of PC of the loading matrix to use if [orange]mean_mode=gls[/orange] (-1 uses all).'),
