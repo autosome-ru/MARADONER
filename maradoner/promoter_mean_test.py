@@ -85,6 +85,10 @@ def estimate_promoter_mean(project: str,
     BMX = data.B @ motif_mean_matrix(fit.motif_mean, data.X)
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
     mu_p = fit.promoter_mean.mean.flatten()
+    # fit.promoter_mean spans the full promoter set; the covariate/knn branches below use it
+    # as the *training* targets (aligned with `data`/`X_train`), so drop the held-out entries.
+    if fit.promoter_inds_to_drop:
+        mu_p = np.delete(mu_p, fit.promoter_inds_to_drop)
     if covariate:
         ws = data.Y - mu_s.T - mu_p.reshape(-1, 1) - BMX - np.delete(data.B, drops, axis=1) @ U
         ws = 1 / np.std(ws, axis=1)

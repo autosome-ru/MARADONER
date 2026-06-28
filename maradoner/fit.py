@@ -4,7 +4,7 @@ import jax
 import scipy.linalg.lapack as lapack
 from sklearn.cluster import KMeans
 from sklearn.decomposition import NMF
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from .meta_optimizer import MetaOptimizer
 from sklearn.model_selection import RepeatedKFold
@@ -1534,7 +1534,39 @@ def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]
                          fmt=data.fmt)
     return data_d, data
 
-def predict(project: str, filter_motifs: bool, filter_order: int, 
+def align_fit_to_promoters(fit: FitResult, inds, n_full: int) -> FitResult:
+    """Restrict the per-promoter estimates in ``fit`` to the *training* promoters.
+
+    ``fit`` is estimated over the FULL promoter set (the in-``fit`` train/test split at the
+    top of :func:`fit` is disabled), whereas ``predict``/``gof``/``export`` evaluate on the
+    training half returned by ``split_data(data, inds)`` -- i.e. with the held-out promoter
+    indices ``inds`` removed.  The per-promoter arrays ``error_variance.promotor`` and
+    ``promoter_mean.mean`` must therefore be sliced the very same way, otherwise they no
+    longer line up row-for-row with the (B, Y) of the split data and broadcasting fails
+    (e.g. ``B * weights.reshape(-1, 1)`` in :func:`transform_data`).
+
+    ``np.delete(arr, inds)`` mirrors exactly how ``split_data`` slices B/Y, so the result is
+    row-aligned by construction.  Arrays that are not full length (a fit that already trained
+    on the training split, or degenerate/scalar arrays) are left untouched, which makes this
+    safe to call unconditionally and idempotent.
+    """
+    if not inds:
+        return fit
+    inds = np.asarray(inds)
+    error_variance = fit.error_variance
+    promotor = getattr(error_variance, 'promotor', None)
+    if promotor is not None:
+        promotor = np.asarray(promotor)
+        if promotor.ndim == 1 and promotor.shape[0] == n_full:
+            error_variance = replace(error_variance,
+                                     promotor=np.delete(promotor, inds, axis=0))
+    promoter_mean = fit.promoter_mean
+    mean = np.asarray(promoter_mean.mean).flatten()
+    if mean.shape[0] == n_full:
+        promoter_mean = replace(promoter_mean, mean=np.delete(mean, inds, axis=0))
+    return replace(fit, error_variance=error_variance, promoter_mean=promoter_mean)
+
+def predict(project: str, filter_motifs: bool, filter_order: int,
             tau_search: bool, cv_repeats: int, cv_splits: int,
             tau_left: float, tau_right: float, tau_num: int, pinv: bool,
             gpu: bool, x64=True,
@@ -1548,7 +1580,11 @@ def predict(project: str, filter_motifs: bool, filter_order: int,
     loading_context = fit.loading_context
     loading_multipliers = fit.loading_multipliers
     drist = fit.drist
+    n_full = len(data.promoter_names)
     data, _ = split_data(data, fit.promoter_inds_to_drop)
+    # Per-promoter estimates in `fit` span the full promoter set; keep only the training
+    # entries so they stay row-aligned with the split data used below and in predict_activities.
+    fit = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, n_full)
     data = transform_data(data, helmert=False, weights=fit.error_variance.promotor ** (-0.5),
                           loading_context=loading_context, drist=drist, loading_multipliers=loading_multipliers)
     if gpu:
@@ -1706,7 +1742,11 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
         loading_multipliers = fit.loading_multipliers
     with openers[fmt](f'{project}.predict.{fmt}', 'rb') as f:
         activities : ActivitiesPrediction = dill.load(f)
+    n_full = len(data.promoter_names)
     data, data_test = split_data(data, fit.promoter_inds_to_drop)
+    # Per-promoter estimates span the full promoter set; restrict them to the training
+    # promoters so they line up with the training `data` used by calc_fov below.
+    fit_train = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, n_full)
     if x64:
         jax.config.update("jax_enable_x64", True)
     data = transform_data(data, helmert=False, loading_context=loading_context, drist=drist,
@@ -1728,7 +1768,7 @@ def calculate_fov(project: str, use_groups: bool, gpu: bool,
                 raise FileNotFoundError("To compute GOFs on the testing set, you must first run estimate-promoter-means with an appropriate setting.")
             test_FOV = calc_fov(data=data_test, fit=fit, activities=activities,
                                 mu_p=mu_p)
-        train_FOV = calc_fov(data=data, fit=fit, activities=activities)
+        train_FOV = calc_fov(data=data, fit=fit_train, activities=activities)
     if data_test is None:
         test_FOV = None
         mu_p = None

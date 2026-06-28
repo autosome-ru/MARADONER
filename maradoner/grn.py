@@ -3,7 +3,7 @@ import numpy as np
 import jax.numpy as jnp
 import jax 
 from .utils import read_init, openers, ProjectData
-from .fit import ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix
+from .fit import ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
 from scipy.optimize import minimize
 import os
 import dill
@@ -155,7 +155,10 @@ def estimate_promoter_variance(project_name: str, span=0.1):
         fit: FitResult = dill.load(f)
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
         activities: ActivitiesPrediction = dill.load(f)
+    n_full = len(data.promoter_names)
     data, _ = split_data(data, fit.promoter_inds_to_drop)
+    # Restrict per-promoter estimates to the training promoters kept by split_data above.
+    fit = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, n_full)
     data = transform_data(data, loading_context=fit.loading_context, drist=fit.drist,
                           loading_multipliers=fit.loading_multipliers)
     B = data.B
@@ -289,7 +292,10 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         fit: FitResult = dill.load(f)
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
         activities: ActivitiesPrediction = dill.load(f)
+    n_full = len(data.promoter_names)
     data, _ = split_data(data, fit.promoter_inds_to_drop)
+    # Restrict per-promoter estimates to the training promoters kept by split_data above.
+    fit = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, n_full)
     # Capture name fields off the ProjectData before `data` is reassigned to a
     # TransformedData (which only carries arrays, not name lists).
     group_names = data.group_names

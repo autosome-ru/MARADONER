@@ -3,7 +3,7 @@
 from pandas import DataFrame as DF
 # add dot
 from .utils import read_init, openers, ProjectData, subs_zeros
-from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix
+from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
 from .grn import grn
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from scipy.linalg import eigh, lapack, cholesky, solve
@@ -313,6 +313,9 @@ def export_results(project_name: str, output_folder: str,
     if fit.promoter_inds_to_drop:
         prom_names_test = np.array(prom_names)[fit.promoter_inds_to_drop]
         prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
+    # Per-promoter estimates in `fit` span the full promoter set; restrict them to the
+    # training promoters so they line up with the (trimmed) `prom_names` written below.
+    fit = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, len(data.promoter_names))
     group_names = fit.group_names
     with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
         act: ActivitiesPrediction = dill.load(f)
