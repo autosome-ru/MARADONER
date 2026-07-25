@@ -92,6 +92,59 @@ def covariate_projection(D_n: jnp.ndarray, X: jnp.ndarray) -> jnp.ndarray:
     return jnp.diag(Di) - XDi.T @ jnp.linalg.solve(XDiX, XDi)
 
 
+def variance_dof(X, group_inds) -> dict:
+    """Degrees-of-freedom budget for the (Sigma, G) REML step.
+
+    That step estimates the group variances nu from the sample-space residual left
+    after projecting out the covariate row space X (which always contains the
+    intercept 1_s). The projection consumes rank(X) of the s sample dimensions, so
+    only ``dof = s - rank(X)`` remain, while ``g - 1`` group variances are free (one
+    is pinned to fix the Sigma/G scale indeterminacy). When ``g - 1 > dof`` those
+    variances are not identifiable and the Fisher information is singular.
+
+    Returns a dict with the budget and an ``ok`` flag.
+    """
+    X = np.asarray(X, dtype=float)
+    s = X.shape[1]
+    rank_x = int(np.linalg.matrix_rank(X)) if X.size else 0
+    dof = s - rank_x
+    g = len(group_inds)
+    n_free = max(g - 1, 0)
+    return {'n_samples': s, 'n_covariates': X.shape[0], 'rank_x': rank_x,
+            'dof': dof, 'n_groups': g, 'n_free_nu': n_free, 'ok': n_free <= dof}
+
+
+def warn_variance_dof(X, group_inds, verbose: bool = True) -> dict:
+    """Emit an explicit warning when the variance parameters are over-determined.
+
+    Prints an actionable diagnosis instead of leaving the user to decode a singular
+    Fisher information matrix later on (an indefinite FIM here surfaces downstream as
+    "Failed to compute inverse using Cholesky decomposition" during ``export``).
+    """
+    info = variance_dof(X, group_inds)
+    if info['ok']:
+        return info
+    n_cov = info['n_covariates'] - 1                      # excluding the intercept
+    logger_print(
+        '\n[warning] Degrees-of-freedom problem: the group variances are not identifiable.\n'
+        f'    samples                              : {info["n_samples"]}\n'
+        f'    covariate design rank                : {info["rank_x"]} '
+        f'(intercept + {n_cov} covariate(s))\n'
+        f'    residual sample d.o.f. (s - rank)    : {info["dof"]}\n'
+        f'    free group variances to estimate     : {info["n_free_nu"]} '
+        f'({info["n_groups"]} groups, one pinned for scale)\n'
+        f'  Estimating {info["n_free_nu"]} group variances needs at least that many residual '
+        f'dimensions, but only {info["dof"]} remain.\n'
+        '  Consequences: the Fisher information for (Sigma, nu) is singular, so nu estimates and\n'
+        '  their standard errors (params/group_variances.tsv) are unreliable, and "maradoner export"\n'
+        '  will report failures to invert it and fall back to a pseudo-inverse.\n'
+        '  Remedies: supply --sample-groups so samples are pooled into fewer, larger groups '
+        '(replicates\n'
+        '  sharing a variance), and/or reduce the number of covariates passed to "create".\n',
+        verbose)
+    return info
+
+
 def motif_mean_matrix(motif_mean, X) -> np.ndarray:
     """Per-sample motif-activity mean in motif space: M @ X, shape (m, s).
 
@@ -675,7 +728,29 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
         eps = epsilons[i]
         x = res.x.copy()
         x = x.at[:len(BTB)].set(jnp.clip(x.at[:len(BTB)].get(), eps, float('inf')))
+        best_eig = eig[i]
         fim = fim(x)
+        if best_eig <= 0:
+            # Regularisation could not restore positive-definiteness: the information
+            # matrix is genuinely rank deficient. Spell out why rather than leaving the
+            # user with a bare negative eigenvalue (and a Cholesky failure in `export`).
+            info = variance_dof(data.X, data.group_inds)
+            n_bad = int(np.sum(np.linalg.eigvalsh(np.asarray(fim)) <= 0))
+            logger_print(
+                f'\n[warning] The Fisher information for (Sigma, nu) is singular: {n_bad} of '
+                f'{len(np.asarray(fim))} directions are not\n  identified (regularisation did not '
+                'restore positive-definiteness).', True)
+            if not info['ok']:
+                logger_print(
+                    f'  Cause: only {info["dof"]} residual sample d.o.f. ({info["n_samples"]} '
+                    f'samples - rank {info["rank_x"]} covariate design) are available for '
+                    f'{info["n_free_nu"]} free\n  group variances -- see the degrees-of-freedom '
+                    'warning above.\n', True)
+            else:
+                logger_print(
+                    '  The degrees-of-freedom budget looks adequate, so this is more likely a '
+                    'numerical or\n  convergence issue. Treat the variance parameters\' standard '
+                    'errors with caution.\n', True)
     else:
         fim = f
     V_act = None
@@ -1463,6 +1538,10 @@ def fit(project: str, clustering: ClusteringMode,
                                                error_variance=error_variance)
         
         logger_print('Estimating variances of motif activities...', verbose)
+        # Check the sample-space d.o.f. budget up-front: if the covariate design plus the
+        # number of groups over-determines the group variances, say so explicitly here
+        # rather than letting it surface as a singular information matrix during export.
+        warn_variance_dof(data.X, data.group_inds, verbose=verbose)
         if motif_variance:
             motif_variance = estimate_motif_variance(data, B_decomposition,
                                                       error_variance=error_variance,

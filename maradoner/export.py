@@ -60,7 +60,10 @@ def chol_inv(x: np.array):
     
 class Information():
     eps = 1e-10
-    
+    # The singularity diagnosis below is emitted once per run: the same rank-deficient
+    # information matrix is inverted many times while building the report.
+    _warned_singular = False
+
     def __init__(self, fim: np.ndarray, slc=None, use_preconditioner=False, filter_items=None):
         self.filter_items = filter_items
         if filter_items is not None:
@@ -81,17 +84,24 @@ class Information():
         try:
             x = chol_inv(x)
         except:
-            print('Failed to compute inverse using Cholesky decomposition. ')
-            print('This can be a sign of a numerical errors during parameters estimation.')
-            print('Will use pseudo-inverse now. The minimal and maximal eigenvalues are:')
-            # print(x.diagonal().min())
             assert np.allclose(x, x.T), x - x.T
-            x = np.linalg.eigh(x)
-            print(x[0].min(), x[0].max())
+            w, v = np.linalg.eigh(x)
+            n_bad = int(np.sum(w <= 0))
+            if not Information._warned_singular:
+                Information._warned_singular = True
+                print(f'\n[warning] The information matrix is not positive-definite: {n_bad} of '
+                      f'{len(w)} directions are\n  not identified (eigenvalues range from '
+                      f'{w.min():.3e} to {w.max():.3e}). Falling back to a\n  pseudo-inverse.')
+                print('  This usually means the variance parameters are over-determined: too few '
+                      'samples\n  remain, after accounting for the covariates, to estimate one '
+                      'variance per sample group.\n  Standard errors and p-values for the affected '
+                      'parameters (notably nu in\n  params/group_variances.tsv) are unreliable. '
+                      'Re-run "fit" and check its degrees-of-freedom\n  warning; supplying '
+                      '--sample-groups or using fewer covariates resolves it.\n')
             # x = np.linalg.pinv(x, hermitian=True)
-            x = x[1] * (1/np.clip(x[0], self.eps, float('inf'))) @ x[1].T
+            x = v * (1/np.clip(w, self.eps, float('inf'))) @ v.T
         return x
-    
+
     def _square_root_inv(self, x: np.ndarray, slc=None, corr=True):
         x = self._inv(x)
         if corr:
@@ -102,8 +112,11 @@ class Information():
         try:
             x = cholesky(x)
         except:
-            x = np.linalg.eigh(x)
-            x = x[1] * x[0] ** (1 / 2) @ x[1].T
+            w, v = np.linalg.eigh(x)
+            # Clip before the square root: a rank-deficient (or merely round-off
+            # indefinite) matrix has tiny negative eigenvalues whose sqrt would be NaN
+            # and would silently poison the exported standard errors.
+            x = v * np.clip(w, 0.0, None) ** (1 / 2) @ v.T
         return x
     
     def standardize(self, x: np.ndarray, 

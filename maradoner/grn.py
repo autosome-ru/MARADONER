@@ -159,12 +159,14 @@ def estimate_promoter_variance(project_name: str, span=0.1):
     data, _ = split_data(data, fit.promoter_inds_to_drop)
     # Restrict per-promoter estimates to the training promoters kept by split_data above.
     fit = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, n_full)
-    data = transform_data(data, loading_context=fit.loading_context, drist=fit.drist,
-                          loading_multipliers=fit.loading_multipliers)
+    # helmert=False: the per-promoter estimates used below (promoter_mean, promotor)
+    # are length p, so the promoter axis must not be collapsed to p-1 here.
+    data = transform_data(data, helmert=False, loading_context=fit.loading_context,
+                          drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     B = data.B
     Y = data.Y
     group_inds = data.group_inds
-    
+
     Y = Y - fit.sample_mean.mean.reshape(1, -1)
     M = fit.promoter_mean.mean.reshape(-1, 1)
     M = M + B @ motif_mean_matrix(fit.motif_mean, data.X)
@@ -301,7 +303,14 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     group_names = data.group_names
     motif_names = data.motif_names
     prom_names = data.promoter_names
-    data = transform_data(data, loading_context=fit.loading_context,
+    # helmert=False: GRN works in the raw per-promoter space. Y, B, promoter_mean,
+    # error_variance.promotor and prom_names are all length p and must stay aligned;
+    # the default Helmert transform projects out the promoter mean and drops a row
+    # (p -> p-1), desyncing them (shape (p,) into shape (p-1,) broadcast errors).
+    # No `weights` either: unlike `predict`, GRN never whitens by the promoter
+    # standard deviation -- it carries the per-promoter variance explicitly in
+    # `promvar` below, and subtracts the unwhitened promoter mean.
+    data = transform_data(data, helmert=False, loading_context=fit.loading_context,
                           drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     dtype = np.float64
     B = data.B.astype(dtype)
@@ -309,6 +318,13 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     group_inds = data.group_inds
     nus = fit.motif_variance.group.astype(dtype)
     U = activities.U_raw.astype(dtype)
+    if B.shape[1] != len(fit.motif_variance.motif):
+        raise ValueError(
+            f'The loading matrix has {B.shape[1]} motifs but the fitted model has '
+            f'{len(fit.motif_variance.motif)}. This happens when the model was fitted with '
+            '"--clustering", which replaces motifs by cluster profiles; GRN (like "export") '
+            'reports per-motif results and cannot map them back. Re-run "fit" with '
+            '"--clustering none" to build a GRN.')
     # Per-sample covariate mean B M X for the residual; intercept column for the
     # static per-promoter-motif BM tensor below.
     BMX = (B @ motif_mean_matrix(fit.motif_mean, data.X)).astype(dtype)
@@ -325,14 +341,20 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     Y = Y - promoter_mean.reshape(-1, 1) - sample_mean.reshape(1, -1)
     Y = Y - BMX
     
-    if activities.filtered_motifs is not None:
-        motif_names = np.delete(motif_names, activities.filtered_motifs)
+    # `filtered_motifs` is None when nothing was filtered and an (possibly empty) index
+    # array otherwise; np.delete handles the empty case as a no-op.
+    if activities.filtered_motifs is not None and len(activities.filtered_motifs):
+        motif_names = list(np.delete(np.asarray(motif_names, dtype=object),
+                                     activities.filtered_motifs))
         B = np.delete(B, activities.filtered_motifs, axis=1)
         motif_mean = np.delete(motif_mean, activities.filtered_motifs)
         motif_variance = np.delete(motif_variance, activities.filtered_motifs)
-    
+    if B.shape[1] != U.shape[0]:
+        raise ValueError(f'Loading matrix has {B.shape[1]} motifs after filtering but the '
+                         f'predicted activities have {U.shape[0]}. The "{project_name}.predict" '
+                         'file is out of sync with the loading matrix -- re-run "maradoner predict".')
+
     BM = B * motif_mean
-    BM = BM[..., None]
     B_hat = B ** 2 * motif_variance
     B_hat = B_hat.sum(axis=1, keepdims=True) - B_hat
 
@@ -346,17 +368,19 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
         pbar.set_postfix_str(name)
         # var = (B_hat * nu + sigma)
         var = sigma
-        
-        Y_ = Y[:, inds][..., None, :] 
-        theta = B[..., None] * U[:, inds] 
-        if include_mean:
-            Y_ = Y_ + BM
-            theta = theta + BM
-            
 
-        loglr = 2 * (Y_ * theta).sum(axis=-1) - (theta ** 2).sum(axis=-1)
-        del Y_
-        del theta
+        Y_g = Y[:, inds]                                  # (p, n_g)
+        U_g = U[:, inds]                                  # (m, n_g)
+        # loglr = sum_n [2 Y'_pn theta_pmn - theta_pmn^2] with theta_pmn = B_pm U_mn
+        # (+ BM_pm) and Y'_pn = Y_pn (+ BM_pm). Expanded analytically so the
+        # (p, m, n_g) tensor is never materialised -- only (p, m) objects -- keeping
+        # memory flat in the number of samples per group. Mathematically identical to
+        # the direct tensor form.
+        loglr = 2 * B * (Y_g @ U_g.T) - B ** 2 * (U_g ** 2).sum(axis=1)
+        if include_mean:
+            # The cross terms (2 BM B sum_n U) cancel between the two halves.
+            loglr = loglr + 2 * BM * Y_g.sum(axis=1, keepdims=True) + len(inds) * BM ** 2
+        del Y_g, U_g
         loglr = loglr / (2 * var)
         del var
         lr = np.exp(loglr)
