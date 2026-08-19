@@ -20,6 +20,7 @@ from time import time
 from dill import __version__ as dill_version
 from .export import export_results, export_loadings_product, Standardization, ANOVAType
 from .export import export_contrast, export_posterior_anova
+from .bayes_linreg import bayes_linreg
 from . import __version__ as project_version
 from .select import select_motifs_single
 import json
@@ -128,6 +129,11 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                                             ' to 1, the more promoters will be left in the dataset.'),
             filter_max_mode: bool = Option(True, help='Use max-mode of filtering. Max-mode keeps promoters that are active at least for some samples.'
                                                        ' If disabled, filtration using GMM on the averages will be ran instead.'),
+            filter_component_limit: float = Option(0.6, help='Safety rail on the low-expression filter: if the fitted low component carries more '
+                                                   'than this share of the promoters, filtering is skipped entirely and everything is kept. '
+                                                   'The default assumes a majority-low mixture means the fit failed to separate signal from '
+                                                   'noise. Raise it (e.g. [orange]0.95[/orange]) for data where most features are genuinely '
+                                                   'silent -- transposable elements, for instance -- so that a well-fitted mixture is acted on.'),
             filter_plot: bool = Option(True, help='Expression plot with a fitted mixture that is used for filtering.'),
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
                                                 help='String postfixes will be appeneded to the motifs from each of the supplied loading matrices'),
@@ -159,6 +165,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                        promoter_filter_lowexp_cutoff=filter_lowexp_w,
                        promoter_filter_plot_filename=filter_plot,
                        promoter_filter_max=filter_max_mode,
+                       promoter_filter_component_limit=filter_component_limit,
                        compression=compression,
                        motif_postfixes=loading_postfix,
                        motif_names_filename=motif_filename,
@@ -216,6 +223,48 @@ def _fit(name: str = Argument(..., help='Project name.'),
         activity_lowrank=activity_lowrank,
         gpu_decomposition=gpu_decomposition, x64=x64)
     p.stop()
+    dt = time() - t0
+    rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
+
+__bayes_linreg_doc = '''Fit a single-sample Bayesian linear regression instead of the [bold]MARADONER[/bold] model.
+
+The [bold]MARADONER[/bold] model reads activities off the variation [i]across samples[/i]. With a single \
+sample there is nothing to vary, the REML objective for the error variances is flat and [cyan]fit[/cyan] \
+is not identifiable. This command fits a different, single-sample model where the replication comes from \
+the [blue]p[/blue] promoters instead:
+[cyan]y = mu 1_p + B u + e[/cyan], [cyan]e ~ N(0, sigma^2 I_p)[/cyan], [cyan]u ~ N(0, Sigma)[/cyan],
+with a scalar mean [cyan]mu[/cyan], a scalar error variance [cyan]sigma^2[/cyan] and a diagonal \
+[cyan]Sigma[/cyan] of per-motif activity variances. The variance components are estimated by REML \
+([cyan]mu[/cyan] is profiled out), motif activities are the posterior mean [cyan]E[u|y][/cyan] -- i.e. \
+automatic relevance determination.
+
+Each sample is fitted independently. Unlike the usual chain, this command goes straight from a project \
+to result files: no [cyan]fit[/cyan]/[cyan]predict[/cyan]/[cyan]export[/cyan] in between, the output \
+folder is supplied here.'''
+
+@app.command('bayes_linreg', help='Single-sample alternative model: y = mu 1_p + B u + e. Writes results directly.')
+def _bayes_linreg(name: str = Argument(..., help='Project name.'),
+                  output_folder: Path = Argument(..., help='Output folder. Results are written here immediately.'),
+                  alpha: float = Option(0.05, help='FDR alpha for the Benjamini-Hochberg correction of motif activity p-values.'),
+                  stderr: bool = Option(True, help='Compute asymptotic standard errors of the variance components from the REML '
+                                                   'observed information. Components shrunk to zero sit on the parameter-space '
+                                                   'boundary and are reported as NaN.'),
+                  promoters: bool = Option(False, help='Also write [orange]promoters.tsv[/orange] with the fitted value per promoter '
+                                                       'per sample. Off by default: it is the only per-locus output and everything '
+                                                       'else lives in the two summary tables.'),
+                  x64: bool = Option(True, help='Use high precision algebra.')):
+    __doc__ = __bayes_linreg_doc
+    t0 = time()
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description="Fitting single-sample Bayesian linear regression...", total=None)
+    p.start()
+    try:
+        bayes_linreg(name, output_folder, alpha=alpha, stderr=stderr,
+                     promoters=promoters, x64=x64)
+    finally:
+        p.stop()
+    update_history(name, 'bayes_linreg', output_folder=str(output_folder), alpha=alpha,
+                   stderr=stderr, promoters=promoters)
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 

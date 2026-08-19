@@ -38,12 +38,14 @@ def drist_it(B: pd.DataFrame, Y: pd.DataFrame, test_chromosomes: list[str] = Non
 
 def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
                        test_chromosomes: list[str] = None):
+    # Subset promoters *before* testing for constant columns: a motif can vary across
+    # the full promoter set yet be constant among the promoters that survive the
+    # low-expression filter, in which case its ECDF/ESF is degenerate.
+    if prom_inds is not None:
+        df = df.loc[prom_inds]
     stds = df.std()
     drop_inds = (stds == 0) | np.isnan(stds)
-    if prom_inds is not None:
-        df = df.loc[prom_inds, ~drop_inds]
-    else:
-        df = df.loc[:, ~drop_inds]
+    df = df.loc[:, ~drop_inds]
     # if not mode or mode == 'none':
     #     df[df < zero_cutoff] = 0
     #     df = (df - df.min(axis=None)) / (df.max(axis=None) - df.min(axis=None))
@@ -55,7 +57,10 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
         for j in range(len(df.columns)):
             v = df.iloc[:, j]
             v = st.ecdf(v).sf.evaluate(v)
-            t = np.unique(v)[1]
+            uniq = np.unique(v)
+            # sf hits exactly 0 at the column maximum; clip it to the next smallest
+            # value so that -log stays finite.
+            t = uniq[1] if len(uniq) > 1 else 1.0 / len(v)
             v[v < t] = t
             df.iloc[:, j] = -np.log(v)
         # if mode == 'drist':
@@ -131,6 +136,7 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
 def create_project(project_name: str, promoter_expression_filename: str, loading_matrix_filenames: list[str],
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
                    promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None, promoter_filter_max=True,
+                   promoter_filter_component_limit=0.6,
                    sample_groups_subset=False,  motif_names_filename=None, covariates_filename=None,
                    n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
     if not os.path.isfile(promoter_expression_filename):
@@ -207,8 +213,9 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     
     logger_print('Filtering promoters of low expression...', verbose)
     inds, weights = filter_lowexp(promoter_expression, cutoff=promoter_filter_lowexp_cutoff, fit_plot_filename=promoter_filter_plot_filename,
-                                  max_mode=promoter_filter_max)
+                                  max_mode=promoter_filter_max, component_limit=promoter_filter_component_limit)
     promoter_expression = promoter_expression.loc[inds]
+    logger_print(f'Kept {int(np.sum(inds))} of {len(inds)} promoters.', verbose)
     proms = promoter_expression.index
     test_chromosomes  = list() # ['chr2', 'chr15']
     loading_matrices = [transform_loadings(df, mode, prom_inds=inds, test_chromosomes=test_chromosomes,
