@@ -136,7 +136,6 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
 def create_project(project_name: str, promoter_expression_filename: str, loading_matrix_filenames: list[str],
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
                    promoter_filter_lowexp_cutoff=0.95, promoter_filter_plot_filename=None, promoter_filter_max=True,
-                   promoter_filter_component_limit=0.6,
                    sample_groups_subset=False,  motif_names_filename=None, covariates_filename=None,
                    n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
     if not os.path.isfile(promoter_expression_filename):
@@ -213,9 +212,8 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     
     logger_print('Filtering promoters of low expression...', verbose)
     inds, weights = filter_lowexp(promoter_expression, cutoff=promoter_filter_lowexp_cutoff, fit_plot_filename=promoter_filter_plot_filename,
-                                  max_mode=promoter_filter_max, component_limit=promoter_filter_component_limit)
+                                  max_mode=promoter_filter_max)
     promoter_expression = promoter_expression.loc[inds]
-    logger_print(f'Kept {int(np.sum(inds))} of {len(inds)} promoters.', verbose)
     proms = promoter_expression.index
     test_chromosomes  = list() # ['chr2', 'chr15']
     loading_matrices = [transform_loadings(df, mode, prom_inds=inds, test_chromosomes=test_chromosomes,

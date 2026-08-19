@@ -125,15 +125,12 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
             sample_groups: Path = Option(None, help='Either a JSON dictionary or a text file with a mapping between groups and sample names they'
                                           ' contain. If a text file, each line must start with a group name followed by space-separated sample names.'),
             sample_groups_subset: bool = Option(False, help='Do not raise an exception if [orange]sample-groups[/orange] contains columns not present in the data.'),
-            filter_lowexp_w: float = Option(0.9, help='Truncation boundary for filtering out low-expressed promoters. The closer [orange]w[/orange]'
-                                            ' to 1, the more promoters will be left in the dataset.'),
+            filter_lowexp_w: float = Option(0.9, help='Low-expression filter: a two-component max-normal mixture is fitted to the promoter '
+                                            'expression, and a promoter is dropped iff its posterior probability of belonging to the low '
+                                            'component exceeds [orange]w[/orange]. The closer [orange]w[/orange] to 1, the more promoters '
+                                            'are left in the dataset. This is the only knob.'),
             filter_max_mode: bool = Option(True, help='Use max-mode of filtering. Max-mode keeps promoters that are active at least for some samples.'
                                                        ' If disabled, filtration using GMM on the averages will be ran instead.'),
-            filter_component_limit: float = Option(0.6, help='Safety rail on the low-expression filter: if the fitted low component carries more '
-                                                   'than this share of the promoters, filtering is skipped entirely and everything is kept. '
-                                                   'The default assumes a majority-low mixture means the fit failed to separate signal from '
-                                                   'noise. Raise it (e.g. [orange]0.95[/orange]) for data where most features are genuinely '
-                                                   'silent -- transposable elements, for instance -- so that a well-fitted mixture is acted on.'),
             filter_plot: bool = Option(True, help='Expression plot with a fitted mixture that is used for filtering.'),
             loading_postfix: List[str] = Option(None, '--loading-postfix', '-p', 
                                                 help='String postfixes will be appeneded to the motifs from each of the supplied loading matrices'),
@@ -165,7 +162,6 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                        promoter_filter_lowexp_cutoff=filter_lowexp_w,
                        promoter_filter_plot_filename=filter_plot,
                        promoter_filter_max=filter_max_mode,
-                       promoter_filter_component_limit=filter_component_limit,
                        compression=compression,
                        motif_postfixes=loading_postfix,
                        motif_names_filename=motif_filename,
