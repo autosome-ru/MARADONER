@@ -604,15 +604,19 @@ def estimate_promoter_mean(data: TransformedData,
     mean = mean / w
     return PromoterMeanEstimates(mean)
 
-def _estimate_motif_variance_mom(Y, B, ind_fix, fix_value, eps=1e-14):
-    # Gamma = (B^T B)^-1
+def _estimate_motif_variance_mom(Y, B, ind_fix, fix_value, eps=1e-14, rcond=1e-10):
+    # Gamma = (B^T B)^+ -- the Moore-Penrose inverse rather than a plain `inv`.
+    # This routine only builds the method-of-moments warm start x0 for the REML
+    # optimiser, so a rank-deficient B is not worth dying over. `inv` is also the
+    # wrong tool here even when it succeeds: on a near-singular B^T B it returns a
+    # garbage inverse whose blown-up diagonal poisons the E[Z^2] - Gamma_ii bias
+    # correction for *every* motif, not just the offending ones. With the
+    # pseudo-inverse the unidentified directions simply get Gamma_ii == 0 and
+    # Z_i == 0, hence a zero moment estimate that is clipped to the `eps` floor.
     BTB = B.T @ B
-    try:
-        Gamma = np.linalg.inv(BTB)
-    except np.linalg.LinAlgError:
-        raise ValueError("B must have full column rank to be invertible.")
-        
-    # W = (B^T B)^-1 B^T
+    Gamma = np.linalg.pinv(BTB, rcond=rcond, hermitian=True)
+
+    # W = (B^T B)^+ B^T
     W = Gamma @ B.T
     Z = W @ Y
     
@@ -645,6 +649,37 @@ def _estimate_motif_variance_mom(Y, B, ind_fix, fix_value, eps=1e-14):
         sigma_sq_est = R / sum_g_est
         
     return np.clip(sigma_sq_est, eps, float('inf')), np.clip(g_est, eps, float('inf'))
+
+def warn_constant_loadings(B, motif_names=None, tol=1e-12, verbose=True) -> np.ndarray:
+    """Report motifs whose loadings do not vary across promoters.
+
+    The model is fitted on H_p Y and H_p B, so a column of B that is constant across
+    promoters is mapped to exactly zero: the motif explains nothing, its tau_k and
+    mu_m,k are unidentified, and B^T B is singular. The usual source is the ECDF/ESF
+    transform in `create`, which collapses a column holding one or two distinct values
+    onto a single level -- and since which promoters survive the low-expression filter
+    depends on the samples in the project, the very same motif panel can be fine for
+    one set of samples and degenerate for another.
+    """
+    B = np.asarray(B)
+    spread = B.max(axis=0) - B.min(axis=0)
+    scale = np.maximum(np.abs(B).max(axis=0), 1.0)
+    bad = np.where(spread <= tol * scale)[0]
+    if not len(bad):
+        return bad
+    if motif_names is not None:
+        names = [str(motif_names[i]) for i in bad]
+    else:
+        names = [str(i) for i in bad]
+    shown = ', '.join(names[:10]) + (', ...' if len(names) > 10 else '')
+    logger_print(
+        f'\n[warning] {len(bad)} motif(s) have loadings that are constant across all '
+        f'{B.shape[0]} promoters:\n  {shown}.\n'
+        '  Promoter-wise centering annihilates such columns, so these motifs carry no '
+        'information:\n  their variance and mean estimates are arbitrary and B^T B is rank '
+        'deficient. Re-create\n  the project with a current `maradoner create`, which drops '
+        'them at the transform step.\n', verbose)
+    return bad
 
 def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
                              error_variance: ErrorVarianceEstimates,
@@ -1422,6 +1457,7 @@ def fit(project: str, clustering: ClusteringMode,
     if x64:
         jax.config.update("jax_enable_x64", True)
     data = read_init(project)
+    warn_constant_loadings(data.B, data.motif_names, verbose=verbose)
     fmt = data.fmt
     group_names = data.group_names
     if clustering != clustering.none:

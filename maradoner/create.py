@@ -37,7 +37,7 @@ def drist_it(B: pd.DataFrame, Y: pd.DataFrame, test_chromosomes: list[str] = Non
 
 
 def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
-                       test_chromosomes: list[str] = None):
+                       test_chromosomes: list[str] = None, verbose: bool = True):
     # Subset promoters *before* testing for constant columns: a motif can vary across
     # the full promoter set yet be constant among the promoters that survive the
     # low-expression filter, in which case its ECDF/ESF is degenerate.
@@ -72,6 +72,22 @@ def transform_loadings(df, mode: str, zero_cutoff=1e-9, prom_inds=None, Y=None,
         pass
     elif mode:
         raise Exception('Unknown transformation mode ' + str(mode))
+    # Re-test for degenerate columns *after* the transform: the ECDF/ESF map can turn a
+    # column that did vary in the raw scores into a constant one. A motif whose scores
+    # take only one or two distinct values among the retained promoters lands on a single
+    # survival-function level (the top level has SF == 0 and is clipped up onto the next
+    # one), so -log(SF) comes out the same for every promoter. Such a column is annihilated
+    # by the promoter-wise centering H_p in `fit`, which leaves tau_k and mu_m,k
+    # unidentified and B^T B singular.
+    stds = df.std()
+    scale = df.abs().max().replace(0.0, 1.0)
+    drop_inds = (stds == 0) | np.isnan(stds) | (stds <= 1e-12 * scale)
+    if drop_inds.any():
+        names = [str(c) for c in df.columns[drop_inds]]
+        shown = ', '.join(names[:10]) + (', ...' if len(names) > 10 else '')
+        logger_print(f'[warning] Dropping {len(names)} motif(s) whose loadings are constant across '
+                     f'the retained promoters after the "{mode}" transform: {shown}.', verbose)
+        df = df.loc[:, ~drop_inds]
     return df
 
 def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int = 1,
@@ -217,7 +233,8 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
     proms = promoter_expression.index
     test_chromosomes  = list() # ['chr2', 'chr15']
     loading_matrices = [transform_loadings(df, mode, prom_inds=inds, test_chromosomes=test_chromosomes,
-                                           Y=promoter_expression) for df, mode in zip(loading_matrices, loading_matrix_transformations)]
+                                           Y=promoter_expression, verbose=verbose)
+                        for df, mode in zip(loading_matrices, loading_matrix_transformations)]
     if motif_postfixes is not None:
         for mx, postfix in zip(loading_matrices, motif_postfixes):
             mx.columns = [f'{c}_{postfix}' for c in mx.columns]
