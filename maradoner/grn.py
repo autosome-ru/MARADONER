@@ -3,8 +3,10 @@ import numpy as np
 import jax.numpy as jnp
 import jax 
 from .utils import read_init, openers, ProjectData
+from .utils import InputError, warn, load_stage, apply_clustering
 from .fit import ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
 from scipy.optimize import minimize
+from scipy.special import expit
 import os
 import dill
 from pandas import DataFrame as DF
@@ -13,6 +15,91 @@ from tqdm import tqdm
 from scipy.special import digamma
 from scipy.interpolate import interp1d
 from scipy.stats import f as f_dist
+
+
+def held_out_inds(fit) -> list:
+    """Row indices (in the full project) of the promoters held out by `fit` as a testing
+    set; an empty list if there are none."""
+    inds = getattr(fit, 'promoter_inds_to_drop', None)
+    if inds is None:
+        return list()
+    return [int(i) for i in inds]
+
+def filtered_motifs(activities) -> np.ndarray:
+    """Indices of the motifs dropped by `predict`; an empty array if there are none."""
+    filtered = getattr(activities, 'filtered_motifs', None)
+    if filtered is None:
+        return np.zeros(0, dtype=int)
+    return np.asarray(filtered, dtype=int).reshape(-1)
+
+def safe_filenames(names: list, what: str = 'group') -> list:
+    """File names for the tables that are written one per item of `names`: path separators
+    are replaced by underscores and names that would then coincide get a numeric suffix.
+    Only the file names change; a warning lists them."""
+    names = [str(n) for n in names]
+    seps = {'/', os.sep} | ({os.altsep} if os.altsep else set())
+    def clean(name):
+        for sep in seps:
+            name = name.replace(sep, '_')
+        return name
+    res = [clean(n) for n in names]
+    used = {r for r, n in zip(res, names) if r == n}
+    renamed = list()
+    for i, (r, n) in enumerate(zip(res, names)):
+        if r == n:
+            continue
+        k = 2
+        while res[i] in used:
+            res[i] = f'{r}_{k}'
+            k += 1
+        used.add(res[i])
+        renamed.append(f'"{n}" -> "{res[i]}"')
+    if renamed:
+        shown = ', '.join(renamed[:5]) + (f', ... and {len(renamed) - 5} more' if len(renamed) > 5 else '')
+        warn(f'{len(renamed)} {what} name(s) contain a path separator and cannot be used as file '
+             f'names; their files are named differently: {shown}.')
+    return res
+
+def load_fit(project_name: str, data: ProjectData) -> tuple:
+    """Load the fit of a project and bring `data` in line with it (cluster profiles
+    instead of motifs if the fit was made with "--clustering"). Returns (data, fit)."""
+    # Stage files written by older versions hold jax arrays: they are restored in single
+    # precision unless x64 is enabled beforehand.
+    jax.config.update('jax_enable_x64', True)
+    fit = load_stage(project_name, 'fit', data.fmt)
+    data = apply_clustering(data, fit)
+    n_motifs = len(np.asarray(fit.motif_variance.motif))
+    n_test = len(held_out_inds(fit))
+    n_proms = len(data.promoter_names)
+    n_fit_proms = len(np.asarray(fit.promoter_mean.mean).reshape(-1))
+    problem = None
+    if n_motifs != len(data.motif_names):
+        problem = f'{n_motifs} motifs, but the project has {len(data.motif_names)}'
+    elif list(fit.group_names) != list(data.group_names):
+        problem = f'{len(fit.group_names)} sample groups that differ from those of the project'
+    elif len(np.asarray(fit.sample_mean.mean).reshape(-1)) != len(data.sample_names):
+        problem = (f'{len(np.asarray(fit.sample_mean.mean).reshape(-1))} samples, but the project has '
+                   f'{len(data.sample_names)}')
+    elif n_fit_proms not in (n_proms, n_proms - n_test) or (n_test and max(held_out_inds(fit)) >= n_proms):
+        problem = f'{n_fit_proms} promoters ({n_test} more held out), but the project has {n_proms}'
+    if problem:
+        raise InputError(f'The fit of the project "{project_name}" is out of sync with the project: it '
+                         f'holds {problem}. Re-run "maradoner fit {project_name}".')
+    return data, fit
+
+def load_predict(project_name: str, data: ProjectData, fit: FitResult, required: bool = True):
+    """Load the predicted activities of a project (None if absent and not `required`) and
+    make sure that they belong to the given (already loaded) fit."""
+    activities = load_stage(project_name, 'predict', data.fmt, required=required)
+    if activities is None:
+        return None
+    expected = (len(data.motif_names) - len(filtered_motifs(activities)), len(fit.group_names))
+    if tuple(np.shape(activities.U)) != expected or np.shape(activities.U_raw)[-1] != len(data.sample_names):
+        raise InputError(f'The predicted activities of the project "{project_name}" are out of sync '
+                         f'with its fit (activities of {np.shape(activities.U)[0]} motifs in '
+                         f'{np.shape(activities.U)[-1]} groups were found, {expected[0]} motifs in '
+                         f'{expected[1]} groups are expected). Re-run "maradoner predict {project_name}".')
+    return activities
 
 
 def estimate_promoter_prior_variance(data: ProjectData, activities: ActivitiesPrediction,
@@ -179,7 +266,7 @@ def estimate_promoter_variance(project_name: str, span=0.1):
     else:
         var_mean =fit.error_variance.promotor.mean()
     var = list()
-    for inds, nu in (pbar := tqdm(list(zip(group_inds, fit.motif_variance.group)))):
+    for inds, nu in (pbar := tqdm(list(zip(group_inds, fit.motif_variance.group)), disable=None)):
         Y_ = Y[:, inds] / nu ** 0.5
         M_ = M[:, inds] / nu ** 0.5
         var_g = estimate_variance_loess(Y_, M_, span=span)
@@ -225,7 +312,7 @@ def estimate_promoter_variance_(project_name: str, prior_top=0.90):
     var = list()
     jax.config.update('jax_enable_x64', True)
     jax.config.update('jax_platform_name', 'cpu') 
-    for inds, prior_mean, nu in tqdm(list(zip(group_inds, prior_means, fit.motif_variance.group))):
+    for inds, prior_mean, nu in tqdm(list(zip(group_inds, prior_means, fit.motif_variance.group)), disable=None):
         Yt = Y[:, inds].sum(axis=1)
         s = len(inds)
         f_ = jax.jit(partial(fun, prior_mean=prior_mean, prior_var=prior_var, s=s))
@@ -286,18 +373,23 @@ def bayesian_fdr_control(p0, alpha=0.05):
     
     return discoveries, threshold
 
-def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
-        fdr_alpha=0.05, prior_h1=1/2, include_mean: bool = True):
+def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
+        fdr_alpha=0.05, prior_h1=1/2, include_mean: bool = True, min_variance: float = 1e-3):
+    if not 0 < prior_h1 < 1:
+        raise InputError('--prior-h1 is the prior probability that a motif contributes to the '
+                         f'expression of a promoter and must lie strictly between 0 and 1, but {prior_h1:g} '
+                         'was given.')
+    if not 0 < fdr_alpha < 1:
+        raise InputError(f'The FDR level must lie strictly between 0 and 1, but {fdr_alpha:g} was given.')
     data = read_init(project_name)
     fmt = data.fmt
-    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
-        fit: FitResult = dill.load(f)
-    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
-        activities: ActivitiesPrediction = dill.load(f)
+    data, fit = load_fit(project_name, data)
+    activities: ActivitiesPrediction = load_predict(project_name, data, fit)
     n_full = len(data.promoter_names)
-    data, _ = split_data(data, fit.promoter_inds_to_drop)
+    test_inds = held_out_inds(fit)
+    data, _ = split_data(data, test_inds)
     # Restrict per-promoter estimates to the training promoters kept by split_data above.
-    fit = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, n_full)
+    fit = align_fit_to_promoters(fit, test_inds, n_full)
     # Capture name fields off the ProjectData before `data` is reassigned to a
     # TransformedData (which only carries arrays, not name lists).
     group_names = data.group_names
@@ -313,21 +405,17 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     data = transform_data(data, helmert=False, loading_context=fit.loading_context,
                           drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     dtype = np.float64
-    B = data.B.astype(dtype)
+    B = np.asarray(data.B, dtype=dtype)
     Y = data.Y.astype(dtype)
     group_inds = data.group_inds
     nus = fit.motif_variance.group.astype(dtype)
     U = activities.U_raw.astype(dtype)
-    if B.shape[1] != len(fit.motif_variance.motif):
-        raise ValueError(
-            f'The loading matrix has {B.shape[1]} motifs but the fitted model has '
-            f'{len(fit.motif_variance.motif)}. This happens when the model was fitted with '
-            '"--clustering", which replaces motifs by cluster profiles; GRN (like "export") '
-            'reports per-motif results and cannot map them back. Re-run "fit" with '
-            '"--clustering none" to build a GRN.')
-    # Per-sample covariate mean B M X for the residual; intercept column for the
-    # static per-promoter-motif BM tensor below.
-    BMX = (B @ motif_mean_matrix(fit.motif_mean, data.X)).astype(dtype)
+    # Per-sample mean activities M X: B M X is removed from the residual, and M X is the
+    # mean part of the contribution of a motif tested below.
+    MX = motif_mean_matrix(fit.motif_mean, data.X).astype(dtype)
+    BMX = (B @ MX).astype(dtype)
+    # (the loading matrix is the largest object here: keep a single copy of it)
+    del data
     _M = np.asarray(fit.motif_mean.mean)
     motif_mean = (_M[:, 0] if _M.ndim > 1 else _M).flatten().astype(dtype)
     motif_variance = fit.motif_variance.motif.astype(dtype)
@@ -341,22 +429,20 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     Y = Y - promoter_mean.reshape(-1, 1) - sample_mean.reshape(1, -1)
     Y = Y - BMX
     
-    # `filtered_motifs` is None when nothing was filtered and an (possibly empty) index
-    # array otherwise; np.delete handles the empty case as a no-op.
-    if activities.filtered_motifs is not None and len(activities.filtered_motifs):
-        motif_names = list(np.delete(np.asarray(motif_names, dtype=object),
-                                     activities.filtered_motifs))
-        B = np.delete(B, activities.filtered_motifs, axis=1)
-        motif_mean = np.delete(motif_mean, activities.filtered_motifs)
-        motif_variance = np.delete(motif_variance, activities.filtered_motifs)
+    filtered = filtered_motifs(activities)
+    if len(filtered):
+        motif_names = list(np.delete(np.asarray(motif_names, dtype=object), filtered))
+        B = np.delete(B, filtered, axis=1)
+        MX = np.delete(MX, filtered, axis=0)
+        motif_mean = np.delete(motif_mean, filtered)
+        motif_variance = np.delete(motif_variance, filtered)
     if B.shape[1] != U.shape[0]:
-        raise ValueError(f'Loading matrix has {B.shape[1]} motifs after filtering but the '
+        raise InputError(f'Loading matrix has {B.shape[1]} motifs after filtering but the '
                          f'predicted activities have {U.shape[0]}. The "{project_name}.predict" '
                          'file is out of sync with the loading matrix -- re-run "maradoner predict".')
 
-    BM = B * motif_mean
-    B_hat = B ** 2 * motif_variance
-    B_hat = B_hat.sum(axis=1, keepdims=True) - B_hat
+    # B_hat = B ** 2 * motif_variance
+    # B_hat = B_hat.sum(axis=1, keepdims=True) - B_hat
 
     
     folder_stat = os.path.join(output, 'lr')
@@ -364,73 +450,107 @@ def grn(project_name: str,  output: str, use_hdf=False, save_stat=True,
     if save_stat:
         os.makedirs(folder_stat, exist_ok=True)
     os.makedirs(folder_belief, exist_ok=True)
-    for sigma, nu, name, inds in (pbar := tqdm(list(zip(promvar.T[..., None], nus,  group_names, group_inds)), dynamic_ncols=True)):
+    file_names = safe_filenames(group_names)
+    logit_prior = np.log(prior_h1) - np.log1p(-prior_h1)
+    # The likelihood ratios are stored in single precision: larger ones are capped.
+    loglr_max = 88.72
+    n_capped = 0
+    skipped = dict()
+    for sigma, nu, name, file_name, inds in (pbar := tqdm(list(zip(promvar.T[..., None], nus,  group_names, file_names, group_inds)), dynamic_ncols=True, disable=None)):
         pbar.set_postfix_str(name)
         # var = (B_hat * nu + sigma)
         var = sigma
 
-        Y_g = Y[:, inds]                                  # (p, n_g)
         U_g = U[:, inds]                                  # (m, n_g)
-        # loglr = sum_n [2 Y'_pn theta_pmn - theta_pmn^2] with theta_pmn = B_pm U_mn
-        # (+ BM_pm) and Y'_pn = Y_pn (+ BM_pm). Expanded analytically so the
-        # (p, m, n_g) tensor is never materialised -- only (p, m) objects -- keeping
-        # memory flat in the number of samples per group. Mathematically identical to
-        # the direct tensor form.
-        loglr = 2 * B * (Y_g @ U_g.T) - B ** 2 * (U_g ** 2).sum(axis=1)
-        if include_mean:
-            # The cross terms (2 BM B sum_n U) cancel between the two halves.
-            loglr = loglr + 2 * BM * Y_g.sum(axis=1, keepdims=True) + len(inds) * BM ** 2
-        del Y_g, U_g
-        loglr = loglr / (2 * var)
+        # Contribution of motif m to promoter p in sample n: theta_pmn = B_pm V_mn, where
+        # V is the deviation U of the activity (+ its mean M X if the means are tested too).
+        V_g = U_g + MX[:, inds] if include_mean else U_g
+        # Residual of the full model; without motif m it becomes R_pn + theta_pmn, so
+        # loglr_pm = log L(full) - log L(without m) = sum_n [(R_pn + theta_pmn)^2 - R_pn^2] / (2 var_p)
+        #          = [2 B_pm (R V^T)_pm + B_pm^2 sum_n V_mn^2] / (2 var_p).
+        # Only (p, m) objects are ever formed, never the (p, m, n_g) tensor.
+        R_g = Y[:, inds] - B @ U_g                        # (p, n_g)
+        loglr = R_g @ V_g.T
+        del R_g
+        loglr *= 2
+        loglr += B * (V_g ** 2).sum(axis=1)
+        loglr *= B
+        del U_g, V_g
+        loglr /= 2 * var
         del var
-        lr = np.exp(loglr)
-        belief = lr * prior_h1 / ((1 - prior_h1) + lr * prior_h1)
+        # Posterior probability of the full model; odds = likelihood ratio x prior odds,
+        # in the logit scale so that large log-ratios cannot overflow.
+        belief = loglr + logit_prior
+        expit(belief, out=belief)
 
         
-        inds = sigma.flatten() > 1e-3
-        lr = lr[inds]
-        belief = belief[inds]
-        belief = belief.astype(np.half)
+        inds = sigma.flatten() > min_variance
+        if not inds.all():
+            skipped[name] = int((~inds).sum())
+            loglr = loglr[inds]
+            belief = belief[inds]
 
-        sorted_beliefs = belief.flatten() 
-        sorted_beliefs = sorted_beliefs[sorted_beliefs > 0.5]
-        sorted_beliefs = np.sort(sorted_beliefs)[::-1]
+        sorted_beliefs = belief[belief > 0.5]
+        sorted_beliefs.sort()
+        sorted_beliefs = sorted_beliefs[::-1]
         sorted_inbeliefs = 1 - sorted_beliefs
         
-        cumulative_fdr = np.cumsum(sorted_inbeliefs) / (np.arange(len(sorted_inbeliefs)) + 1)
+        # Bayesian FDR of the k most credible pairs: the mean of their 1 - belief. It grows
+        # with k, so the rule is the largest k that keeps it at or below fdr_alpha:
+        # mean_{i <= k} (1 - belief_i) <= fdr_alpha  <=>  sum_{i <= k} (1 - belief_i - fdr_alpha) <= 0.
+        # cumulative_fdr = np.cumsum(sorted_inbeliefs) / (np.arange(len(sorted_inbeliefs)) + 1)
+        sorted_inbeliefs -= fdr_alpha
+        cumulative_fdr = np.cumsum(sorted_inbeliefs, out=sorted_inbeliefs)
+        cumulative_fdr = cumulative_fdr <= 0
         # print(fdr_alpha)
-        try:
-            k = np.min(np.where(cumulative_fdr <= fdr_alpha)[0])
+        if cumulative_fdr.any():
+            k = len(cumulative_fdr) - 1 - np.argmax(cumulative_fdr[::-1])
             fdr_threshold = sorted_beliefs[k]
             # print(k, fdr_threshold)
-        except ValueError:
+        else:
             fdr_threshold = 1.0
-        if '/' in name:
-            print('Slash character detected in the group name. It will be replaced with an underscore when saving results.')
-            name = name.replace('/', '_')
-        filename = os.path.join(folder_belief, f'{name}.txt')
+        del sorted_beliefs, sorted_inbeliefs, cumulative_fdr
+        belief = belief.astype(np.half)
+        # The threshold is applied by the user to the stored (rounded) beliefs: round it the
+        # same way, so that "belief >= threshold" selects the pairs found above.
+        fdr_threshold = float(np.half(fdr_threshold))
+        if not use_hdf:
+            # (the tsv tables keep three decimals)
+            fdr_threshold = float(f'{fdr_threshold:.3f}')
+        filename = os.path.join(folder_belief, f'{file_name}.txt')
         with open(filename, 'w') as f:
             f.write(f'{fdr_threshold}')
 
-        
+        if save_stat:
+            n_capped += int((loglr > loglr_max).sum())
+            np.minimum(loglr, loglr_max, out=loglr)
+            np.exp(loglr, out=loglr)
+            lr = loglr.astype(np.float32)
+        del loglr
         
         proms = list(np.array(prom_names)[inds])
         if use_hdf:
             if save_stat:
-                lr = lr.astype(np.half)
-                filename = os.path.join(folder_stat, f'{name}.hdf')
+                filename = os.path.join(folder_stat, f'{file_name}.hdf')
                 DF(data=lr, index=proms, columns=motif_names).to_hdf(filename, key='lrt', mode='w', complevel=4, 
                                                                      complib='blosc')
-            filename = os.path.join(folder_belief, f'{name}.hdf')
+            filename = os.path.join(folder_belief, f'{file_name}.hdf')
             DF(data=belief, index=proms, columns=motif_names).to_hdf(filename, key='belief', mode='w', complevel=4, 
                                                                     complib='blosc')
         else:
             if save_stat:
-                lr = lr.astype(np.half)
-                filename = os.path.join(folder_stat, f'{name}.tsv')
+                filename = os.path.join(folder_stat, f'{file_name}.tsv')
                 DF(data=lr, index=proms, columns=motif_names).to_csv(filename, sep='\t',
-                                                                          float_format='%.3f')
-            filename = os.path.join(folder_belief, f'{name}.tsv')
+                                                                          float_format='%.6g')
+            filename = os.path.join(folder_belief, f'{file_name}.tsv')
             DF(data=belief, index=proms, columns=motif_names).to_csv(filename, sep='\t',
                                                                           float_format='%.3f')
+    if skipped:
+        shown = ', '.join(f'{n} in {g}' for g, n in list(skipped.items())[:5])
+        shown += f', ... and {len(skipped) - 5} more groups' if len(skipped) > 5 else ''
+        warn(f'Promoters whose error variance does not exceed {min_variance:g} are left out of the '
+             f'tables of the respective group ({shown} of {len(prom_names)} promoters).')
+    if n_capped:
+        warn(f'{n_capped} likelihood ratio(s) exceed the range of the single-precision tables in '
+             f'"{folder_stat}" and are stored as {np.exp(loglr_max):.3g}; their beliefs are not affected.')
         

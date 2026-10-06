@@ -11,6 +11,7 @@ from pathlib import Path
 from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, TauMode, TauEstimation
 from time import time
 from .export import export_results
+from ..utils import spinner
 
 
 class OrderCommands(TyperGroup):
@@ -39,14 +40,11 @@ def _fit(name: str = Argument(..., help='Project name.'),
     """
 
     t0 = time()
-    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    p.add_task(description="Fitting model to the data...", total=None)
-    p.start()
-    fit(name, tau_mode=tau_mode, tau_estimation=tau_estimation, tau_fix=tau_fix, 
-        clustering=clustering, num_clusters=num_clusters,
-        gpu=gpu, test_chromosomes=test_chromosomes, test_promoters_filename=test_promoters_filename,
-        gpu_decomposition=gpu_decomposition, x64=x64)
-    p.stop()
+    with spinner("Fitting model to the data..."):
+        fit(name, tau_mode=tau_mode, tau_estimation=tau_estimation, tau_fix=tau_fix, 
+            clustering=clustering, num_clusters=num_clusters,
+            gpu=gpu, test_chromosomes=test_chromosomes, test_promoters_filename=test_promoters_filename,
+            gpu_decomposition=gpu_decomposition, x64=x64)
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
@@ -62,10 +60,8 @@ def _gof(name: str = Argument(..., help='Project name.'),
     """
 
     t0 = time()
-    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    p.add_task(description="Calculating FOVs...", total=None)
-    p.start()
-    res = calculate_fov(name, stat_type=stat_type, keep_motifs=keep_motifs, gpu=gpu, x64=x64)
+    with spinner("Calculating FOVs..."):
+        res = calculate_fov(name, stat_type=stat_type, keep_motifs=keep_motifs, gpu=gpu, x64=x64)
     for name, res in res:
         if name:
             print(name)
@@ -83,7 +79,6 @@ def _gof(name: str = Argument(..., help='Project name.'),
             row = [f'{t.total:.6f}' for t in res.test]
             t.add_row('test', *row)
         rprint(t)
-    p.stop()
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
@@ -96,11 +91,8 @@ def _predict(name: str = Argument(..., help='Project name.'),
     """
 
     t0 = time()
-    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    p.add_task(description="Predicting motif activities...", total=None)
-    p.start()
-    predict(name, gpu=gpu, x64=x64)
-    p.stop()
+    with spinner("Predicting motif activities..."):
+        predict(name, gpu=gpu, x64=x64)
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')
 
@@ -109,10 +101,7 @@ def _predict(name: str = Argument(..., help='Project name.'),
 def _export(name: str = Argument(..., help='Project name.'),
             output_folder: Path = Argument(..., help='Output folder.')):
     t0 = time()
-    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
-    p.add_task(description="Exporting results...", total=None)
-    p.start()
-    export_results(name, output_folder)
-    p.stop()
+    with spinner("Exporting results..."):
+        export_results(name, output_folder)
     dt = time() - t0
     rprint(f'[green][bold]✔️[/bold] Done![/green]\t time: {dt:.2f} s.')

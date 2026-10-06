@@ -3,6 +3,8 @@
 from pandas import DataFrame as DF
 # add dot
 from ..utils import read_init, openers
+from ..utils import apply_clustering
+from .fit import load_mara_stage
 from ..fit import FOVResult, ActivitiesPrediction, FitResult, transform_data
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from statsmodels.stats import multitest
@@ -55,13 +57,13 @@ def export_results(project_name: str, output_folder: str,
         os.makedirs(output_folder, exist_ok=True)
         B.to_csv(os.path.join(output_folder, 'B.tsv'), sep='\t')
     # del data
-    with openers[fmt](f'{project_name}.old.fit.{fmt}', 'rb') as f:
-        fit: FitResult = dill.load(f)
+    fit: FitResult = load_mara_stage(project_name, 'fit', fmt)
+    data = apply_clustering(data, fit)
+    motif_names = data.motif_names
     if fit.promoter_inds_to_drop:
         prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
     group_names = fit.group_names
-    with openers[fmt](f'{project_name}.old.predict.{fmt}', 'rb') as f:
-        act: ActivitiesPrediction = dill.load(f)
+    act: ActivitiesPrediction = load_mara_stage(project_name, 'predict', fmt)
 
     error_variance = fit.error_variance.variance
     motif_variance = fit.motif_variance.variance
@@ -99,24 +101,17 @@ def export_results(project_name: str, output_folder: str,
     DF(z, index=motif_names, 
        columns=['overall'] + list(sample_names)).to_csv(os.path.join(output_folder, 'z_scores.tsv'), 
                                     sep='\t')
-    if os.path.isfile(f'{project_name}.old.fov.{fmt}'):
-        with open(f'{project_name}.old.fov.{fmt}', 'rb') as f:
-            fov = dill.load(f)
-            if type(fov) in (tuple, list):
-                print('n', len(fov))
-                fov = fov[0][-1]
-            print(type(fov))
-            train = fov.train
-            test = fov.test
+    fov = load_mara_stage(project_name, 'fov', fmt, required=False)
+    if fov is not None:
+        if type(fov) in (tuple, list):
+            fov = fov[0][-1]
+        train = fov.train
+        test = fov.test
         folder = os.path.join(output_folder, 'fov')
         if fov.grouped:
             sample_names = data.group_names
         else:
-            sample_names = [None] * len(train[0].sample)
-            for i, inds in enumerate(data.group_inds):
-                name = data.group_names[i]
-                for k, j in enumerate(inds):
-                    sample_names[j] = f'{name}_{k+1}'
+            sample_names = data.sample_names
         if fit.promoter_inds_to_drop:
             promoter_names_train = np.delete(data.promoter_names, fit.promoter_inds_to_drop)
         else:

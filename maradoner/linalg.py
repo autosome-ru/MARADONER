@@ -3,6 +3,56 @@ import jax.numpy as jnp
 import jax
 import scipy.linalg.lapack as lapack
 from dataclasses import dataclass
+from .utils import InputError, warn
+
+
+def _list_names(names, limit=5) -> str:
+    names = [str(n) for n in names]
+    shown = ', '.join(names[:limit])
+    if len(names) > limit:
+        shown += f' ... and {len(names) - limit} more'
+    return shown
+
+
+def dependent_rows(X: np.ndarray, rel_tol=1e-7) -> list:
+    """Indices of the rows of X that are (numerically: up to rel_tol of their norm)
+    linear combinations of the rows above them."""
+    X = np.asarray(X, dtype=np.float64)
+    basis = np.zeros((0, X.shape[1]))
+    dependent = list()
+    for i, row in enumerate(X):
+        norm = np.linalg.norm(row)
+        resid = row - basis.T @ (basis @ row)
+        resid = resid - basis.T @ (basis @ resid)
+        resid_norm = np.linalg.norm(resid)
+        if norm == 0 or resid_norm <= rel_tol * norm:
+            dependent.append(i)
+        else:
+            basis = np.vstack([basis, resid / resid_norm])
+    return dependent
+
+
+def check_design_rank(X: np.ndarray, names=None):
+    """Raise an InputError if the rows of the covariate design X (c x s, intercept first)
+    are linearly dependent: the projection that removes the covariates is undefined then."""
+    X = np.asarray(X, dtype=np.float64)
+    if not np.all(np.isfinite(X)):
+        raise InputError('The covariate design contains non-finite values (NaN or infinity); '
+                         'fix the covariates table and re-run "maradoner create".')
+    dependent = dependent_rows(X)
+    if not dependent:
+        return
+    if names is not None and len(names) == len(X):
+        shown = _list_names([names[i] for i in dependent])
+    else:
+        # Row 0 is the intercept, so row i is the i-th covariate.
+        shown = _list_names([f'#{i}' for i in dependent])
+    raise InputError(f'The covariates are linearly dependent: covariate(s) {shown} can be '
+                     'written as a combination of the intercept and the preceding covariates '
+                     f'(the design has rank {len(X) - len(dependent)} for {len(X)} rows, '
+                     'intercept included), so their effects cannot be told apart. Remove '
+                     'constant, duplicated or redundant covariates (e.g. keep k - 1 indicator '
+                     'columns for a factor with k levels) and re-run "maradoner create".')
 
 
 def null_space_transform(Q: np.ndarray, Y: np.ndarray) -> np.ndarray:
@@ -43,14 +93,10 @@ def null_space_transform(Q: np.ndarray, Y: np.ndarray) -> np.ndarray:
                                                       lwork=lwork, overwrite_c=True)
     
     if info_ormqr != 0:
-        print("--- Debug Info Before dormqr Failure ---")
-        print(f"Q shape: {Q.shape}, dtype: {Q.dtype}")
-        print(f"qr_a shape: {qr_a.shape}, dtype: {qr_a.dtype}, order: {'F' if qr_a.flags.f_contiguous else 'C'}")
-        print(f"tau shape: {tau.shape}, dtype: {tau.dtype}")
-        print(f"Y shape: {Y.shape}, dtype: {Y.dtype}, order: {'F' if Y.flags.f_contiguous else 'C'}")
-        print(f"lwork: {lwork}")
-        print("--- End Debug Info ---")
-        raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr}")
+        raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr} "
+                           f"(Q shape: {Q.shape}, dtype: {Q.dtype}; "
+                           f"Y shape: {Y.shape}, dtype: {Y.dtype}, "
+                           f"order: {'F' if Y.flags.f_contiguous else 'C'}; lwork: {lwork})")
 
     VT_Y = q_mult_y[r:, :] 
     return VT_Y
@@ -100,14 +146,10 @@ class LowrankDecomposition:
                                                           lwork=lwork, overwrite_c=True)
         
         if info_ormqr != 0:
-            print("--- Debug Info Before dormqr Failure ---")
-            print(f"Q shape: {Q.shape}, dtype: {Q.dtype}")
-            print(f"qr_a shape: {qr_a.shape}, dtype: {qr_a.dtype}, order: {'F' if qr_a.flags.f_contiguous else 'C'}")
-            print(f"tau shape: {tau.shape}, dtype: {tau.dtype}")
-            print(f"Y shape: {Y.shape}, dtype: {Y.dtype}, order: {'F' if Y.flags.f_contiguous else 'C'}")
-            print(f"lwork: {lwork}")
-            print("--- End Debug Info ---")
-            raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr}")
+            raise RuntimeError(f"LAPACK dormqr failed with info = {info_ormqr} "
+                               f"(Q shape: {Q.shape}, dtype: {Q.dtype}; "
+                               f"Y shape: {Y.shape}, dtype: {Y.dtype}, "
+                               f"order: {'F' if Y.flags.f_contiguous else 'C'}; lwork: {lwork})")
 
         VT_Y = q_mult_y[r:, :] 
         return VT_Y
@@ -137,7 +179,7 @@ class LowrankDecomposition:
         
         n = Z.shape[1]
         
-        Z = np.array(Z, dtype=np.float64, copy=False)
+        Z = np.asarray(Z, dtype=np.float64)
     
 
         Q_copy = np.array(Q, order='F', dtype=np.float64)
@@ -221,17 +263,33 @@ def ones_nullspace_transform_transpose(X: np.ndarray) -> np.ndarray:
     
     return Y
 
-def lowrank_decomposition(X: np.ndarray, rel_eps=1e-15) -> LowrankDecomposition:
+def lowrank_decomposition(X: np.ndarray, rel_eps=1e-15, names=None,
+                          verbose=True) -> LowrankDecomposition:
+    """Thin SVD of X restricted to its numerical rank. Singular values not exceeding
+    max(rel_eps, max(X.shape) * machine epsilon) times the largest one are rounding noise
+    and are dropped; a warning then tells how many columns of X are linear combinations
+    of the others (and which, by `names` if given)."""
     svd = jnp.linalg.svd
     q, s, v = [np.array(t) for t in svd(X, full_matrices=False)]
     if rel_eps is not None:
-        max_sv = max(s)
         n = len(s)
-        for r in range(n):
-            if s[r] / max_sv < rel_eps:
-                r -= 1
-                break
-        r += 1
+        max_sv = max(s) if n else 0.0
+        rel_eps = max(rel_eps, max(np.shape(X)) * np.finfo(s.dtype).eps)
+        r = int(np.sum(s > rel_eps * max_sv)) if max_sv > 0 else 0
+        n_dropped = min(np.shape(X)) - r
+        if n_dropped > 0 and np.shape(X)[0] >= np.shape(X)[1]:
+            # Columns with a weight in the dropped right singular vectors are the ones
+            # involved in the linear dependencies.
+            involved = np.where(np.abs(v[r:]).max(axis=0) > 1e-6)[0]
+            if names is not None and len(names) == np.shape(X)[1]:
+                shown = _list_names([names[i] for i in involved])
+            else:
+                shown = _list_names([f'#{i + 1}' for i in involved])
+            warn(f'The matrix being decomposed has rank {r}, but {np.shape(X)[1]} columns: '
+                 f'{n_dropped} direction(s) are numerically linear combinations of the others '
+                 f'and were dropped. Columns involved: {shown}. Parameters of the motifs '
+                 'involved (variances, means, activities) are not separately identifiable; '
+                 'remove or merge duplicated/collinear motifs to resolve this.', verbose)
         s = s[:r]
         q = q[:, :r]
         v = v[:r]

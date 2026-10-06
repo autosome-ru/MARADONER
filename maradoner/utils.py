@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from contextlib import contextmanager
 from dataclasses import dataclass
 import scipy.stats as st
 import numpy as np
@@ -15,15 +16,94 @@ openers = {'lzma': lzma.open,
            'bz2': bz2.open,
            'raw': open}
 
+class InputError(ValueError):
+    """An error the user can fix themselves: malformed input data, an invalid option
+    value, or a project that is not in the state a command needs. The CLI prints the
+    message alone, without a traceback."""
+
+
 def logger_print(msg: str, verbose: bool = True):
     if verbose:
         print(msg)
 
+def warn(msg: str, verbose: bool = True):
+    logger_print(f'[warning] {msg}', verbose)
+
+@contextmanager
+def spinner(description: str):
+    """Transient console spinner shown while a command runs. It is always stopped on
+    exit, also when the command fails, so the terminal cursor is never left hidden."""
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    p = Progress(SpinnerColumn(speed=0.5), TextColumn("[progress.description]{task.description}"), transient=True)
+    p.add_task(description=description, total=None)
+    p.start()
+    try:
+        yield p
+    finally:
+        p.stop()
+
 def get_init_file(path: str):
     folder, name = os.path.split(path)
+    if folder and not os.path.isdir(folder):
+        return None
     for file in os.listdir(folder if folder else None):
         if file.startswith(f'{name}.init.') and file.endswith(tuple(openers.keys())) and os.path.isfile(os.path.join(folder, file)):
             return os.path.join(folder, file), file.split('.')[-1]
+
+# Commands that produce each of the project's intermediate files.
+_STAGE_COMMANDS = {'init': 'create', 'fit': 'fit', 'predict': 'predict', 'fov': 'gof',
+                   'promoter_mean': 'estimate-promoter-mean', 'old.fit': 'mara fit',
+                   'old.predict': 'mara predict', 'old.fov': 'mara gof'}
+
+def _load_pickle(filename: str, fmt: str, stage: str, project_name: str):
+    """dill.load of a project file. A file that cannot be read back (truncated by an
+    interrupted run, edited, or not written by MARADONER at all) is the user's to
+    recreate, so it is reported as an InputError naming the command that does it."""
+    try:
+        with openers[fmt](filename, 'rb') as f:
+            return dill.load(f)
+    except (FileNotFoundError, PermissionError, IsADirectoryError, MemoryError):
+        raise
+    except Exception as e:
+        cmd = _STAGE_COMMANDS.get(stage, stage)
+        reason = str(e).strip() or type(e).__name__
+        args = ' ...' if stage == 'init' else ''
+        raise InputError(f'"{filename}" is damaged or was not written by MARADONER ({reason}). '
+                         f'Re-run "maradoner {cmd} {project_name}{args}" to recreate it.') from e
+
+def stage_filename(project_name: str, stage: str, fmt: str) -> str:
+    return f'{project_name}.{stage}.{fmt}'
+
+def load_stage(project_name: str, stage: str, fmt: str, required: bool = True):
+    """Load `<project>.<stage>.<fmt>` with the compression-aware opener. A missing file
+    is reported together with the command that creates it (or None is returned if it is
+    not `required`)."""
+    filename = stage_filename(project_name, stage, fmt)
+    if not os.path.isfile(filename):
+        if not required:
+            return None
+        cmd = _STAGE_COMMANDS.get(stage, stage)
+        raise InputError(f'"{filename}" not found: run "maradoner {cmd} {project_name}" first.')
+    return _load_pickle(filename, fmt, stage, project_name)
+
+def dump_stage(obj, project_name: str, stage: str, fmt: str):
+    # Written to a temporary file first: an interrupted run must not leave a truncated
+    # file behind under the real name.
+    filename = stage_filename(project_name, stage, fmt)
+    temporary = filename + '.tmp'
+    try:
+        with openers[fmt](temporary, 'wb') as f:
+            dill.dump(obj, f)
+        os.replace(temporary, filename)
+    except BaseException:
+        if os.path.isfile(temporary):
+            os.remove(temporary)
+        raise
+
+def remove_stage(project_name: str, stage: str, fmt: str):
+    filename = stage_filename(project_name, stage, fmt)
+    if os.path.isfile(filename):
+        os.remove(filename)
 
 def get_init_files(path: str):
     files = list()
@@ -90,13 +170,46 @@ class ProjectData:
     covariate_names: list = None
 
 
+def apply_clustering(data: ProjectData, fit) -> ProjectData:
+    """Make `data` match a fit produced with `fit --clustering`: the loading matrix is
+    replaced by the stored cluster profiles (one column per cluster, rows aligned with
+    the full promoter set of the project) and motif names by cluster names, so that
+    every downstream command works at the cluster level. A no-op for ordinary fits."""
+    if getattr(fit, 'clustering', None) is None:
+        return data
+    clustered_B = getattr(fit, 'clustered_B', None)
+    if clustered_B is None:
+        raise InputError('This project was fitted with "--clustering" by a MARADONER version '
+                         'that did not store the cluster profiles. Re-run "maradoner fit" to '
+                         'use the fit with this command.')
+    if len(clustered_B) != len(data.B):
+        raise InputError(f'The fit holds cluster profiles for {len(clustered_B)} promoters, but '
+                         f'the project has {len(data.B)}: the fit is out of sync with the '
+                         'project. Re-run "maradoner fit".')
+    data.B = clustered_B
+    data.motif_names = [f'cluster_{i + 1}' for i in range(clustered_B.shape[1])]
+    return data
+
+
 def read_init(project_name: str) -> ProjectData:
-    if type(project_name) is str:
-        filename, fmt = get_init_file(project_name)
-        with openers[fmt](filename, 'rb') as f:
-            init = dill.load(f)
+    if isinstance(project_name, (str, os.PathLike)):
+        project_name = os.fspath(project_name)
+        found = get_init_file(project_name)
+        if found is None:
+            raise InputError(f'No MARADONER project "{project_name}" found (expected a file '
+                             f'"{project_name}.init.<{"|".join(openers)}>"). Run '
+                             f'"maradoner create {project_name} ..." first, or check the '
+                             'project name and path.')
+        filename, fmt = found
+        init = _load_pickle(filename, fmt, 'init', project_name)
+        required = ('expression', 'loadings', 'groups', 'sample_names', 'motif_names',
+                    'promoter_names', 'motif_postfixes')
+        if not isinstance(init, dict) or any(k not in init for k in required):
+            raise InputError(f'"{filename}" is not a MARADONER project file. Re-run '
+                             f'"maradoner create {project_name} ..." to recreate it.')
     else:
         init = project_name
+        fmt = 'raw'
     group_names = sorted(init['groups'])
     group_inds = list()
     for name in group_names:

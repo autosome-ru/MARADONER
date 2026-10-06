@@ -4,9 +4,13 @@ import numpy as np
 import pandas as pd
 from enum import Enum
 import dill
+import os
 import pygam
 from .utils import read_init, openers
+from .utils import InputError, warn, dump_stage
 from .fit import FitResult, ActivitiesPrediction, transform_data, split_data, motif_mean_matrix
+from .fit import align_fit_to_promoters
+from .grn import load_fit, load_predict, held_out_inds, filtered_motifs
 
 class FOVMeanMode(str, Enum):
     null = 'null'
@@ -61,42 +65,97 @@ def knn_predict(B: np.ndarray, Z: np.ndarray, mu_p: np.ndarray, test_inds: np.nd
     predictions = reg.predict(X_test)
     return predictions
 
+def read_promoter_covariates(filename: str, promoter_names: list) -> pd.DataFrame:
+    """Reads the table of promoter covariates (promoters in rows, numeric covariates in
+    columns) and returns its rows for `promoter_names`, in that order."""
+    if not os.path.isfile(filename):
+        raise InputError(f'Covariate file "{filename}" not found.')
+    expected = ('A tab-separated table with promoter names in the first column and one numeric '
+                'column per covariate is expected.')
+    try:
+        X = pd.read_csv(filename, sep='\t', index_col=0)
+    except Exception as e:
+        raise InputError(f'Cannot read the covariate file "{filename}": {e}. {expected}')
+    if not X.shape[1]:
+        raise InputError(f'The covariate file "{filename}" has no covariate columns. {expected}')
+    def first(items):
+        items = [str(i) for i in items]
+        return ', '.join(items[:5]) + (f', ... and {len(items) - 5} more' if len(items) > 5 else '')
+    X.index = X.index.astype(str)
+    duplicated = X.index[X.index.duplicated()].unique()
+    if len(duplicated):
+        raise InputError(f'{len(duplicated)} promoter(s) occur more than once in the covariate file '
+                         f'"{filename}": {first(duplicated)}.')
+    present = set(X.index)
+    missing = [p for p in promoter_names if str(p) not in present]
+    if missing:
+        raise InputError(f'{len(missing)} of the {len(promoter_names)} promoters of the project are absent '
+                         f'from the covariate file "{filename}": {first(missing)}. Every promoter of the '
+                         'project needs a row.')
+    X = X.loc[[str(p) for p in promoter_names]]
+    bad = [c for c in X.columns if not pd.api.types.is_numeric_dtype(X[c])]
+    if not bad:
+        bad = [c for c in X.columns if not np.isfinite(X[c].values.astype(float)).all()]
+    if bad:
+        raise InputError(f'Column(s) {first(bad)} of the covariate file "{filename}" contain missing or '
+                         f'non-numeric values for promoters of the project. {expected}')
+    return X
+
 def estimate_promoter_mean(project: str,
-                           mean_mode: FOVMeanMode = FOVMeanMode.gls, knn_n=128, pca_b=64, pca_z=3,
+                           mean_mode: FOVMeanMode = FOVMeanMode.null, knn_n=256, pca_b=64, pca_z=3,
                            covariate: str = None, num_splies=10):
+    mean_mode = FOVMeanMode(mean_mode)
+    if mean_mode == mean_mode.knn:
+        if knn_n < 1:
+            raise InputError(f'--knn-n must be a positive number of neighbours, but {knn_n} was given.')
+        if pca_b < -1 or pca_z < -1 or (pca_b == 0 and pca_z == 0):
+            raise InputError('--pca-b and --pca-z are numbers of principal components (-1: use the matrix '
+                             f'itself, 0: do not use it) and cannot both be 0, but {pca_b} and {pca_z} were '
+                             'given.')
     data = read_init(project)
     fmt = data.fmt
+    data, fit = load_fit(project, data)
     prom_names = data.promoter_names
-    with openers[fmt](f'{project}.fit.{fmt}', 'rb') as f:
-        fit : FitResult = dill.load(f)
-    with openers[fmt](f'{project}.predict.{fmt}', 'rb') as f:
-        activities : ActivitiesPrediction = dill.load(f)
+    activities : ActivitiesPrediction = load_predict(project, data, fit)
+    test_inds = held_out_inds(fit)
+    if not test_inds:
+        raise InputError(f'The project "{project}" was fitted without a testing set, so there are no '
+                         'held-out promoters whose means could be estimated. Hold promoters out with '
+                         f'"maradoner fit {project} --test-chromosomes ..." or '
+                         '"--test-promoters-filename ..." first.')
+    if covariate and mean_mode == mean_mode.gls:
+        warn('"--covariate" has no effect with "--mean-mode gls": the GLS estimate of a promoter mean is '
+             'computed from the expression of that promoter and already contains whatever the '
+             'covariates explain.')
+        covariate = None
+    covariate = read_promoter_covariates(str(covariate), prom_names) if covariate else None
+    # Per-promoter estimates of fits made by older versions span all the promoters:
+    # restrict them to the training ones.
+    fit = align_fit_to_promoters(fit, test_inds, len(prom_names))
     B0 = transform_data(data, helmert=False, loading_context=fit.loading_context,
                         drist=fit.drist, loading_multipliers=fit.loading_multipliers).B
-    data, data_test = split_data(data, fit.promoter_inds_to_drop)
+    data, data_test = split_data(data, test_inds)
     data = transform_data(data, helmert=False, loading_context=fit.loading_context,
                           drist=fit.drist, loading_multipliers=fit.loading_multipliers)
     if data_test is not None:
         data_test = transform_data(data_test, helmert=False, loading_context=fit.loading_context,
                                    drist=fit.drist, loading_multipliers=fit.loading_multipliers)
-    drops = activities.filtered_motifs
+    drops = filtered_motifs(activities)
     U = activities.U_raw
     # Per-sample mean motif effect B M X (covariate-aware).
     BMX = data.B @ motif_mean_matrix(fit.motif_mean, data.X)
     mu_s = fit.sample_mean.mean.reshape(-1, 1)
+    # The covariate/knn branches below use the fitted promoter means as the *training*
+    # targets (aligned with `data`/`X_train`).
     mu_p = fit.promoter_mean.mean.flatten()
-    # fit.promoter_mean spans the full promoter set; the covariate/knn branches below use it
-    # as the *training* targets (aligned with `data`/`X_train`), so drop the held-out entries.
-    if fit.promoter_inds_to_drop:
-        mu_p = np.delete(mu_p, fit.promoter_inds_to_drop)
-    if covariate:
+    if covariate is not None:
         ws = data.Y - mu_s.T - mu_p.reshape(-1, 1) - BMX - np.delete(data.B, drops, axis=1) @ U
         ws = 1 / np.std(ws, axis=1)
-        X = pd.read_csv(covariate, sep='\t', index_col=0)
+        X = covariate
         cols = X.columns
-        X = X.loc[prom_names].values
+        X = X.values.astype(float)
         inds = np.arange(0, len(B0))
-        inds_train = np.setdiff1d(inds, fit.promoter_inds_to_drop, assume_unique=True)
+        inds_train = np.setdiff1d(inds, test_inds, assume_unique=True)
         X_train = X[inds_train]
         config = dict()
         for i, c in enumerate(cols):
@@ -112,7 +171,7 @@ def estimate_promoter_mean(project: str,
                 t += v
         gam = pygam.LinearGAM(t, max_iter=1000, tol=1e-5)
         gam.gridsearch(X_train, mu_p, progress=False)
-        mu_p_d = gam.predict(X[fit.promoter_inds_to_drop]) 
+        mu_p_d = gam.predict(X[test_inds]) 
         mu_p_d_train = gam.predict(X_train)
         # print(1.0 - np.var(mu_p_d_train - mu_p) / np.var(mu_p))
     else:
@@ -127,14 +186,28 @@ def estimate_promoter_mean(project: str,
     elif mean_mode == mean_mode.knn:
         mu_p = mu_p - mu_p_d_train
         B = B0
+        # Z: the effect of the motifs (their mean activities and the deviations from them)
+        # and of the samples on every promoter, as predicted from the loadings alone.
+        U_m = motif_mean_matrix(fit.motif_mean, data.X)
         Z = B @ U_m + fit.sample_mean.mean.reshape(1, -1)
         B = np.delete(B, drops, axis=1)
         Z = Z + B @ U
         
-        mu_p = knn_predict(B, Z, mu_p, fit.promoter_inds_to_drop,
+        limits = {'--knn-n': (knn_n, len(mu_p), 'training promoters'),
+                  '--pca-b': (pca_b, min(B.shape), 'motifs kept by "predict" and promoters'),
+                  '--pca-z': (pca_z, min(Z.shape), 'samples and promoters')}
+        defaults = {'--knn-n': 256, '--pca-b': 64, '--pca-z': 3}
+        for option, (value, limit, what) in limits.items():
+            if value > limit and value != defaults[option]:
+                warn(f'{option} {value} exceeds what the project allows (the number of {what}): '
+                     f'{limit} is used instead.')
+        knn_n, pca_b, pca_z = [min(value, limit) for value, limit, _ in limits.values()]
+        mu_p = knn_predict(B, Z, mu_p, test_inds,
                            n_neighbours=knn_n, n_Z=pca_z, n_B=pca_b) 
     elif mean_mode == mean_mode.null:
-        mu_p = np.zeros_like(mu_p_d)
-    mu_p = mu_p + mu_p_d
-    with openers[fmt](f'{project}.promoter_mean.{fmt}', 'wb') as f:
-        dill.dump(mu_p, f)
+        mu_p = np.zeros(len(test_inds))
+    # One mean per test promoter, in the order of the test promoters in the project. The
+    # GLS estimate is used as it is (see the note on "--covariate" above).
+    mu_p = np.asarray(mu_p + mu_p_d, dtype=float).reshape(-1)
+    dump_stage(mu_p, project, 'promoter_mean', fmt)
+    return mu_p

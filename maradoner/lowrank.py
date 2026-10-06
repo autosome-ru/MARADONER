@@ -24,6 +24,8 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from scipy.optimize import minimize
+from .linalg import check_design_rank
+from .utils import InputError, warn
 
 
 # ----------------------------------------------------------------------------- core ---
@@ -64,10 +66,12 @@ def theta_logdet(d, W):
     return ld + jnp.linalg.slogdet(C)[1]
 
 
-def covariate_projection_theta(d_n, W, X):
+def covariate_projection_theta(d_n, W, X, names=None):
     """H_X^T (H_X Theta H_X^T)^{-1} H_X == Theta^{-1} - Theta^{-1} X^T (X Theta^{-1} X^T)^{-1} X Theta^{-1},
     Theta = diag(d_n) + W W^T.  Reduces to the diagonal covariate_projection when W is empty.
-    d_n: (s,) per-sample error variances; X: (c, s) covariate design (first row ones)."""
+    d_n: (s,) per-sample error variances; X: (c, s) covariate design (first row ones).
+    names: optional names of the rows of X for the error raised when they are dependent."""
+    check_design_rank(X, names)
     Ti = theta_inv(d_n, W)                       # (s,s)
     X = jnp.asarray(X, dtype=Ti.dtype)
     XTi = X @ Ti                                 # (c,s)
@@ -172,6 +176,11 @@ def estimate_error_lowrank(G_Y, ptilde, gii, group_inds, k, sigma0,
     if k == 0:
         dev = reml_deviance_and_grad(np.asarray(sigma0), None, G_Y, ptilde, gii, group_inds)[0]
         return np.asarray(sigma0), np.zeros((s, 0)), float(dev)
+    if k >= s - 1:
+        raise InputError(f'--error-lowrank {k} cannot be estimated: the errors of {s} samples '
+                         f'have {s - 1} degrees of freedom once the promoter means are '
+                         'removed, and the rank of the correction must be smaller than '
+                         'that. Use a smaller rank or drop the option.')
 
     W0 = _init_W(sigma0, G_Y, ptilde, gii, k)
 
@@ -189,6 +198,13 @@ def estimate_error_lowrank(G_Y, ptilde, gii, group_inds, k, sigma0,
     W = res.x[g:].reshape(s, k)
     if verbose:
         print(f'[lowrank-D] k={k}  deviance {res.fun:.4f}  (converged={res.success})')
+    if not (np.isfinite(res.fun) and np.all(np.isfinite(res.x))):
+        raise RuntimeError(f'Estimation of the low-rank error covariance (--error-lowrank {k}) '
+                           'ended at a non-finite value.')
+    if not res.success:
+        warn(f'The optimisation of the low-rank error covariance (--error-lowrank {k}) did '
+             f'not converge ({res.message}); the estimates of the error variances may be '
+             'inaccurate.')
     return np.asarray(sigma), np.asarray(W), float(res.fun)
 
 

@@ -1,4 +1,3 @@
-__requires__ = ['pip >= 24.0']
 from maradoner import __version__, __min_reqs__
 from setuptools import setup, find_packages
 import os
@@ -10,8 +9,6 @@ setup(
     name='maradoner',
     version=__version__,
     packages=find_packages(),
-    include_package_data=True,
-    package_data={'': ['data/*']},
     description='Variance-adjusted estimation of motif activities.',
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -26,8 +23,8 @@ setup(
     python_requires='>=3.11',
     url="https://github.com/autosome-ru/maradoner",
     classifiers=[
-	      "Programming Language :: Python :: 3.11",
-	      "Topic :: Scientific/Engineering",
+              "Programming Language :: Python :: 3.11",
+              "Topic :: Scientific/Engineering",
               "Operating System :: OS Independent"]
 
 )

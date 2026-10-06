@@ -7,6 +7,7 @@ import pandas as pd
 import random
 import json
 import os
+from .utils import InputError
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ class GeneratedData:
 
 
 def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int,
-                      sigma_rel: float = 1e-1, non_signficant_motifs_fraction: float = 0.25,
+                      sigma_rel: float = 1e-1, non_signficant_motifs_fraction: float = 0.20,
                       means: bool = True, n_covariates: int = 0, cov_effect: float = 1.0,
                       error_lowrank: int = 0, error_lowrank_scale: float = 1.0,
                       activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0):
@@ -48,8 +49,32 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     effects). W is scaled by error_lowrank_scale * mean(sqrt(D)) per column and projected
     off 1_s (the identifiable part). The ground-truth W is returned for evaluation.
     """
+    for name, value in (('promoters (--p)', p), ('motifs (--m)', m), ('groups (--g)', g)):
+        if value < 1:
+            raise InputError(f'The number of {name} must be at least 1, but {value} was given.')
+    if not 1 <= min_samples <= max_samples:
+        raise InputError('The numbers of samples per group must satisfy 1 <= --min-samples <= '
+                         f'--max-samples, but --min-samples {min_samples} and --max-samples {max_samples} '
+                         'were given.')
+    if not 0 <= non_signficant_motifs_fraction <= 1:
+        raise InputError('The fraction of non-significant motifs must lie between 0 and 1, but '
+                         f'{non_signficant_motifs_fraction:g} was given.')
+    if not sigma_rel > 0:
+        raise InputError(f'--sigma-rel is a ratio of variances and must be positive, but {sigma_rel:g} was given.')
+    for name, value in (('--n-covariates', n_covariates), ('--error-lowrank', error_lowrank),
+                        ('--activity-lowrank', activity_lowrank),
+                        ('--error-lowrank-scale', error_lowrank_scale),
+                        ('--activity-lowrank-scale', activity_lowrank_scale)):
+        if value < 0:
+            raise InputError(f'{name} cannot be negative, but {value:g} was given.')
     group_sizes = [np.random.randint(min_samples, max_samples + 1) for _ in range(g)]
     n = int(sum(group_sizes))
+    for name, value in (('--n-covariates', n_covariates + 1), ('--error-lowrank', error_lowrank),
+                        ('--activity-lowrank', activity_lowrank)):
+        if value >= n:
+            raise InputError(f'{name} is too large for the {n} samples that were generated: the covariates '
+                             '(plus the intercept) and the ranks of the low-rank corrections must each be '
+                             'smaller than the number of samples. Use more groups or samples per group.')
     group_inds = []
     t = 0
     for gs in group_sizes:
@@ -240,6 +265,11 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
                      error_lowrank: int = 0, error_lowrank_scale: float = 1.0,
                      activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0):
     random.seed(seed)
+    if not 0 <= seed < 2 ** 32:
+        raise InputError(f'--seed must lie between 0 and {2 ** 32 - 1}, but {seed} was given.')
+    if p * max(m, g * max_samples) > 2 ** 31:
+        raise InputError(f'The requested dataset is too large to generate ({p} promoters x {m} motifs, '
+                         f'up to {g * max_samples} samples).')
     np.random.seed(seed)
     res = generate_data_cov(p=p, m=m, g=g, min_samples=min_samples, max_samples=max_samples,
                             non_signficant_motifs_fraction=non_signficant_motifs_fraction,
@@ -273,6 +303,10 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
     B.to_csv(os.path.join(folder, 'loadings.tsv'), sep='\t')
     U_gt.to_csv(os.path.join(folder, 'activities.tsv'), sep='\t')
     g_gt.to_csv(os.path.join(folder, 'sigma.tsv'), sep='\t')
+    # Group multipliers nu of the activity variances: Var(U_kn) = tau_k * nu_g. A fit fixes the
+    # scale of nu by pinning it for one group, so only nu_g * tau_k and the ratios of nu are
+    # comparable with this table and Sigma.tsv.
+    pd.DataFrame(res.nu, index=list(groups), columns=['nu']).to_csv(os.path.join(folder, 'nu.tsv'), sep='\t')
 
     s = 'motif\ttau\n' + '\n'.join(f'{a}\t{b}' for a, b in zip(motifs, Sigma))
     with open(os.path.join(folder, 'Sigma.tsv'), 'w') as f:

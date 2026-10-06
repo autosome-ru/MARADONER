@@ -36,6 +36,13 @@ the Woodbury identity, so no ``p x p`` matrix is ever formed:
     x^T V^-1 z  = (x^T z - (Bt^T x)^T K^-1 (Bt^T z)) / sigma^2
 
 so a single ``m x m`` Cholesky per likelihood evaluation is all that is needed.
+
+A caveat on the reported uncertainty: ``std`` of an activity is its posterior standard
+deviation *given* the estimated variances (an empirical-Bayes plug-in). Every ``Sigma_k``
+is estimated from a single realisation ``u_k``, and that uncertainty is not propagated:
+for motifs with a non-zero activity the interval ``activity +- 1.96 std`` is too narrow
+(it covered the true activity in about 73% of simulated cases). ``z`` and the p-values
+remain usable as tests of "the activity is zero" (slightly conservative in simulations).
 """
 from .meta_optimizer import MetaOptimizer
 from .utils import read_init, logger_print
@@ -83,6 +90,13 @@ def _neg2_reml(theta: jnp.ndarray, C: jnp.ndarray, by: jnp.ndarray, b1: jnp.ndar
     return logdet_V + jnp.log(o1V) + rVr
 
 
+# Compiled once per problem size: the data enter as arguments, not as closure constants,
+# so that fitting many samples does not recompile anything.
+_neg2_reml_jit = jax.jit(_neg2_reml)
+_neg2_reml_grad = jax.jit(jax.grad(_neg2_reml))
+_neg2_reml_hessian = jax.jit(jax.hessian(_neg2_reml))
+
+
 def _posterior(theta: np.ndarray, C: np.ndarray, by: np.ndarray, b1: np.ndarray,
                y1: float, p: int, floor: float) -> dict:
     """Closed-form ``mu_hat`` and the posterior of ``u`` at the REML estimates.
@@ -113,7 +127,7 @@ def _posterior(theta: np.ndarray, C: np.ndarray, by: np.ndarray, b1: np.ndarray,
             'u': u, 'u_std': np.sqrt(np.clip(u_var, 0.0, None)), 'Bt_r': br}
 
 
-def _variance_stderr(theta: np.ndarray, obj, rel_tol: float = 1e-8) -> np.ndarray:
+def _variance_stderr(theta: np.ndarray, obj, rel_tol: float = 1e-8, hessian=None) -> np.ndarray:
     """Asymptotic standard errors of the variance components.
 
     The REML observed information is ``H / 2`` where ``H`` is the Hessian of
@@ -131,7 +145,12 @@ def _variance_stderr(theta: np.ndarray, obj, rel_tol: float = 1e-8) -> np.ndarra
     def sub(z):
         return obj(base.at[jnp.array(idx)].set(z))
 
-    H = np.asarray(jax.hessian(sub)(jnp.array(theta[idx])), dtype=float)
+    if hessian is None:
+        H = np.asarray(jax.hessian(sub)(jnp.array(theta[idx])), dtype=float)
+    else:
+        # The Hessian w.r.t. the interior components is the corresponding block of the
+        # full Hessian (`hessian` is the precompiled Hessian of `obj`).
+        H = np.asarray(hessian(base), dtype=float)[np.ix_(idx, idx)]
     info = H / 2.0
     info = 0.5 * (info + info.T)
     cov = np.linalg.pinv(info, hermitian=True)
@@ -157,9 +176,11 @@ def _fit_one(y: np.ndarray, B: np.ndarray, C: np.ndarray, b1: np.ndarray,
     Sigma_0 = 0.5 * var_y * p / max(trC, 1e-12)
     theta0 = np.concatenate([[sigma2_0], np.full(m, Sigma_0)])
 
-    obj = jax.jit(partial(_neg2_reml, C=jnp.array(C), by=jnp.array(by), b1=jnp.array(b1),
-                          yy=yy, y1=y1, p=p, floor=floor))
-    grad = jax.jit(jax.grad(obj))
+    args = (jnp.array(C), jnp.array(by), jnp.array(b1), yy, y1, p, floor)
+    def obj(theta):
+        return _neg2_reml_jit(theta, *args)
+    def grad(theta):
+        return _neg2_reml_grad(theta, *args)
 
     # Same squared reparameterisation MARADONER uses for variance components, so the
     # variances stay non-negative and the ARD shrinkage can park them exactly at zero.
@@ -188,7 +209,9 @@ def _fit_one(y: np.ndarray, B: np.ndarray, C: np.ndarray, b1: np.ndarray,
             theta = np.asarray(res.x, dtype=float)
             neg2_reml = float(res.fun)
             grad_norm = float(res.grad_norm)
-        if verbose:
+        # (the trace of the optimizer is shown only on request, verbose=2: one block per
+        # sample drowns the per-sample summaries)
+        if verbose > 1:
             print('-' * 15)
             print(res)
             print('-' * 15)
@@ -204,7 +227,7 @@ def _fit_one(y: np.ndarray, B: np.ndarray, C: np.ndarray, b1: np.ndarray,
     post['grad_norm'] = grad_norm
 
     if compute_stderr:
-        se = _variance_stderr(theta, obj)
+        se = _variance_stderr(theta, obj, hessian=lambda theta: _neg2_reml_hessian(theta, *args))
         post['sigma2_std'] = float(se[0])
         post['Sigma_std'] = se[1:]
     else:
@@ -223,6 +246,10 @@ def bayes_linreg(project_name: str, output_folder: str, alpha: float = 0.05,
     Results are written straight into ``output_folder`` -- there is no separate
     ``fit`` / ``predict`` / ``export`` chain for this command -- as two flat tables,
     ``motifs.tsv`` and ``samples.tsv`` (plus ``promoters.tsv`` if requested).
+
+    The column ``std`` of ``motifs.tsv`` is the posterior standard deviation of an activity
+    given the estimated variances; it understates the uncertainty of non-zero activities
+    (see the module docstring), while ``z`` / ``p_value`` / ``fdr_bh`` test a zero activity.
     """
     if x64:
         jax.config.update('jax_enable_x64', True)
@@ -317,4 +344,7 @@ def bayes_linreg(project_name: str, output_folder: str, alpha: float = 0.05,
         written.append('promoters.tsv')
 
     logger_print(f'Written to {output_folder}: {", ".join(written)}.', verbose)
+    logger_print('Note: "std" in motifs.tsv is the posterior standard deviation given the estimated '
+                 'variances; it is too small as an error bar of a non-zero activity. Use z / p_value / '
+                 'fdr_bh to tell whether an activity differs from zero.', verbose)
     return {'motifs': motifs, 'samples': samples}

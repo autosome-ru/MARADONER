@@ -3,15 +3,19 @@
 from pandas import DataFrame as DF
 # add dot
 from .utils import read_init, openers, ProjectData, subs_zeros
+from .utils import InputError, warn, load_stage, apply_clustering
 from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
-from .grn import grn
+from .fit import variance_dof
+from .grn import grn, safe_filenames, filtered_motifs, held_out_inds, load_fit, load_predict
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
+from scipy.special import erf, ndtr
 from scipy.linalg import eigh, lapack, cholesky, solve
 from statsmodels.stats import multitest
 import numpy as np
 from enum import Enum
 from tqdm import tqdm
 import multiprocessing as mp
+import re
 from functools import partial
 from scipy.integrate import quad
 import math
@@ -58,18 +62,36 @@ def chol_inv(x: np.array):
     return mx
 
     
+def _first_names(names, limit=5) -> str:
+    names = [str(n) for n in names]
+    if len(names) <= limit:
+        return ', '.join(names)
+    return ', '.join(names[:limit]) + f', ... and {len(names) - limit} more'
+
+
 class Information():
     eps = 1e-10
-    # The singularity diagnosis below is emitted once per run: the same rank-deficient
-    # information matrix is inverted many times while building the report.
-    _warned_singular = False
+    # The singularity diagnosis below is emitted once per run and kind of matrix (`label`):
+    # the same rank-deficient information matrix backs several tables of the report.
+    _warned_singular = set()
+    # A callable returning the explanation of a singular information matrix for the
+    # project at hand. Set by export_results, which knows the design and the loadings.
+    _singular_cause = None
 
-    def __init__(self, fim: np.ndarray, slc=None, use_preconditioner=False, filter_items=None):
+    def __init__(self, fim: np.ndarray, slc=None, use_preconditioner=False, filter_items=None,
+                 names=None, label=None):
         self.filter_items = filter_items
         if filter_items is not None:
             fim = np.delete(fim, filter_items, axis=0)
             fim = np.delete(fim, filter_items, axis=1)
-        self.square_root_inv = self._square_root_inv(fim, slc, corr=True)
+            if names is not None:
+                names = np.delete(np.asarray(names, dtype=object), filter_items)
+        # Names of the parameters (rows of the matrix), used to say which of them are not
+        # identified when the matrix is singular.
+        self.names = names
+        self.label = label
+        # Computed on demand by cholesky_transform, the only consumer.
+        self.square_root_inv = None
         precond = 1 / fim.diagonal() ** 0.5
         if not use_preconditioner:
             precond[:] = 1
@@ -77,30 +99,52 @@ class Information():
         self.fim = fim
         self.precond = precond
         self.slice = slice(None, None) if slc is None else slc
-    
+        self._fim_inv = None
+
+    def _report_singular(self, w: np.ndarray, v: np.ndarray):
+        label = self.label if self.label else 'model parameters'
+        if label in Information._warned_singular:
+            return
+        first = not Information._warned_singular
+        Information._warned_singular.add(label)
+        bad = w <= 1e-9 * np.abs(w).max()
+        if not bad.any():
+            bad[np.argmin(w)] = True
+        n_bad = int(bad.sum())
+        msg = (f'The information matrix of the {label} is not positive-definite: {n_bad} of '
+               f'{len(w)} directions are not identified (eigenvalues range from {w.min():.3e} to '
+               f'{w.max():.3e}). Falling back to a pseudo-inverse.')
+        if self.names is not None and len(self.names) == len(w):
+            # Share of each parameter in the unidentified directions (does not depend on
+            # the choice of the basis of that subspace).
+            involved = np.where((v[:, bad] ** 2).sum(axis=1) > 1e-2)[0]
+            msg += f' Parameters involved: {_first_names(np.asarray(self.names, dtype=object)[involved])}.'
+        if first:
+            cause = Information._singular_cause
+            msg += ' ' + (cause() if cause is not None else
+                          'Possible causes are linearly dependent motif loadings or too few '
+                          'samples for the number of sample groups and covariates.')
+        msg += ' Standard errors, correlations and tests of the affected parameters are unreliable.'
+        warn(msg)
+
     def _inv(self, x: np.ndarray):
         x = np.array(x)
         # t = np.linalg.eigh(x)
         try:
             x = chol_inv(x)
-        except:
+        except Exception:
             assert np.allclose(x, x.T), x - x.T
             w, v = np.linalg.eigh(x)
-            n_bad = int(np.sum(w <= 0))
-            if not Information._warned_singular:
-                Information._warned_singular = True
-                print(f'\n[warning] The information matrix is not positive-definite: {n_bad} of '
-                      f'{len(w)} directions are\n  not identified (eigenvalues range from '
-                      f'{w.min():.3e} to {w.max():.3e}). Falling back to a\n  pseudo-inverse.')
-                print('  This usually means the variance parameters are over-determined: too few '
-                      'samples\n  remain, after accounting for the covariates, to estimate one '
-                      'variance per sample group.\n  Standard errors and p-values for the affected '
-                      'parameters (notably nu in\n  params/group_variances.tsv) are unreliable. '
-                      'Re-run "fit" and check its degrees-of-freedom\n  warning; supplying '
-                      '--sample-groups or using fewer covariates resolves it.\n')
+            self._report_singular(w, v)
             # x = np.linalg.pinv(x, hermitian=True)
             x = v * (1/np.clip(w, self.eps, float('inf'))) @ v.T
         return x
+
+    def _inv_fim(self):
+        # The inverse backs standardize(), covariance() and correlation(): computed once.
+        if self._fim_inv is None:
+            self._fim_inv = self._inv(self.fim)
+        return self._fim_inv
 
     def _square_root_inv(self, x: np.ndarray, slc=None, corr=True):
         x = self._inv(x)
@@ -125,7 +169,7 @@ class Information():
         if self.filter_items is not None:
             x = np.delete(x, self.filter_items)
         x = x / self.precond[self.slice]
-        cov = self._inv(self.fim)
+        cov = self._inv_fim()
         cov = cov[self.slice, self.slice]
         std = cov.diagonal() ** 0.5
         if mode == mode.std:
@@ -141,7 +185,7 @@ class Information():
         return x.flatten()
     
     def covariance(self):
-        cov = self._inv(self.fim)
+        cov = self._inv_fim()
         cov = cov[self.slice, self.slice]
         return self.precond[self.slice].reshape(-1, 1) * cov * self.precond[self.slice]
 
@@ -149,10 +193,10 @@ class Information():
         cov = self.covariance()
         d = cov.diagonal() ** (-0.5)
         return d.reshape(-1, 1) * cov * d
-    
+
     def cholesky_transform(self, x: np.ndarray):
         if self.square_root_inv is None:
-            self.square_root_inv = self.square_root_inv(self.fim, self.slice, corr=True)
+            self.square_root_inv = self._square_root_inv(self.fim, self.slice, corr=True)
         return self.square_root_inv.T @ x
         
 
@@ -175,9 +219,55 @@ def export_fov(fovs: tuple[FOVResult], folder: str,
 
 
 
-def posterior_anova(activities: ActivitiesPrediction, fit: FitResult, 
+def _posterior_anova(activities: ActivitiesPrediction, groups=None):
+    """Posterior ANOVA from the factors of the group covariances, cov_i = Q diag(w_i) Q^T.
+    All groups share Q, so the pooled (GLS) mean is found in that basis,
+
+        mean = Q [sum_i (Q^-1 u_i) / w_i] / [sum_i 1 / w_i],
+
+    in O(g m^2) time and O(m^2 + g m) memory: no m x m matrix is built per group."""
+    Q, W = activities.cov_factors()
+    U = np.asarray(activities.U, dtype=float)
+    if groups is not None:
+        groups = np.asarray(groups, dtype=int)
+        W = W[groups]
+        U = U[:, groups]
+    m, g = U.shape
+    bad_inds = np.zeros(m, dtype=bool)
+    if g < 2:
+        nans = np.full(m, np.nan)
+        return np.zeros(m), nans, nans.copy(), bad_inds
+    sv = np.linalg.svd(Q, compute_uv=False) if m else np.ones(1)
+    if np.all(np.isfinite(W)) and np.all(W > 0) and sv[-1] > sv[0] * m * np.finfo(float).eps * 1e2:
+        iw = 1 / W
+        T = np.linalg.solve(Q, U)
+        mean = Q @ ((T * iw.T).sum(axis=1) / iw.sum(axis=0))
+        var = (Q ** 2) @ W.T
+    else:
+        # A singular Q (e.g. a motif variance of exactly zero) has no common basis for
+        # the precisions: pool them with pseudo-inverses, one group at a time.
+        total_prec = np.zeros((m, m))
+        mean = np.zeros(m)
+        var = np.empty((m, g))
+        for i, (w, u) in enumerate(zip(W, U.T)):
+            cov = (Q * w) @ Q.T
+            prec = np.linalg.pinv(cov, hermitian=True)
+            total_prec += prec
+            mean += prec @ u
+            var[:, i] = cov.diagonal()
+        mean = np.linalg.pinv(total_prec, hermitian=True) @ mean
+    istds = np.array([1 / subs_zeros(v ** 0.5) for v in var.T]).T
+    stats = (((U - mean.reshape(-1, 1)) * istds) ** 2).sum(axis=-1)
+    pvalues = chi2.sf(stats, g - 1)
+    fdr = multitest.multipletests(pvalues, alpha=0.05, method='fdr_by')[1]
+    return stats, pvalues, fdr, bad_inds
+
+
+def posterior_anova(activities: ActivitiesPrediction, fit: FitResult,
                     B: np.ndarray, corr_stat=False, map_cov=False,
                     groups=None):
+    if not map_cov:
+        return _posterior_anova(activities, groups=groups)
     precs = list()
     istds = list()
     covs = list()
@@ -251,7 +341,7 @@ def calc_log_counts(data: ProjectData, fit: FitResult, activities: ActivitiesPre
     B = data.B
     # Per-sample mean motif effect B M X (covariate-aware; p x s).
     mu_m = B @ motif_mean_matrix(fit.motif_mean, data.X)
-    B = np.delete(B, activities.filtered_motifs, axis=1)
+    B = np.delete(B, filtered_motifs(activities), axis=1)
     mu_s = fit.sample_mean.mean.reshape(1, -1)
     if mu_p is None:
         mu_p = fit.promoter_mean.mean.reshape(-1, 1)
@@ -283,14 +373,90 @@ def export_log_counts(output_folder: str, data: ProjectData, fit: FitResult,
                       activities: ActivitiesPrediction, group: bool = True,
                       mu_p_test: np.ndarray = None):
     os.makedirs(output_folder, exist_ok=True)
-    data_train, data_test = split_data(data, fit.promoter_inds_to_drop)
+    test_inds = held_out_inds(fit)
+    data_train, data_test = split_data(data, test_inds)
+    # A no-op when the per-promoter estimates are already restricted to the training set.
+    fit = align_fit_to_promoters(fit, test_inds, len(data.promoter_names))
     log_counts = calc_log_counts(data_train, fit, activities, groups=group)
     log_counts.to_csv(os.path.join(output_folder, 'train.tsv'), sep='\t')
-    if data_test:
+    if data_test and mu_p_test is not None:
         log_counts = calc_log_counts(data_test, fit, activities, groups=group,
                                      mu_p=mu_p_test)
         log_counts.to_csv(os.path.join(output_folder, 'test.tsv'), sep='\t')
     
+
+def motif_mean_covariance(motif_mean, motif_names=None, covariate_names=None, verbose=True) -> tuple:
+    """Standard errors of the motif-mean matrix M and the covariance of its intercept
+    column mu_m (the average motif activities). Returns (std, cov): std has the shape
+    (m, c) of M, cov is (m, m).
+
+    The covariance of vec(M) is the inverse of the FULL mc x mc Fisher matrix. Inverting
+    each covariate's m x m diagonal block in isolation ignores correlations *between*
+    covariates and severely underestimates the standard errors when covariates are
+    collinear (e.g. sex vs sex-specific male_age/female_age). vec(M) is stored
+    column-major, so coefficient (motif i, covariate a) is index a*m + i.
+    The intercept column additionally carries the uncertainty of the promoter baselines
+    (only mu_p + B mu_m is identified): the fit supplies it as `baseline_cov`, which is
+    added to the intercept block."""
+    M = np.asarray(motif_mean.mean)
+    if M.ndim == 1:
+        M = M.reshape(-1, 1)
+    m, c = M.shape
+    names = None
+    if motif_names is not None:
+        if covariate_names is None or len(covariate_names) != c:
+            covariate_names = ['intercept'] + [f'cov_{i}' for i in range(1, c)]
+        names = [f'mean of {n}' if a == 0 else f'effect of {cname} on {n}'
+                 for a, cname in enumerate(covariate_names) for n in motif_names]
+    fim = np.asarray(motif_mean.fim, dtype=np.float64)
+    w, v = np.linalg.eigh(fim)
+    cutoff = len(w) * np.finfo(float).eps * np.abs(w).max()
+    if w.min() <= cutoff:
+        Information(fim, names=names, label='motif means')._report_singular(w, v)
+    # Pseudo-inverse: for a singular matrix this is the covariance of the minimum-norm
+    # estimate that the fit returns (unidentified directions contribute nothing).
+    keep = np.abs(w) > cutoff
+    cov_full = (v[:, keep] / w[keep]) @ v[:, keep].T
+    var = np.clip(np.diag(cov_full), 0.0, None).reshape(c, m).T
+    cov = cov_full[:m, :m]
+    baseline_cov = getattr(motif_mean, 'baseline_cov', None)
+    if baseline_cov is None:
+        warn('This fit was made by a MARADONER version that did not account for the uncertainty of '
+             'the promoter baselines in the standard errors of the motif means: these standard '
+             'errors are too small and the tests based on them are too optimistic. Re-run '
+             '"maradoner fit" (and "predict") to correct this.', verbose)
+    else:
+        cov = cov + np.asarray(baseline_cov, dtype=np.float64)
+        var[:, 0] = np.clip(np.diag(cov), 0.0, None)
+    return var ** 0.5, cov
+
+
+def _explain_singular_information(data: ProjectData, fit: FitResult) -> str:
+    """Finds out why an information matrix of this project is singular: `data` are the
+    training promoters, `fit` the fit aligned with them."""
+    info = variance_dof(data.X, data.group_inds)
+    if not info['ok']:
+        return (f'Cause: the group variances are over-determined. After accounting for the covariates, '
+                f'{info["dof"]} sample dimensions remain ({info["n_samples"]} samples, design of rank '
+                f'{info["rank_x"]}), but {info["n_free_nu"]} group variances have to be estimated '
+                f'({info["n_groups"]} sample groups). Pool samples into fewer, larger groups with '
+                '"create --sample-groups" and/or use fewer covariates.')
+    B = transform_data(data, helmert=False, loading_context=fit.loading_context,
+                       drist=fit.drist, loading_multipliers=fit.loading_multipliers).B
+    B = B - B.mean(axis=0, keepdims=True)
+    w, v = np.linalg.eigh(B.T @ B)
+    null = w <= 1e-9 * max(w.max(), 0.0)
+    if null.any():
+        involved = np.where((v[:, null] ** 2).sum(axis=1) > 1e-2)[0]
+        names = np.asarray(data.motif_names, dtype=object)[involved]
+        return (f'Cause: the loadings of {len(involved)} motif(s) are linearly dependent across the '
+                f'promoters (duplicated, collinear or constant columns of the loading matrix): '
+                f'{_first_names(names)}. Their individual variances and means are not identifiable, only '
+                'combinations of them are. Remove the redundant motifs (e.g. "create --motif-filename") '
+                'or merge them ("fit --clustering").')
+    return ('Neither a shortage of samples nor linearly dependent motif loadings explain it, so this '
+            'is likely a numerical or convergence problem of the fit.')
+
 
 def export_results(project_name: str, output_folder: str,
                    std_mode: Standardization, 
@@ -300,17 +466,25 @@ def export_results(project_name: str, output_folder: str,
                    export_B: bool = False,
                    export_counts: bool = False,
                    counts_grouped: bool = True,
-                   n_jobs=6):
+                   n_jobs=6,
+                   zero_margin: float = None):
     
     def calc_z_test(x):
         if anova_mode == ANOVAType.negative:
-            import mpmath
-            mpmath.mp.dps = 500
-            pval = np.array([float(2 * mpmath.ncdf(t) - 1) for t in x])
+            # Lower tail P(T <= t) of the Wald statistic t = tau / std under tau = 0,
+            # where T = |N(0, 1)|. A small value says that the estimate is unusually close
+            # to zero relative to its standard error. It is NOT a p-value of a test showing
+            # that the variance is zero: no such test exists without an equivalence margin.
+            pval = erf(x / np.sqrt(2))
         else:
-            pval = 2 * norm.sf(np.abs(x))
+            # One-sided: tau = 0 lies on the boundary of the parameter space, so only
+            # large positive tau / std speak against it.
+            pval = norm.sf(x)
         return pval
 
+    if zero_margin is not None and not zero_margin > 0:
+        raise InputError(f'The equivalence margin of the zero-mean test must be positive, but {zero_margin:g} '
+                         'was given.')
     data = read_init(project_name)
     fmt = data.fmt
     motif_names = data.motif_names
@@ -321,43 +495,88 @@ def export_results(project_name: str, output_folder: str,
         os.makedirs(output_folder, exist_ok=True)
         B.to_csv(os.path.join(output_folder, 'B.tsv'), sep='\t')
     # del data
-    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
-        fit: FitResult = dill.load(f)
-    if fit.promoter_inds_to_drop:
-        prom_names_test = np.array(prom_names)[fit.promoter_inds_to_drop]
-        prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
-    # Per-promoter estimates in `fit` span the full promoter set; restrict them to the
+    data, fit = load_fit(project_name, data)
+    motif_names = data.motif_names
+    act: ActivitiesPrediction = load_predict(project_name, data, fit)
+    filtered = filtered_motifs(act)
+    if not len(act.U):
+        raise InputError(f'All {len(motif_names)} motifs of the project "{project_name}" were filtered out by '
+                         '"predict", so there is nothing to export. Re-run "maradoner predict" with a larger '
+                         '"--filter-order" or with "--no-filter-motifs".')
+    test_inds = held_out_inds(fit)
+    prom_names_test = None
+    if test_inds:
+        prom_names_test = np.array(prom_names)[test_inds]
+        prom_names = np.delete(prom_names, test_inds)
+    # Per-promoter estimates in `fit` may span the full promoter set; restrict them to the
     # training promoters so they line up with the (trimmed) `prom_names` written below.
-    fit = align_fit_to_promoters(fit, fit.promoter_inds_to_drop, len(data.promoter_names))
+    fit = align_fit_to_promoters(fit, test_inds, len(data.promoter_names))
     group_names = fit.group_names
-    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
-        act: ActivitiesPrediction = dill.load(f)
-    if act.filtered_motifs is not None:
-        motif_names_filtered = np.delete(motif_names, act.filtered_motifs)
-    else:
-        motif_names_filtered = motif_names
-    
+    motif_names_filtered = np.delete(motif_names, filtered)
+
+    # Everything the requested tables depend on is checked before anything is written.
+    mu_p_test = load_stage(project_name, 'promoter_mean', fmt, required=False)
+    if mu_p_test is not None:
+        mu_p_test = np.asarray(mu_p_test, dtype=float)
+        if mu_p_test.ndim == 0 and test_inds:
+            # Older versions stored a single zero for "--mean-mode null".
+            mu_p_test = np.full(len(test_inds), float(mu_p_test))
+        mu_p_test = mu_p_test.reshape(-1)
+        if len(mu_p_test) != len(test_inds) or not test_inds:
+            warn(f'Ignoring "{project_name}.promoter_mean.{fmt}": it holds means of {len(mu_p_test)} '
+                 f'promoter(s), whereas the current fit has {len(test_inds)} test promoter(s). It was '
+                 f'left by an earlier fit; re-run "maradoner estimate-promoter-mean {project_name}" '
+                 'if the fit has a testing set.')
+            mu_p_test = None
+    if export_counts and test_inds and mu_p_test is None:
+        raise InputError('Expression predictions for the test promoters need their promoter-wise means: '
+                         f'run "maradoner estimate-promoter-mean {project_name}" first (see its '
+                         '"--mean-mode" option).')
+    fov = load_stage(project_name, 'fov', fmt, required=False)
+    if fov is not None:
+        n_stat = len(group_names) if fov.grouped else len(data.sample_names)
+        if len(fov.train[0].promoter) != len(prom_names) or len(fov.train[0].sample) != n_stat or \
+           (fov.test is not None and len(fov.test[0].promoter) != len(test_inds)):
+            warn(f'Ignoring "{project_name}.fov.{fmt}": it does not match the current fit (it was '
+                 f'left by an earlier one). Re-run "maradoner gof {project_name}" to export the '
+                 'goodness-of-fit statistics.')
+            fov = None
+
     os.makedirs(output_folder, exist_ok=True)
+
+    Information._warned_singular = set()
+    def singular_cause():
+        return _explain_singular_information(split_data(data, test_inds)[0], fit)
+    Information._singular_cause = singular_cause
 
     error_variance = fit.error_variance.variance
     # For backwards comptatability # TODO: rename promotor to promoter
-    try:
-        promoter_variance = fit.error_variance.promotor
-    except:
-        promoter_variance = None
-    error_variance_fim = Information(fit.error_variance.fim)
+    promoter_variance = getattr(fit.error_variance, 'promotor', None)
+    error_variance_fim = Information(fit.error_variance.fim, names=[f'sigma of {g}' for g in group_names],
+                                     label='error variances')
     error_variance_stat, error_variance_std = error_variance_fim.standardize(error_variance, 
                                                                              mode=Standardization.std)
     
     motif_variance = fit.motif_variance.motif
+    excluded_motif_group = fit.motif_variance.fixed_group
+    if excluded_motif_group is not None:
+        excluded_motif_group = int(excluded_motif_group)
+    variance_names = [f'tau of {n}' for n in motif_names] + \
+                     [f'nu of {g}' for i, g in enumerate(group_names) if i != excluded_motif_group]
     motif_variance_fim = Information(fit.motif_variance.fim, slice(None, len(motif_names_filtered)), 
-                                     filter_items=act.filtered_motifs)
+                                     filter_items=filtered, names=variance_names,
+                                     label='variances of motif activities')
     motif_variance_stat, motif_variance_std = motif_variance_fim.standardize(motif_variance, 
                                                                              mode=Standardization.std)
+    # With "fit --no-motif-variance" all motif variances are fixed to one: there is nothing
+    # to estimate or to test per motif.
+    motif_variance_estimated = excluded_motif_group is not None
+    if not motif_variance_estimated:
+        motif_variance_std = np.full(len(motif_variance_std), np.nan)
     
     motif_group_variance = fit.motif_variance.group
-    excluded_motif_group = fit.motif_variance.fixed_group
-    motif_group_variance_fim = Information(fit.motif_variance.fim, slice(len(motif_names), None))
+    motif_group_variance_fim = Information(fit.motif_variance.fim, slice(len(motif_names), None),
+                                           names=variance_names, label='variances of motif activities')
     motif_group_variance_std = motif_group_variance_fim.covariance().diagonal() ** 0.5
     
     
@@ -370,15 +589,8 @@ def export_results(project_name: str, output_folder: str,
     covariate_names = getattr(data, 'covariate_names', None) or \
         ['intercept'] + [f'cov_{i}' for i in range(1, M_matrix.shape[1])]
     motif_mean = M_matrix[:, 0]
-    motif_mean_fim = Information(fit.motif_mean.fim[:n_motifs, :n_motifs])
-    # Joint standard errors from the FULL Fisher matrix. Inverting each covariate's
-    # m x m diagonal block in isolation (as a per-block inverse) ignores correlations
-    # *between* covariates and severely underestimates the standard errors when
-    # covariates are collinear (e.g. sex vs sex-specific male_age/female_age). The
-    # correct SE is the diagonal of the inverse of the full mc x mc matrix. vec(M) is
-    # stored column-major, so coefficient (motif i, covariate a) is index a*m + i.
-    cov_full = np.linalg.pinv(np.asarray(fit.motif_mean.fim, dtype=np.float64), hermitian=True)
-    joint_std = np.sqrt(np.clip(np.diag(cov_full), 0.0, None)).reshape(M_matrix.shape[1], n_motifs).T
+    # Joint standard errors of M and the covariance of its intercept column.
+    joint_std, motif_mean_cov = motif_mean_covariance(fit.motif_mean, motif_names, covariate_names)
     motif_mean_std = joint_std[:, 0]
 
     promoter_mean = fit.promoter_mean.mean.flatten()
@@ -387,9 +599,8 @@ def export_results(project_name: str, output_folder: str,
     
     folder = os.path.join(output_folder, 'params')
     os.makedirs(folder, exist_ok=True)
-    if os.path.isfile(f'{project_name}.promvar.{fmt}'):
-        with openers[fmt](f'{project_name}.promvar.{fmt}', 'rb') as f:
-            promvar: np.ndarray = dill.load(f)
+    promvar = load_stage(project_name, 'promvar', fmt, required=False)
+    if promvar is not None and np.shape(promvar) == (len(prom_names), len(group_names)):
         DF(promvar, index=prom_names, columns=group_names).to_csv(os.path.join(folder, 'promoter_variances.tsv'), sep='\t')
     if excluded_motif_group is not None:
         motif_group_variance_std = np.insert(motif_group_variance_std, excluded_motif_group, np.nan)
@@ -398,12 +609,12 @@ def export_results(project_name: str, output_folder: str,
                 columns=['sigma', 'sigma_std', 'nu', 'nu_std']).to_csv(os.path.join(folder, 'group_variances.tsv'),
                                                              sep='\t')
     s = 'motif\ttau\tstd\n' + '\n'.join(f'{a}\t{b}\t{c}' for a, b, c in zip(motif_names_filtered,
-                                                                            np.delete(motif_variance, act.filtered_motifs),
+                                                                            np.delete(motif_variance, filtered),
                                                                             motif_variance_std))
     with open(os.path.join(folder, 'motif_variances.tsv'), 'w') as f:
         f.write(s)
-    s = 'motif\ttau\n' + '\n'.join(f'{a}\t{b}' for a, b in zip(np.array(motif_names)[act.filtered_motifs],
-                                                               motif_variance[act.filtered_motifs]
+    s = 'motif\ttau\n' + '\n'.join(f'{a}\t{b}' for a, b in zip(np.array(motif_names)[filtered],
+                                                               motif_variance[filtered]
                                                               ))
     with open(os.path.join(folder, 'filtered_motif_variances.tsv'), 'w') as f:
         f.write(s)
@@ -416,8 +627,11 @@ def export_results(project_name: str, output_folder: str,
         DF(promoter_mean, index=prom_names, columns=['mean']).to_csv(os.path.join(folder, 'promoter_means.tsv'),
                                                                      sep='\t')
     else:
-        DF(np.array([promoter_mean, promoter_variance ** 0.5]).T, index=prom_names,
-               columns=['mean', 'std']).to_csv(os.path.join(folder, 'promoter.tsv'),
+        # "fit --promoter-variance" does not estimate promoter variances: it reweights the
+        # promoters heuristically. `weight` is the weight of the squared residuals of a
+        # promoter in the fit (its rows of Y and B are multiplied by sqrt(weight)).
+        DF(np.array([promoter_mean, 1 / promoter_variance]).T, index=prom_names,
+               columns=['mean', 'weight']).to_csv(os.path.join(folder, 'promoter.tsv'),
                                                sep='\t')
     DF(np.array([motif_mean, motif_mean_std]).T,
        index=motif_names, columns=['mean', 'std']).to_csv(os.path.join(folder, 'motif_means.tsv'),
@@ -434,28 +648,31 @@ def export_results(project_name: str, output_folder: str,
     for fname in os.listdir(cov_folder):
         if fname.endswith('.tsv'):
             os.remove(os.path.join(cov_folder, fname))
+    cov_file_names = safe_filenames([covariate_names[a] if a < len(covariate_names) else f'cov_{a}'
+                                     for a in range(M_matrix.shape[1])], what='covariate')
     for a in range(M_matrix.shape[1]):
         eff = M_matrix[:, a]
         eff_std = joint_std[:, a]            # joint SE (accounts for covariate collinearity)
         z = eff / eff_std
         pvalue = 2 * norm.sf(np.abs(z))
         fdr = multitest.multipletests(pvalue, method='fdr_bh')[1]
-        cname = covariate_names[a] if a < len(covariate_names) else f'cov_{a}'
+        cname = cov_file_names[a]
         DF({'effect': eff, 'std': eff_std, 'z': z, 'pvalue': pvalue, 'fdr': fdr},
            index=motif_names).to_csv(os.path.join(cov_folder, f'{cname}.tsv'), sep='\t')
     
                                                           
-    mu_p_test = None
-    if os.path.isfile(f'{project_name}.promoter_mean.{fmt}'):
-        with open(f'{project_name}.promoter_mean.{fmt}', 'rb') as f:
-            mu_p_test = dill.load(f)
+    if mu_p_test is not None:
         DF(mu_p_test, index=prom_names_test, columns=['mean']).to_csv(os.path.join(folder, 'test_promoter_means.tsv'),
                                                                       sep='\t')                                                      
+    DF(np.asarray(fit.sample_mean.mean).reshape(-1), index=data.sample_names,
+       columns=['mean']).to_csv(os.path.join(folder, 'sample_means.tsv'), sep='\t')
     folder = os.path.join(folder, 'correlations')
     os.makedirs(folder, exist_ok=True)
+    # (kept for backward compatibility; the labelled table is params/sample_means.tsv)
     DF(fit.sample_mean.mean).to_csv(os.path.join(folder, 'sample_means.tsv'),
                                                                       sep='\t')
-    DF(motif_mean_fim.correlation(), index=motif_names, columns=motif_names).to_csv(os.path.join(folder, 'motif_means.tsv'),
+    d = motif_mean_cov.diagonal() ** (-0.5)
+    DF(d.reshape(-1, 1) * motif_mean_cov * d, index=motif_names, columns=motif_names).to_csv(os.path.join(folder, 'motif_means.tsv'),
                                                                       sep='\t')
     DF(motif_variance_fim.correlation(), index=motif_names_filtered, columns=motif_names_filtered).to_csv(os.path.join(folder, 'motif_variances.tsv'),
                                                                       sep='\t')
@@ -474,6 +691,9 @@ def export_results(project_name: str, output_folder: str,
     folder = os.path.join(output_folder, 'tests', 'prediction_based')
     os.makedirs(folder, exist_ok=True)
 
+    if len(group_names) < 2:
+        warn('The project has a single sample group: the posterior ANOVA compares groups, so its '
+             'p-values in tests/prediction_based/anova.tsv are empty.')
     stat, pvalue, fdr, bad_inds = posterior_anova(act, fit, B=data.B)
     motif_names_filtered = np.array(motif_names_filtered)[~bad_inds]
     anova = DF([stat, pvalue, fdr], columns=motif_names_filtered, index=['stat', 'p-value', 'FDR']).T
@@ -482,21 +702,64 @@ def export_results(project_name: str, output_folder: str,
     folder = os.path.join(output_folder, 'tests', 'asymptotics_based')
     os.makedirs(folder, exist_ok=True)
     
-    anova_ass = motif_variance_stat
-    pval = calc_z_test(anova_ass)
-
-    fdrs = multitest.multipletests(pval, alpha=0.05, method='fdr_bh')[1]
-    # lrt = 2 * fit.motif_variance.logratios
-    # lrt_pvalues = chi2.sf(lrt, 1)
-    # lrt_fdr = multitest.multipletests(lrt_pvalues, alpha=0.05, method='fdr_bh')[1]
-    anova_ass = DF(np.array([anova_ass, pval, fdrs]).T, index=motif_names_filtered,
-                   columns=['stat', 'p-value', 'FDR'])
-    anova_ass.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
+    if not motif_variance_estimated:
+        warn('The model was fitted with "--no-motif-variance": all motifs share one variance, so there '
+             'are no motif-specific variances to test or to give standard errors for. '
+             'tests/asymptotics_based/anova.tsv is not written and the "std" column of '
+             'params/motif_variances.tsv is empty.')
+        if os.path.isfile(os.path.join(folder, 'anova.tsv')):
+            os.remove(os.path.join(folder, 'anova.tsv'))
+    else:
+        wald = motif_variance_stat
+        wald_pval = calc_z_test(wald)
+        wald_fdrs = multitest.multipletests(wald_pval, alpha=0.05, method='fdr_bh')[1]
+        anova_ass, pval, fdrs = wald, wald_pval, wald_fdrs
+        # lrt = 2 * fit.motif_variance.logratios
+        # lrt_pvalues = chi2.sf(lrt, 1)
+        # lrt_fdr = multitest.multipletests(lrt_pvalues, alpha=0.05, method='fdr_bh')[1]
+        lrt = getattr(fit.motif_variance, 'lrt', None)
+        if anova_mode == ANOVAType.negative:
+            warn('"--anova-mode negative": the p-value column of tests/asymptotics_based/anova.tsv is '
+                 'the probability of a Wald statistic as small as the observed one if the variance '
+                 'were zero. Small values flag variances that are small compared to their standard '
+                 'errors; they are not evidence that a variance is zero.')
+        elif lrt is not None:
+            # Likelihood-ratio test of H0: tau_i = 0. The null value lies on the boundary
+            # of the parameter space, hence the reference distribution of the statistic is
+            # the mixture 0.5 chi2_0 + 0.5 chi2_1 (chi2_0 is a point mass at zero).
+            lrt = np.clip(np.asarray(lrt, dtype=float), 0.0, None)
+            pval = np.where(lrt > 0, 0.5 * chi2.sf(lrt, 1), 1.0)
+            # The FDR is controlled over all motifs of the model: those left out of the
+            # table by "predict" (negligible variance) are hypotheses that were tested too.
+            fdrs = multitest.multipletests(pval, alpha=0.05, method='fdr_bh')[1]
+            anova_ass, pval, fdrs = (np.delete(t, filtered) for t in (lrt, pval, fdrs))
+        else:
+            dof = variance_dof(data.X, data.group_inds)['dof']
+            warn('This fit holds no likelihood-ratio statistics of the motif variances (it was made by '
+                 'an older MARADONER version, or with "--promoter-variance", whose heuristic promoter '
+                 'weights do not define a likelihood), so tests/asymptotics_based/anova.tsv falls back to '
+                 'the one-sided Wald test. That test has little power: with the '
+                 f'{dof} residual degrees of freedom of the samples its statistic cannot exceed about '
+                 f'{np.sqrt(max(dof, 0) / 2):.2f}, i.e. its p-values cannot fall below '
+                 f'{norm.sf(np.sqrt(max(dof, 0) / 2)):.2g}. Re-run "maradoner fit" (without '
+                 '"--promoter-variance") to obtain the likelihood-ratio test.')
+        anova_ass = DF(np.array([anova_ass, pval, fdrs, wald, wald_pval, wald_fdrs]).T, index=motif_names_filtered,
+                       columns=['stat', 'p-value', 'FDR', 'wald_stat', 'wald_p-value', 'wald_fdr'])
+        anova_ass.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
     
     sign = motif_mean.flatten() / motif_mean_std
     neg = norm.cdf(sign)
     pos = norm.sf(sign)
-    zero = chi2.cdf(sign ** 2, df=1)
+    if zero_margin is None:
+        # `zero` is 1 - (two-sided p-value) = P(|Z| <= |stat|) for a standard normal Z: a
+        # small value says that the mean is unusually close to zero relative to its
+        # standard error. It is NOT a p-value of a test showing that the mean is zero (it
+        # is uniformly distributed when the mean is exactly zero, whatever the precision).
+        zero = erf(np.abs(sign) / np.sqrt(2))
+    else:
+        # Equivalence (TOST) test of H0: |mean| >= margin against H1: |mean| < margin: a
+        # small p-value is evidence that the mean lies within the margin around zero.
+        zero = ndtr((np.abs(motif_mean.flatten()) - zero_margin) / motif_mean_std)
 
     neg_fdr = multitest.multipletests(neg, alpha=0.05, method='fdr_bh')[1]
     pos_fdr = multitest.multipletests(pos, alpha=0.05, method='fdr_bh')[1]
@@ -512,16 +775,23 @@ def export_results(project_name: str, output_folder: str,
     os.makedirs(folder, exist_ok=True)
     U = list()
     stds = list()
-    for u, cov in zip(act.U.T, act.cov()):
-        std = subs_zeros(cov.diagonal() ** 0.5)
+    for u, var in zip(act.U.T, act.var()):
+        std = subs_zeros(var ** 0.5)
         u = u / std
         U.append(u)
         stds.append(std)
     U = np.array(U).T
     DF(U, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity.tsv'), sep='\t')
+    # activity.tsv holds the standardized activities (z-scores); these two are the group
+    # activities themselves and their posterior standard deviations.
+    DF(act.U, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_group.tsv'), sep='\t')
+    DF(np.array(stds).T, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_group_std.tsv'), sep='\t')
     U = U ** 2
     if weighted_zscore:
-        U_total = U.sum(axis=1, keepdims=True) / (1 / np.array(stds).T ** 2).sum(axis=1, keepdims=True)
+        # Squared z-score of the inverse-variance weighted mean of the group activities:
+        # (sum_g u_g / s_g^2) / sqrt(sum_g 1 / s_g^2).
+        iv = 1 / np.array(stds).T ** 2
+        U_total = (np.asarray(act.U) * iv).sum(axis=1, keepdims=True) ** 2 / iv.sum(axis=1, keepdims=True)
     else:
         U_total = U.mean(axis=1, keepdims=True)
     
@@ -532,37 +802,23 @@ def export_results(project_name: str, output_folder: str,
     
     
             
-    if os.path.isfile(f'{project_name}.fov.{fmt}'):
-        with open(f'{project_name}.fov.{fmt}', 'rb') as f:
-            fov = dill.load(f)
-            train = fov.train
-            test = fov.test
+    if fov is not None:
+        train = fov.train
+        test = fov.test
         folder = os.path.join(output_folder, 'fov')
         if fov.grouped:
             sample_names = data.group_names
         else:
-            sample_names = [None] * len(train[0].sample)
-            for i, inds in enumerate(data.group_inds):
-                name = data.group_names[i]
-                for k, j in enumerate(inds):
-                    sample_names[j] = f'{name}_{k+1}'
-        if fit.promoter_inds_to_drop:
-            promoter_names_train = np.delete(data.promoter_names, fit.promoter_inds_to_drop)
-        else:
-            promoter_names_train = data.promoter_names
-        export_fov(train, os.path.join(folder, 'train'), promoter_names=promoter_names_train,
+            sample_names = data.sample_names
+        export_fov(train, os.path.join(folder, 'train'), promoter_names=prom_names,
                    sample_names=sample_names)
         if test is not None:
-            promoter_names_test = np.array(data.promoter_names)[fit.promoter_inds_to_drop]
-            export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
+            export_fov(test, os.path.join(folder, 'test'), promoter_names=prom_names_test,
                        sample_names=sample_names)
     
     
     
     if export_counts:
-        inds = fit.promoter_inds_to_drop
-        if (inds is not None and len(inds)) and mu_p_test is None:
-            raise Exception('Run "maradoenr gof" with an appropriate "--mean-mode" option to impute promoter-wise means for the testing set.')
         folder = os.path.join(output_folder, 'log_counts')
         export_log_counts(folder, data, fit, act, counts_grouped, mu_p_test=mu_p_test)
         
@@ -573,20 +829,23 @@ def export_posterior_anova(project_name: str, filename: str,
 
     data = read_init(project_name)
     fmt = data.fmt
+    data, fit = load_fit(project_name, data)
     motif_names = data.motif_names
     prom_names = data.promoter_names
-    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
-        fit: FitResult = dill.load(f)
-    if fit.promoter_inds_to_drop:
-        prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
-    group_names = fit.group_names
-    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
-        act: ActivitiesPrediction = dill.load(f)
-    if act.filtered_motifs is not None:
-        motif_names_filtered = np.delete(motif_names, act.filtered_motifs)
-    else:
-        motif_names_filtered = motif_names
+    if held_out_inds(fit):
+        prom_names = np.delete(prom_names, held_out_inds(fit))
+    group_names = list(fit.group_names)
+    act: ActivitiesPrediction = load_predict(project_name, data, fit)
+    motif_names_filtered = np.delete(motif_names, filtered_motifs(act))
     
+    groups = list(dict.fromkeys(str(g) for g in groups))
+    available = f'Sample groups of the project "{project_name}": {_first_names(group_names, 20)}.'
+    unknown = [g for g in groups if g not in group_names]
+    if unknown:
+        raise InputError(f'Unknown sample group(s): {_first_names(unknown)}. {available}')
+    if len(groups) < 2:
+        raise InputError(f'ANOVA compares at least two different sample groups, but {len(groups)} '
+                         f'was given. {available}')
     output_folder = os.path.split(filename)[0]
     if output_folder:
         os.makedirs(output_folder, exist_ok=True)
@@ -661,33 +920,161 @@ def parse_linear_expression(expr_str):
     return dict(sorted(coeffs.items(), key=lambda x: x[0]))
 
 
+def parse_contrast(expression: str, group_names: list) -> dict:
+    """
+    Parses a contrast: a linear combination of sample groups with numeric coefficients,
+    written with +, -, *, / and parentheses. Returns a dictionary {group name: coefficient}.
+
+    The expression is split into tokens against the actual group names (the longest name
+    that fits is taken), so names with spaces, dashes or a leading digit can be written as
+    they are; any name can also be quoted with backticks or quotes. Nothing is handed to
+    Python or SymPy for evaluation.
+
+    Example:
+    >>> parse_contrast("(a + b) / 2 - `T-cell`", ['a', 'b', 'T-cell'])
+    {'a': 0.5, 'b': 0.5, 'T-cell': -1.0}
+    """
+    expression = str(expression)
+    group_names = [str(n) for n in group_names]
+    def fail(reason: str):
+        raise InputError(f'Cannot interpret the contrast "{expression}": {reason} A contrast is a '
+                         'linear combination of sample groups, e.g. "treated - control" or '
+                         '"(a + b) / 2 - c"; names with spaces, operators or a leading digit can be '
+                         f'quoted with backticks. Sample groups of this project: {_first_names(group_names, 20)}.')
+    def is_word(c: str):
+        return c.isalnum() or c == '_'
+    names = sorted(group_names, key=len, reverse=True)
+    number = re.compile(r'(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
+    word = re.compile(r'\w+')
+    tokens = list()
+    i, n = 0, len(expression)
+    while i < n:
+        c = expression[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c in '`\'"':
+            j = expression.find(c, i + 1)
+            if j < 0:
+                fail(f'the quote {c} at position {i + 1} is never closed.')
+            tokens.append(('name', expression[i + 1:j]))
+            i = j + 1
+            continue
+        num = number.match(expression, i)
+        name = None
+        if not (i and is_word(expression[i - 1]) and is_word(c)):
+            for candidate in names:
+                j = i + len(candidate)
+                if expression.startswith(candidate, i) and not (j < n and is_word(candidate[-1])
+                                                                 and is_word(expression[j])):
+                    name = candidate
+                    break
+        # A group whose name reads as a number has to be quoted.
+        if name is not None and not (num and num.end() >= i + len(name)):
+            tokens.append(('name', name))
+            i += len(name)
+        elif num:
+            tokens.append(('number', float(num.group())))
+            i = num.end()
+        elif c in '+-*/()':
+            tokens.append((c, c))
+            i += 1
+        elif word.match(expression, i):
+            j = word.match(expression, i).end()
+            tokens.append(('name', expression[i:j]))
+            i = j
+        else:
+            fail(f'unexpected character "{c}" at position {i + 1}.')
+    unknown = list(dict.fromkeys(t for kind, t in tokens if kind == 'name' and t not in group_names))
+    if unknown:
+        fail(f'unknown sample group(s) {_first_names(unknown)}.')
+
+    # A value is a pair (coefficients of the groups, constant term).
+    def scale(value, k):
+        return {g: v * k for g, v in value[0].items()}, value[1] * k
+    def add(a, b, sign):
+        coeffs = dict(a[0])
+        for g, v in b[0].items():
+            coeffs[g] = coeffs.get(g, 0.0) + sign * v
+        return coeffs, a[1] + sign * b[1]
+    pos = 0
+    def peek():
+        return tokens[pos][0] if pos < len(tokens) else None
+    def factor():
+        nonlocal pos
+        if pos >= len(tokens):
+            fail('it ends where a group name or a number is expected.')
+        kind, token = tokens[pos]
+        pos += 1
+        if kind in ('+', '-'):
+            return scale(factor(), -1.0 if kind == '-' else 1.0)
+        if kind == 'number':
+            return dict(), token
+        if kind == 'name':
+            return {token: 1.0}, 0.0
+        if kind == '(':
+            value = expression_()
+            if peek() != ')':
+                fail('a closing parenthesis is missing.')
+            pos += 1
+            return value
+        fail(f'"{token}" stands where a group name or a number is expected.')
+    def term():
+        nonlocal pos
+        value = factor()
+        while peek() in ('*', '/'):
+            op = tokens[pos][0]
+            pos += 1
+            other = factor()
+            if op == '*':
+                if value[0] and other[0]:
+                    fail('it is not linear, as two sample groups are multiplied.')
+                value = scale(other, value[1]) if other[0] else scale(value, other[1])
+            else:
+                if other[0]:
+                    fail('it is not linear, as it divides by a sample group.')
+                if other[1] == 0:
+                    fail('it divides by zero.')
+                value = scale(value, 1.0 / other[1])
+        return value
+    def expression_():
+        nonlocal pos
+        value = term()
+        while peek() in ('+', '-'):
+            op = tokens[pos][0]
+            pos += 1
+            value = add(value, term(), -1.0 if op == '-' else 1.0)
+        return value
+    coeffs, const = expression_()
+    if pos < len(tokens):
+        fail(f'"{tokens[pos][1]}" stands where an operator (+, -, *, /) is expected.')
+    if abs(const) > 1e-12:
+        fail(f'it contains the constant term {const:g}, which has no meaning in a comparison of groups.')
+    coeffs = {g: coeffs[g] for g in group_names if abs(coeffs.get(g, 0.0)) > 1e-12}
+    if not coeffs:
+        fail('all its coefficients are zero, so it compares nothing.')
+    return coeffs
+
+
 def export_contrast(project_name: str,  output_folder: str,
                     contrasts: str, filename_postfix: str = None):
     if filename_postfix is None:
         postfix = str()
     else:
-        postfix = '_' + filename_postfix
+        postfix = '_' + safe_filenames([filename_postfix], what='postfix')[0]
     data = read_init(project_name)
     fmt = data.fmt
+    data, fit = load_fit(project_name, data)
     motif_names = data.motif_names
     prom_names = data.promoter_names
+    act: ActivitiesPrediction = load_predict(project_name, data, fit)
     del data
-    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
-        fit: FitResult = dill.load(f)
-    if fit.promoter_inds_to_drop:
-        prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
-    group_names = fit.group_names
-    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
-        act: ActivitiesPrediction = dill.load(f)
-    if act.filtered_motifs is not None:
-        motif_names_filtered = np.delete(motif_names, act.filtered_motifs)
-    else:
-        motif_names_filtered = motif_names
-    contrasts = parse_linear_expression(contrasts)
-    variances = list()
-    for k, cov in enumerate(act.cov()):
-        variances.append(cov.diagonal())
-    variances = np.array(variances) 
+    if held_out_inds(fit):
+        prom_names = np.delete(prom_names, held_out_inds(fit))
+    group_names = list(fit.group_names)
+    motif_names_filtered = np.delete(motif_names, filtered_motifs(act))
+    contrasts = parse_contrast(contrasts, group_names)
+    variances = act.var()
     coeffs = np.zeros_like(variances)
     inds = np.zeros(len(variances), dtype=bool)
     for c, v in contrasts.items():
@@ -704,7 +1091,7 @@ def export_contrast(project_name: str,  output_folder: str,
     pval = 2 * norm.sf(np.abs(z_stat))
     fdr = multitest.multipletests(pval, alpha=0.05, method='fdr_by')[1]
     data = np.array([z_stat, pval, fdr]).T
-    filename = os.path.join(output_folder, f'constrast{postfix}.tsv')
+    filename = os.path.join(output_folder, f'contrast{postfix}.tsv')
     os.makedirs(output_folder, exist_ok=True)
     DF(data, columns=['z_stat', 'pval', 'fdr'],
        index=motif_names_filtered).to_csv(filename, sep='\t')
@@ -717,31 +1104,32 @@ def export_loadings_product(project_name: str, output_folder: str,
 
     data = read_init(project_name)
     fmt = data.fmt
+    data, fit = load_fit(project_name, data)
     motif_names = data.motif_names
+    act: ActivitiesPrediction = load_predict(project_name, data, fit)
+    # The activities refer to the training promoters and to the loadings as the model
+    # saw them.
+    data, _ = split_data(data, held_out_inds(fit))
     prom_names = data.promoter_names
     # del data
-    with openers[fmt](f'{project_name}.fit.{fmt}', 'rb') as f:
-        fit: FitResult = dill.load(f)
-    if fit.promoter_inds_to_drop:
-        prom_names = np.delete(prom_names, fit.promoter_inds_to_drop)
-    group_names = fit.group_names
-    with openers[fmt](f'{project_name}.predict.{fmt}', 'rb') as f:
-        act: ActivitiesPrediction = dill.load(f)
+    group_names = safe_filenames(fit.group_names)
     
     output_folder = os.path.join(output_folder, 'loadings-product')
     os.makedirs(output_folder, exist_ok=True)
     
     U = act.U
-    B = data.B
+    B = transform_data(data, helmert=False, loading_context=fit.loading_context,
+                       drist=fit.drist, loading_multipliers=fit.loading_multipliers).B
     # Intercept (average) motif activity mu_m = M[:, 0]; covariate components are
     # group-specific and not folded into this static loadings-product tensor.
     mu = np.asarray(fit.motif_mean.mean)
     mu = mu[:, 0] if mu.ndim > 1 else mu
 
-    if act.filtered_motifs is not None:
-        motif_names = np.delete(motif_names, act.filtered_motifs)
-        B = np.delete(B, act.filtered_motifs, axis=1)
-        mu = np.delete(mu, act.filtered_motifs)
+    filtered = filtered_motifs(act)
+    if len(filtered):
+        motif_names = np.delete(motif_names, filtered)
+        B = np.delete(B, filtered, axis=1)
+        mu = np.delete(mu, filtered)
     BM = B * mu
     for name, U in zip(group_names, U.T):
         effect = B * U

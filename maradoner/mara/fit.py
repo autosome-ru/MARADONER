@@ -8,9 +8,30 @@ from collections import defaultdict
 from scipy.optimize import minimize_scalar
 from enum import Enum
 from ..utils import read_init, ProjectData, logger_print, openers
+from ..utils import InputError, warn, load_stage, dump_stage, stage_filename, apply_clustering
+from ..utils import remove_stage
+
+
+def _remove_outdated_stages(project: str, stages, fmt: str, verbose: bool = True) -> None:
+    for stage in stages:
+        filename = stage_filename(project, stage, fmt)
+        if os.path.isfile(filename):
+            remove_stage(project, stage, fmt)
+            logger_print(f'Removed outdated "{filename}" (it belongs to the previous results of this project).', verbose)
 from ..fit import LowrankDecomposition, lowrank_decomposition, TransformedData, \
     ClusteringMode, cluster_data, FOVResult, TestResult
 import dill
+import os
+
+
+def load_mara_stage(project: str, stage: str, fmt: str, required: bool = True):
+    """Stage files of the classical MARA sub-app are stored as <project>.old.<stage>.<fmt>."""
+    res = load_stage(project, f'old.{stage}', fmt, required=False)
+    if res is None and required:
+        command = 'gof' if stage == 'fov' else stage
+        raise InputError(f'"{stage_filename(project, f"old.{stage}", fmt)}" not found: run '
+                         f'"maradoner mara {command} {project}" first.')
+    return res
 
 
 class GOFStat(str, Enum):
@@ -92,7 +113,8 @@ def loglik_tau(tau: float, Sigma: np.ndarray, Y_hat: np.ndarray,
     for sigma, tau, y in zip(error_variance, taus, Y_hat.T):
         S = tau / sigma * Sigma + 1
         vec += (y ** 2 / S).sum() * (tau / sigma ** 2)
-        logdet += S.sum()
+        # log|V| = const + sum_k log(1 + tau s_k / sigma)
+        logdet += np.log(S).sum()
     return -vec + logdet
         
 def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
@@ -108,7 +130,9 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
     Y_hat = Q.T @ data.B.T @ data.Y
     fun = partial(loglik_tau, Sigma=Sigma, Y_hat=Y_hat, error_variance=error_variance.variance,
                   mode=mode)
-    tau = calc_tau(minimize_scalar(fun, bounds=(0.0, error_variance.variance.max() * 10)).x, error_variance.variance, mode)
+    # (the default absolute tolerance of 1e-5 is coarse for the typical tau of 1e-3 .. 1e-2)
+    tau = calc_tau(minimize_scalar(fun, bounds=(0.0, error_variance.variance.max() * 10), method='bounded',
+                                   options=dict(xatol=1e-10)).x, error_variance.variance, mode)
     return MotifVarianceEstimates(tau)
     
 
@@ -151,14 +175,24 @@ def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
         verbose=True, dump=True) -> ActivitiesPrediction:
     if x64:
         jax.config.update("jax_enable_x64", True)
+    if tau_estimation == TauEstimation.fixed and not (np.isfinite(tau_fix) and tau_fix > 0):
+        raise InputError(f'--tau-fix must be a positive number, but {tau_fix:g} was given.')
     data = read_init(project)
     fmt = data.fmt
     group_names = data.group_names
     if clustering != clustering.none:
+        if not 1 <= num_clusters <= data.B.shape[1]:
+            raise InputError(f'--num-clusters must lie between 1 and the number of motifs '
+                             f'({data.B.shape[1]}), but {num_clusters} was given.')
         logger_print('Clustering data...', verbose)
     data.B, clustering = cluster_data(data.B, mode=clustering, 
                                       num_clusters=num_clusters)
+    # Cluster profiles of all the promoters: the later commands work with them (see
+    # utils.apply_clustering).
+    clustered_B = data.B if clustering is not None else None
     if test_promoters_filename:
+        if not os.path.isfile(test_promoters_filename):
+            raise InputError(f'File with the test promoters "{test_promoters_filename}" not found.')
         with open(test_promoters_filename, 'r') as f:
             test_chromosomes = filter(lambda x: len(x), map(lambda x: x.strip(), f.readlines()))
             test_chromosomes = set(test_chromosomes)
@@ -168,11 +202,18 @@ def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
         import re
         pattern = re.compile(r'chr([0-9XYM]+|\d+)')
 
-        test_chromosomes = set(test_chromosomes)
-        promoter_inds_to_drop = [i for i, p in enumerate(data.promoter_names) 
-                                 if pattern.search(p).group() in test_chromosomes]
+        test_chromosomes = set(c if str(c).startswith('chr') else f'chr{c}' for c in test_chromosomes)
+        found = [pattern.search(p) for p in data.promoter_names]
+        promoter_inds_to_drop = [i for i, c in enumerate(found)
+                                 if c is not None and c.group() in test_chromosomes]
     else:
         promoter_inds_to_drop = None
+    if promoter_inds_to_drop is not None and not 0 < len(promoter_inds_to_drop) < len(data.promoter_names):
+        raise InputError(f'The requested testing set selects {len(promoter_inds_to_drop)} of the '
+                         f'{len(data.promoter_names)} promoters of the project, but both the testing and the '
+                         'training set must be non-empty. Check --test-chromosomes (promoter names must '
+                         'contain the chromosome, e.g. chr3:1000-2000) or the names listed in '
+                         '--test-promoters-filename.')
     # if promoter_inds_to_drop is not None:
     #     data.Y = np.delete(data.Y, promoter_inds_to_drop, axis=0)
     #     data.B = np.delete(data.B, promoter_inds_to_drop, axis=0)
@@ -207,11 +248,11 @@ def fit(project: str, tau_mode: TauMode, tau_estimation: TauEstimation,
         
     
     res = FitResult(error_variance=error_variance, motif_variance=motif_variance,
-                    clustering=clustering, B_decomposition=B_decomposition,
+                    clustering=clustering, clustered_B=clustered_B, B_decomposition=B_decomposition,
                     group_names=group_names, promoter_inds_to_drop=promoter_inds_to_drop)    
     if dump:
-        with openers[fmt](f'{project}.old.fit.{fmt}', 'wb') as f:
-            dill.dump(res, f)
+        dump_stage(res, project, 'old.fit', fmt)
+        _remove_outdated_stages(project, ('old.predict', 'old.fov'), fmt, verbose=verbose)
     return res
 
 def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]:
@@ -244,8 +285,8 @@ def predict(project: str,  gpu: bool, x64=True, dump=True):
         jax.config.update("jax_enable_x64", True)
     data = read_init(project)
     fmt = data.fmt
-    with openers[fmt](f'{project}.old.fit.{fmt}', 'rb') as f:
-        fit = dill.load(f)
+    fit = load_mara_stage(project, 'fit', fmt)
+    data = apply_clustering(data, fit)
     data, _ = split_data(data, fit.promoter_inds_to_drop)
     data = transform_data(data)
     if gpu:
@@ -256,8 +297,8 @@ def predict(project: str,  gpu: bool, x64=True, dump=True):
     with jax.default_device(device):
         activities = predict_activities(data, fit)
     if dump:
-        with openers[fmt](f'{project}.old.predict.{fmt}', 'wb') as f:
-            dill.dump(activities, f)
+        dump_stage(activities, project, 'old.predict', fmt)
+        _remove_outdated_stages(project, ('old.fov',), fmt)
     return activities
 
 def _cor(a, b, axis=1):
@@ -270,7 +311,6 @@ def _cor(a, b, axis=1):
 def calculate_fov(project: str, gpu: bool, 
                   stat_type: GOFStat, keep_motifs: str, x64=True,
                   verbose=True, dump=True):
-    keep_motifs = None
     def calc_fov(data: TransformedData, fit: FitResult,
                  activities: ActivitiesPrediction, keep_motifs=None, Bs=None) -> tuple[FOVResult]:
         def sub(Y, effects) -> FOVResult:
@@ -304,9 +344,12 @@ def calculate_fov(project: str, gpu: bool,
             U = activities.U
         else:
             B_ = Bs[0]
-            B = data.B
+            # The activities of the fitted model: they were estimated with the loadings
+            # centred by the column means of the training promoters (see transform_data),
+            # so the loadings at hand are centred the same way.
+            B = data.B - Bs[0].mean(axis=0, keepdims=True)
             Y = data.Y
-            U = np.linalg.pinv(Bs[0]) @ (Bs[1] - Bs[1].mean(axis=0, keepdims=True) - Bs[1].mean(axis=1, keepdims=True) + Bs[1].mean())
+            U = activities.U
             # B = np.hstack((B, np.ones((len(B), 1))))
             # U = np.linalg.pinv(np.hstack((Bs[0], np.ones((len(Bs[0]), 1))))) @ Bs[1]
             # m0 = Y.mean(axis=1, keepdims=True)
@@ -328,11 +371,22 @@ def calculate_fov(project: str, gpu: bool,
         return stat_0,
     data = read_init(project)
     fmt = data.fmt
-    motif_names = data.motif_names
+    fit = load_mara_stage(project, 'fit', fmt)
+    activities = load_mara_stage(project, 'predict', fmt)
+    data = apply_clustering(data, fit)
+    motif_names = list(data.motif_names)
     if keep_motifs:
         import datatable as dt
-        df = dt.fread(keep_motifs).to_pandas().groupby('status')
+        if not os.path.isfile(str(keep_motifs)):
+            raise InputError(f'File "{keep_motifs}" (--keep-motifs) not found.')
+        df = dt.fread(str(keep_motifs)).to_pandas()
+        if df.shape[1] < 2 or 'status' not in df.columns[1:]:
+            raise InputError(f'"{keep_motifs}" (--keep-motifs) must be a table with a header line, motif '
+                             'names in the first column and a column named "status"; its columns are: '
+                             f'{", ".join(map(str, df.columns))}.')
+        df = df.groupby('status')
         keep_motifs = list()
+        missing = list()
         for name, motifs in df:
             inds = list()
             for mot in motifs.iloc[:, 0]:
@@ -340,14 +394,13 @@ def calculate_fov(project: str, gpu: bool,
                     i = motif_names.index(mot)
                     inds.append(i)
                 except ValueError:
-                    print(f'Motif {mot} not found in the project.')
+                    missing.append(str(mot))
             keep_motifs.append((name, np.array(inds, dtype=int)))
+        if missing:
+            warn(f'{len(missing)} motif(s) of the --keep-motifs table are not in the project and are '
+                 f'ignored: {", ".join(missing[:5])}' + (f', ... and {len(missing) - 5} more.' if len(missing) > 5 else '.'))
     else:
         keep_motifs = [(None, None)]
-    with openers[fmt](f'{project}.old.fit.{fmt}', 'rb') as f:
-        fit = dill.load(f)
-    with openers[fmt](f'{project}.old.predict.{fmt}', 'rb') as f:
-        activities = dill.load(f)
     data, data_test = split_data(data, fit.promoter_inds_to_drop)
     if x64:
         jax.config.update("jax_enable_x64", True)
@@ -376,8 +429,7 @@ def calculate_fov(project: str, gpu: bool,
             test_FOV = None
         res = TestResult(train_FOV, test_FOV, grouped=False)
         results.append((status_name, res))
-    with openers[fmt](f'{project}.old.fov.{fmt}', 'wb') as f:
-        dill.dump(results, f)
+    dump_stage(results, project, 'old.fov', fmt)
     return results
         
         
