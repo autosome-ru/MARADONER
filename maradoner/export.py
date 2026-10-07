@@ -7,6 +7,7 @@ from .utils import InputError, warn, load_stage, apply_clustering
 from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
 from .fit import variance_dof
 from .grn import grn, safe_filenames, filtered_motifs, held_out_inds, load_fit, load_predict
+from .export_readme import write_readme, register_file
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from scipy.special import erf, ndtr
 from scipy.linalg import eigh, lapack, cholesky, solve
@@ -709,6 +710,7 @@ def export_results(project_name: str, output_folder: str,
              'params/motif_variances.tsv is empty.')
         if os.path.isfile(os.path.join(folder, 'anova.tsv')):
             os.remove(os.path.join(folder, 'anova.tsv'))
+        anova_kind = None
     else:
         wald = motif_variance_stat
         wald_pval = calc_z_test(wald)
@@ -743,6 +745,7 @@ def export_results(project_name: str, output_folder: str,
                  f'{np.sqrt(max(dof, 0) / 2):.2f}, i.e. its p-values cannot fall below '
                  f'{norm.sf(np.sqrt(max(dof, 0) / 2)):.2g}. Re-run "maradoner fit" (without '
                  '"--promoter-variance") to obtain the likelihood-ratio test.')
+        anova_kind = 'negative' if anova_mode == ANOVAType.negative else ('lrt' if lrt is not None else 'wald')
         anova_ass = DF(np.array([anova_ass, pval, fdrs, wald, wald_pval, wald_fdrs]).T, index=motif_names_filtered,
                        columns=['stat', 'p-value', 'FDR', 'wald_stat', 'wald_p-value', 'wald_fdr'])
         anova_ass.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
@@ -783,9 +786,9 @@ def export_results(project_name: str, output_folder: str,
     U = np.array(U).T
     DF(U, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity.tsv'), sep='\t')
     # activity.tsv holds the standardized activities (z-scores); these two are the group
-    # activities themselves and their posterior standard deviations.
-    DF(act.U, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_group.tsv'), sep='\t')
-    DF(np.array(stds).T, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_group_std.tsv'), sep='\t')
+    # activities themselves (not standardized) and their posterior standard deviations.
+    DF(act.U, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_group_raw.tsv'), sep='\t')
+    DF(np.array(stds).T, index=motif_names_filtered, columns=group_names).to_csv(os.path.join(folder, 'activity_group_raw_std.tsv'), sep='\t')
     U = U ** 2
     if weighted_zscore:
         # Squared z-score of the inverse-variance weighted mean of the group activities:
@@ -821,6 +824,13 @@ def export_results(project_name: str, output_folder: str,
     if export_counts:
         folder = os.path.join(output_folder, 'log_counts')
         export_log_counts(folder, data, fit, act, counts_grouped, mu_p_test=mu_p_test)
+
+    from . import __version__
+    write_readme(output_folder, project=os.path.basename(os.fspath(project_name)), version=__version__,
+                 n_motifs=len(motif_names), n_filtered=len(filtered), anova=anova_kind,
+                 zero_margin=zero_margin, weighted_zscore=weighted_zscore,
+                 fov_grouped=bool(fov is not None and fov.grouped), counts_grouped=counts_grouped,
+                 fov_mara=False)
         
             
 def export_posterior_anova(project_name: str, filename: str,
@@ -854,6 +864,7 @@ def export_posterior_anova(project_name: str, filename: str,
     motif_names_filtered = np.array(motif_names_filtered)[~bad_inds]
     anova = DF([stat, pvalue, fdr], columns=motif_names_filtered, index=['stat', 'p-value', 'FDR']).T
     anova.to_csv(filename, sep='\t')
+    register_file(filename, 'anova', [group_names[i] for i in groups])
 
 import ast
 import sympy
@@ -1095,6 +1106,7 @@ def export_contrast(project_name: str,  output_folder: str,
     os.makedirs(output_folder, exist_ok=True)
     DF(data, columns=['z_stat', 'pval', 'fdr'],
        index=motif_names_filtered).to_csv(filename, sep='\t')
+    write_readme(output_folder)
 
          
 def export_loadings_product(project_name: str, output_folder: str,
@@ -1143,6 +1155,7 @@ def export_loadings_product(project_name: str, output_folder: str,
             filename = os.path.join(output_folder, f'{name}.tsv')
             DF(data=effect, index=prom_names, columns=motif_names).to_csv(filename, sep='\t',
                                                                           float_format=f'%.{tsv_truncation}f')  
+    write_readme(os.path.dirname(output_folder), lp_intercepts=intercepts)
         
         
     

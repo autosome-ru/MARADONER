@@ -2,6 +2,7 @@ from .utils import read_init, logger_print, openers
 from .utils import InputError, warn, subs_zeros
 from .grn import load_fit, load_predict, filtered_motifs
 from .export import motif_mean_covariance
+from .export_readme import register_file
 from collections import defaultdict
 import numpy as np
 import dill
@@ -59,6 +60,7 @@ def select_motifs_single(project_name: str, filename: str):
     names = [names[max(vals, key=lambda x: motif_score[x])] for vals in names_base.values()]
     with open(filename, 'w') as f:
         f.write('\n'.join(names))
+    register_file(filename, 'select')
 
 
 

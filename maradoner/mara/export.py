@@ -4,6 +4,7 @@ from pandas import DataFrame as DF
 # add dot
 from ..utils import read_init, openers
 from ..utils import apply_clustering
+from ..export_readme import write_readme
 from .fit import load_mara_stage
 from ..fit import FOVResult, ActivitiesPrediction, FitResult, transform_data
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
@@ -122,5 +123,4 @@ def export_results(project_name: str, output_folder: str,
             promoter_names_test = np.array(data.promoter_names)[fit.promoter_inds_to_drop]
             export_fov(test, os.path.join(folder, 'test'), promoter_names=promoter_names_test,
                        sample_names=sample_names)
-    
-
+    write_readme(output_folder, fov_mara=True)

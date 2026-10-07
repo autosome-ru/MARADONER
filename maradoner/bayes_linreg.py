@@ -46,6 +46,7 @@ remain usable as tests of "the activity is zero" (slightly conservative in simul
 """
 from .meta_optimizer import MetaOptimizer
 from .utils import read_init, logger_print
+from .export_readme import write_readme
 from statsmodels.stats import multitest
 from functools import partial
 import jax.scipy.linalg as jsl
@@ -347,4 +348,5 @@ def bayes_linreg(project_name: str, output_folder: str, alpha: float = 0.05,
     logger_print('Note: "std" in motifs.tsv is the posterior standard deviation given the estimated '
                  'variances; it is too small as an error bar of a non-zero activity. Use z / p_value / '
                  'fdr_bh to tell whether an activity differs from zero.', verbose)
+    write_readme(output_folder)
     return {'motifs': motifs, 'samples': samples}

@@ -61,7 +61,8 @@ The commands depend on each other: `fit` needs `create`, `predict` needs `fit`, 
 
 | Path | Content |
 | --- | --- |
-| `activities/activity_group.tsv`, `activity_group_std.tsv` | Predicted deviations of motif activities per group (motifs x groups) and their posterior standard deviations. |
+| `README.md` | Generated description of every file in the folder and of its columns. `contrast`, `anova`, `grn`, `select-motifs`, `bayes_linreg` and `mara export` add their files to it when they write into the same folder. |
+| `activities/activity_group_raw.tsv`, `activity_group_raw_std.tsv` | Predicted deviations of motif activities per group (motifs x groups) and their posterior standard deviations. |
 | `activities/activity.tsv` | The two tables above divided by each other, i.e. standardized activities. |
 | `activities/z_score.tsv` | Absolute z-scores per group and an `overall` score per motif. |
 | `activities/activity_raw.tsv` | Predicted deviations per sample. |

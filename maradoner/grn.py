@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import jax 
 from .utils import read_init, openers, ProjectData
 from .utils import InputError, warn, load_stage, apply_clustering
+from .export_readme import write_readme
 from .fit import ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
 from scipy.optimize import minimize
 from scipy.special import expit
@@ -553,4 +554,6 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
     if n_capped:
         warn(f'{n_capped} likelihood ratio(s) exceed the range of the single-precision tables in '
              f'"{folder_stat}" and are stored as {np.exp(loglr_max):.3g}; their beliefs are not affected.')
+    write_readme(output, grn_prior=float(prior_h1), grn_means=bool(include_mean), grn_fdr=float(fdr_alpha),
+                 grn_min_variance=float(min_variance))
         
