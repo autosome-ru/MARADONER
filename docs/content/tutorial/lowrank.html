@@ -39,7 +39,7 @@ Here, $V$ has a row per sample and a column per factor. The rank of $V V^T$ is $
 <p>Let's take the dataset of the <a href="./covariates.html#example">previous section</a>, where age has an effect on 400 motifs, and fit it without the table of covariates. The <i>activities/activity_raw.tsv</i> table of the exported folder holds the deviations predicted for single samples. For each pair of samples we compute the correlation of their deviations over the motifs:</p>
 
 <div class="figs n1">
-<figure><a href="../files/lowrank_corr.png"><img src="../files/lowrank_corr.png" alt="2 heatmaps of correlations between samples: with a red and blue pattern when age is ignored, and blank off the diagonal when age is a covariate"></a><figcaption>Correlations between samples, with the samples ordered by age. On the left age is ignored. On the right it is a covariate.</figcaption></figure>
+<figure><a class="lt" href="../files/lowrank_corr.png"><img src="../files/lowrank_corr.png" alt="2 heatmaps of correlations between samples: with a red and blue pattern when age is ignored, and blank off the diagonal when age is a covariate" loading="lazy"></a><a class="dk" href="../files/lowrank_corr_dark.png"><img src="../files/lowrank_corr_dark.png" alt="2 heatmaps of correlations between samples: with a red and blue pattern when age is ignored, and blank off the diagonal when age is a covariate" loading="lazy"></a><figcaption>Correlations between samples, with the samples ordered by age. On the left age is ignored. On the right it is a covariate.</figcaption></figure>
 </div>
 
 <p>On the left, samples of a close age have similar deviations, and the youngest samples are opposite to the oldest. The basic model has no parameter for that: the deviations of different samples are independent in it. On the right the same data are fitted with age as a covariate, and nothing is left off the diagonal.</p>
@@ -83,7 +83,7 @@ factors.to_csv('factors.tsv', sep='\t', index_label='sample')
 <p>Here, <code>V</code> is the matrix of factors with a row per sample, and the last line saves it to a table. The snippet is for projects with the default compression (<i>raw</i>). Now the factor can be compared to the age kept away from the model:</p>
 
 <div class="figs n1 half">
-<figure><a href="../files/lowrank_factor.png"><img src="../files/lowrank_factor.png" alt="The factor of each sample against the age of the sample: the dots lie on a descending line"></a><figcaption>A dot is a sample. The correlation is -0.999.</figcaption></figure>
+<figure><a class="lt" href="../files/lowrank_factor.png"><img src="../files/lowrank_factor.png" alt="The factor of each sample against the age of the sample: the dots lie on a descending line" loading="lazy"></a><a class="dk" href="../files/lowrank_factor_dark.png"><img src="../files/lowrank_factor_dark.png" alt="The factor of each sample against the age of the sample: the dots lie on a descending line" loading="lazy"></a><figcaption>A dot is a sample. The correlation is -0.999.</figcaption></figure>
 </div>
 
 <p>The age is reconstructed. The minus is no error: $V V^T$ is the same for $V$ and $-V$, so the sign of a factor is arbitrary. Neither is a factor measured in years. It orders the samples and gives the distances between them on a scale with no units.</p>

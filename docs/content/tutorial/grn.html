@@ -132,12 +132,26 @@ By default, $π$ is a neutral 0.5.</p>
 <p>In the <a href="./quickstart.html#Example">Quickstart</a> example, the threshold of <i>group_1</i> is 0.85, and 122352 of the 854920 pairs (14%) pass it. The picture below shows all the beliefs of that group:</p>
 
 <div class="figs n1">
-<figure><a href="../files/grn_beliefs.png"><img src="../files/grn_beliefs.png" alt="A histogram of beliefs: pairs with active motifs spread from 0 to 1, pairs with motifs of no activity pile up around 0.5"></a><figcaption>Beliefs of the pairs of <i>group_1</i>. The vertical axis is logarithmic.</figcaption></figure>
+<figure><a class="lt" href="../files/grn_beliefs.png"><img src="../files/grn_beliefs.png" alt="A histogram of beliefs: pairs with active motifs spread from 0 to 1, pairs with motifs of no activity pile up around 0.5" loading="lazy"></a><a class="dk" href="../files/grn_beliefs_dark.png"><img src="../files/grn_beliefs_dark.png" alt="A histogram of beliefs: pairs with active motifs spread from 0 to 1, pairs with motifs of no activity pile up around 0.5" loading="lazy"></a><figcaption>Beliefs of the pairs of <i>group_1</i>. The vertical axis is logarithmic.</figcaption></figure>
 </div>
 
 <p>The dataset has motifs of zero activity, and 49 of them were kept by <code>predict</code>. Their beliefs pile up around the prior: 94% of them lie between 0.45 and 0.55, and the highest one is 0.76. None of their pairs passes the threshold. That's fine.</p>
 
 <p>The synthetic loadings are dense (every motif has a non-zero loading at every promoter), so the network is dense too: a promoter is linked to 62 motifs and an active motif to 167 promoters (medians).</p>
+
+<h2 id="covariates">What about covariates?</h2>
+
+<p>In a project with <a href="./covariates.html">covariates</a>, an activity has one more part: the effect of a covariate times the covariate. By default it is tested in one lump with the mean and the deviation. With <code>--no-means</code> it is not tested at all, as it stays in both models. The <code>--covariate</code> option tests it alone. Let's take the project of the <a href="./covariates.html#example">Covariates</a> section and look for the promoters explained by the effect of age:</p>
+
+<pre class="prettyprint">
+> maradoner grn MyProject results --covariate age
+</pre>
+
+<p>Here, the value of the option is the name of a covariate as <code>create</code> lists it. The second model of the picture above is now different: the motif keeps its mean and its deviations there and loses its effect of age. An effect is the same in all groups, so the samples are no longer split by groups. All of them enter one likelihood, each sample with the error variance of its group. The outcome is one table, <i>results/belief/covariates/age.hdf</i>, with a threshold next to it in <i>age.txt</i>.</p>
+
+<p>The threshold is 0.87, and 66488 of the 840658 pairs (7.9%) pass it. All of them belong to motifs with a true effect of age. The stronger the effect the more promoters are linked to a motif: 31% of the pairs pass for the motifs with a true effect of 0.4 or more in absolute value, and none for those with an effect below 0.1. For the <i>batch_batch_2</i> covariate, 1 pair of the 840658 passes. That's fine: the batches were assigned at random.</p>
+
+<p>The option can be given several times for a table per covariate, and <code>--covariate all</code> stands for all the covariates of a project. The motifs removed by <code>predict</code> are absent from these tables as well, even though such a motif may have an effect of a covariate.</p>
 
 <h2 id="read">Reading the tables</h2>
 
@@ -175,6 +189,11 @@ pairs = pairs[pairs >= threshold]
       <td><code>--no-means</code></td>
       <td>By default, the effect of a motif is its loading times its whole activity, the mean plus the deviation. With this option, only the deviation of the group is tested, and the mean activity stays in both models</td>
       <td><code>--means</code></td>
+    </tr>
+    <tr>
+      <td><code>--covariate &lt;name&gt;</code></td>
+      <td>The effect of a covariate on the activities is tested in place of the activities, over all samples. The table goes to the <i>belief/covariates</i> folder. See <a href="#covariates">above</a></td>
+      <td>Disabled</td>
     </tr>
     <tr>
       <td><code>--stat</code></td>

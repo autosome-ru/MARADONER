@@ -75,6 +75,12 @@ def _grn_belief(ctx):
             f'of the promoter in that group; prior probability {ctx["grn_prior"]:g}. Promoters with an error '
             f'variance below {ctx["grn_min_variance"]:g} are left out.')
 
+def _grn_belief_cov(ctx):
+    return ('One table per covariate (`maradoner grn --covariate`). Posterior probability that the effect of '
+            'the covariate on the activity of the motif contributes to the expression of the promoter, over '
+            f'all samples; prior probability {ctx["grn_prior"]:g}. Promoters with an error variance below '
+            f'{ctx["grn_min_variance"]:g} are left out.')
+
 def _grn_threshold(ctx):
     return (f'One number per group: promoter-motif pairs with belief >= it have a Bayesian FDR of '
             f'{ctx["grn_fdr"]:g}.')
@@ -177,12 +183,24 @@ _FILES = [
     (r'belief/[^/]+\.tsv', 'promoters x motifs', _grn_belief, None),
     (r'belief/[^/]+\.hdf', 'promoters x motifs', lambda ctx: _grn_belief(ctx) + ' HDF, float16, key `belief`.', None),
     (r'belief/[^/]+\.txt', '1 number', _grn_threshold, None),
+    (r'belief/covariates/[^/]+\.tsv', 'promoters x motifs', _grn_belief_cov, None),
+    (r'belief/covariates/[^/]+\.hdf', 'promoters x motifs',
+     lambda ctx: _grn_belief_cov(ctx) + ' HDF, float16, key `belief`.', None),
+    (r'belief/covariates/[^/]+\.txt', '1 number',
+     lambda ctx: _grn_threshold(ctx).replace('per group', 'per covariate'), None),
     (r'lr/[^/]+\.tsv', 'promoters x motifs',
      'One table per group. Likelihood ratio of the full model against the model without the motif '
      'at that promoter, capped at exp(88.72).', None),
     (r'lr/[^/]+\.hdf', 'promoters x motifs',
      'One table per group. Likelihood ratio of the full model against the model without the motif '
      'at that promoter, capped at exp(88.72). HDF, float32, key `lrt`.', None),
+
+    (r'lr/covariates/[^/]+\.tsv', 'promoters x motifs',
+     'One table per covariate. Likelihood ratio of the full model against the model without the effect '
+     'of the covariate on the motif at that promoter, capped at exp(88.72).', None),
+    (r'lr/covariates/[^/]+\.hdf', 'promoters x motifs',
+     'One table per covariate. Likelihood ratio of the full model against the model without the effect '
+     'of the covariate on the motif at that promoter, capped at exp(88.72). HDF, float32, key `lrt`.', None),
 
     (r'motifs\.tsv', 'motifs, repeated per sample if there are several',
      'Single-sample Bayesian regression (`maradoner bayes_linreg`), sorted by |z| within a sample.',
@@ -240,6 +258,9 @@ def _describe(relpath: str):
 
 def _collapse(relpath: str, pattern: str) -> str:
     # Files that come one per group / covariate share an entry.
+    for folder in ('belief', 'lr'):
+        if pattern.startswith(folder + '/covariates/'):
+            return f'{folder}/covariates/<covariate>' + os.path.splitext(relpath)[1]
     for folder in ('loadings-product', 'belief', 'lr'):
         if pattern.startswith(folder + '/'):
             return f'{folder}/<group>' + os.path.splitext(relpath)[1]

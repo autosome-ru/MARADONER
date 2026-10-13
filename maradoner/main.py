@@ -576,7 +576,10 @@ __grn_doc = '\bTests each promoter against each motif per each group. Some peopl
             "where y is a vector of gene expression observations, apostrophe denotes the effect of the motif of interest being excluded from the model. "\
             "If [purple]--no-means[/purple] is supplied, H_1 instead is\n"\
             " [cyan]H_1: y = (b u)' + [dark_orange]b μ [/dark_orange]1_s^T + e,[/cyan]\n "\
-            "so we measure only effect that is due to the deviation u."
+            "so we measure only effect that is due to the deviation u. "\
+            "With [purple]--covariate[/purple], a covariate is tested in place of a group: the motif of interest loses "\
+            "only the part of its mean activity that is due to the covariate (its effect times the covariate), "\
+            "and all samples are used."
 @app.command('grn',
              help=__grn_doc)
 def _grn(name: str = Argument(..., help='Project name'),
@@ -585,10 +588,18 @@ def _grn(name: str = Argument(..., help='Project name'),
          hdf: bool = Option(True, help='Use HDF format instead of plain tsv files. Typically eats much less space'),
          stat: bool = Option(False, help='Save statistics alongside probabilities.'),
          prior_h1: float = Option(1/2, help='Prior belief on the expected fraction of motifs active per promoter (strictly between 0 and 1).'),
-         means: bool = Option(True, help='Test motif-specific means along with activities deviations, otherwise only the latter are tested.')):
+         means: bool = Option(True, help='Test motif-specific means along with activities deviations, otherwise only the latter are tested.'),
+         covariate: List[str] = Option(None, '--covariate', '-c',
+                                       help='Test the effect of a covariate on motif activities instead of the activities themselves: '
+                                            'the contribution of a motif is its loading times the effect times the covariate. '
+                                            'All samples are used, and a single table is written to the [dark_orange]covariates[/dark_orange] '
+                                            'subfolder. Names are those listed by [bold cyan]create[/bold cyan]; the option can be supplied '
+                                            'multiple times for a table per covariate, and [dark_orange]all[/dark_orange] stands for all '
+                                            'covariates. [purple]--means[/purple]/[purple]--no-means[/purple] are of no effect then.')):
     t0 = time()
     with spinner("Building GRN..."):
-        grn(name, output=folder, use_hdf=hdf, save_stat=stat, prior_h1=prior_h1, include_mean=means)
+        grn(name, output=folder, use_hdf=hdf, save_stat=stat, prior_h1=prior_h1, include_mean=means,
+            covariates=covariate)
     _done(t0)
 
 __estimate_promvar_doc = 'Estimates each promoter variance for each group using Empirical Bayesian shrinkage.'\

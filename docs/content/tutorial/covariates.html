@@ -134,13 +134,13 @@ inactive_motif_3	0.017395894409502	0.0170719704147254	1.018974025077812	0.308215
 <p>At an FDR of 0.05, age has an effect on 303 motifs. All of them are among the 400 with a true effect, and the sign is right for each. Batch has an effect on no motif. That's fine: the batches were assigned at random.</p>
 
 <div class="figs n1 half">
-<figure><a href="../files/cov_effects.png"><img src="../files/cov_effects.png" alt="Estimated effects of age against the true ones"></a><figcaption>The estimated effect of age against the true one for each of the 500 motifs. The correlation is 0.99.</figcaption></figure>
+<figure><a class="lt" href="../files/cov_effects.png"><img src="../files/cov_effects.png" alt="Estimated effects of age against the true ones" loading="lazy"></a><a class="dk" href="../files/cov_effects_dark.png"><img src="../files/cov_effects_dark.png" alt="Estimated effects of age against the true ones" loading="lazy"></a><figcaption>The estimated effect of age against the true one for each of the 500 motifs. The correlation is 0.99.</figcaption></figure>
 </div>
 
 <p>An effect is a slope of a line. For 2 motifs of a moderate effect it looks as follows:</p>
 
 <div class="figs n1">
-<figure><a href="../files/cov_age.png"><img src="../files/cov_age.png" alt="True activities of 2 motifs in each sample against the age of the sample, with the fitted lines"></a><figcaption>A dot is a sample. Its height is the true activity of the motif in the sample, known for synthetic data. The line is drawn from the estimates: the mean of the motif plus its effect of age.</figcaption></figure>
+<figure><a class="lt" href="../files/cov_age.png"><img src="../files/cov_age.png" alt="True activities of 2 motifs in each sample against the age of the sample, with the fitted lines" loading="lazy"></a><a class="dk" href="../files/cov_age_dark.png"><img src="../files/cov_age_dark.png" alt="True activities of 2 motifs in each sample against the age of the sample, with the fitted lines" loading="lazy"></a><figcaption>A dot is a sample. Its height is the true activity of the motif in the sample, known for synthetic data. The line is drawn from the estimates: the mean of the motif plus its effect of age.</figcaption></figure>
 </div>
 
 <p>The scatter around a line is the deviation of the model. In this example the deviations are comparable to the effect of age in size, and the effect is still found.</p>
@@ -186,6 +186,7 @@ inactive_motif_3	0.017395894409502	0.0170719704147254	1.018974025077812	0.308215
   <li>The <i>intercept.tsv</i> table holds the mean activities, the same as <i>params/motif_means.tsv</i>, with a two-sided test against zero;</li>
   <li>The standard errors are computed for all covariates jointly, so a correlation between 2 covariates widens the errors of both;</li>
   <li>The tables of the <i>activities</i> folder hold the deviations, i.e. what is left of an activity once the mean and the covariates are taken away. A difference between groups that follows a covariate goes to the effect of the covariate. It is then absent from the activities and from the <a href="./test.html#contrast">contrasts</a>;</li>
+  <li>The <a href="./grn.html#covariates"><code>grn</code></a> command has a <code>--covariate</code> option. With it, the promoters are tested against the effect of a covariate on each motif;</li>
   <li>The expression exported with the <code>--log-counts</code> option of <a href="./export.html#options"><code>export</code></a> includes the covariates. The tables of the <code>--loadings-product</code> option use the mean activity alone.</li>
 </ul>
 

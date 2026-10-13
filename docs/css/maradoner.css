@@ -117,6 +117,15 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
 figure { margin: 0; min-width: 0; }
 figure a { display: block; line-height: 0; }
 figure img { display: block; width: 100%; background: #fff; border: 1px solid var(--line); }
+/* A plot comes in 2 versions, and the one of the current theme is shown. */
+figure a.dk { display: none; }
+figure a.dk img { background: var(--bg); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) figure a.lt { display: none; }
+  :root:not([data-theme="light"]) figure a.dk { display: block; }
+}
+:root[data-theme="dark"] figure a.lt { display: none; }
+:root[data-theme="dark"] figure a.dk { display: block; }
 figcaption { font-size: 0.85rem; color: var(--muted); text-align: center; padding-top: 6px; overflow-wrap: anywhere; }
 figcaption code { font-size: 0.95em; }
 figure.diagram { margin: 20px 0; padding: 12px; border: 1px solid var(--line); overflow-x: auto; }

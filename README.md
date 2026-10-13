@@ -104,6 +104,10 @@ Motifs appear in the activity and test tables only if `predict` kept them (see `
     ```bash
     maradoner grn my_project path/to/output_folder
     ```
+    In a project with covariates, `--covariate <name>` tests the effect of a covariate on motif activities in place of the activities. All samples are used, and one table per covariate is written to `belief/covariates`.
+    ```bash
+    maradoner grn my_project path/to/output_folder --covariate age
+    ```
 *   **`select-motifs`**: If you provided multiple loading matrices in `create` (e.g., from different databases) with unique postfixes, this command helps select the single "best" variant for each motif based on statistical criteria. The output is a list of motif names intended to be used with the `--motif-filename` option in a subsequent `create` run.
     ```bash
     maradoner select-motifs my_project best_motifs.txt

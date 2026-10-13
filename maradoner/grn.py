@@ -374,8 +374,32 @@ def bayesian_fdr_control(p0, alpha=0.05):
     
     return discoveries, threshold
 
+def covariate_rows(covariates: list, covariate_names: list) -> list:
+    """Rows of the design matrix X that belong to the covariates named in `covariates`, in
+    the order of X and without repeats. "all" stands for every covariate but the intercept
+    (unless a covariate is named so)."""
+    names = [str(n) for n in covariate_names]
+    rows = set()
+    unknown = list()
+    for name in map(str, covariates):
+        if name in names:
+            rows.add(names.index(name))
+        elif name == 'all':
+            rows.update(range(1, len(names)))
+        else:
+            unknown.append(name)
+    if len(names) < 2 and (unknown or not rows):
+        raise InputError('The project has no covariates, so there are no covariate effects to test. '
+                         'They are supplied with "maradoner create ... --covariates <table>".')
+    if unknown:
+        raise InputError(f'Unknown covariate(s): {", ".join(unknown)}. The covariates of the project are '
+                         f'{", ".join(names[1:])} (and "intercept" for the mean activity; "all" stands for '
+                         'every covariate but the intercept).')
+    return sorted(rows)
+
 def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
-        fdr_alpha=0.05, prior_h1=1/2, include_mean: bool = True, min_variance: float = 1e-3):
+        fdr_alpha=0.05, prior_h1=1/2, include_mean: bool = True, min_variance: float = 1e-3,
+        covariates: list = None):
     if not 0 < prior_h1 < 1:
         raise InputError('--prior-h1 is the prior probability that a motif contributes to the '
                          f'expression of a promoter and must lie strictly between 0 and 1, but {prior_h1:g} '
@@ -396,6 +420,7 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
     group_names = data.group_names
     motif_names = data.motif_names
     prom_names = data.promoter_names
+    covariate_names = getattr(data, 'covariate_names', None)
     # helmert=False: GRN works in the raw per-promoter space. Y, B, promoter_mean,
     # error_variance.promotor and prom_names are all length p and must stay aligned;
     # the default Helmert transform projects out the promoter mean and drops a row
@@ -415,6 +440,21 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
     # mean part of the contribution of a motif tested below.
     MX = motif_mean_matrix(fit.motif_mean, data.X).astype(dtype)
     BMX = (B @ MX).astype(dtype)
+    # With `covariates`, a covariate is tested in place of a group: the contribution of a
+    # motif is the part of M X that is due to the covariate, M[:, c] X[c], in all samples.
+    # Neither the deviations nor the other rows of X are a part of it.
+    MX_cov = None
+    if covariates:
+        _M = np.asarray(fit.motif_mean.mean)
+        _M = _M.reshape(-1, 1) if _M.ndim == 1 else _M
+        covariate_names = covariate_names or ['intercept'] + [f'cov_{i}' for i in range(1, _M.shape[1])]
+        cov_rows = covariate_rows(covariates, covariate_names)
+        covariates = [str(covariate_names[i]) for i in cov_rows]
+        # (c, m, s)
+        MX_cov = (_M[:, cov_rows].T[..., None] * np.asarray(data.X)[cov_rows][:, None]).astype(dtype)
+        if not include_mean:
+            warn('"--no-means" has no effect together with "--covariate": only the effects of '
+                 f'the covariate(s) {", ".join(covariates)} are tested.')
     # (the loading matrix is the largest object here: keep a single copy of it)
     del data
     _M = np.asarray(fit.motif_mean.mean)
@@ -435,6 +475,8 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
         motif_names = list(np.delete(np.asarray(motif_names, dtype=object), filtered))
         B = np.delete(B, filtered, axis=1)
         MX = np.delete(MX, filtered, axis=0)
+        if MX_cov is not None:
+            MX_cov = np.delete(MX_cov, filtered, axis=1)
         motif_mean = np.delete(motif_mean, filtered)
         motif_variance = np.delete(motif_variance, filtered)
     if B.shape[1] != U.shape[0]:
@@ -452,12 +494,33 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
         os.makedirs(folder_stat, exist_ok=True)
     os.makedirs(folder_belief, exist_ok=True)
     file_names = safe_filenames(group_names)
+    tasks = list(zip(promvar.T[..., None], nus,  group_names, file_names, group_inds))
+    sample_weights = None
+    if MX_cov is not None:
+        # One table per covariate over all samples. The error variance of a sample is that
+        # of its group: a sample enters with the weight sigma_h / sigma_g, where sigma_h is
+        # the harmonic mean of the variances over samples, and sigma_h takes the place of
+        # the variance of a group.
+        folder_stat = os.path.join(folder_stat, 'covariates')
+        folder_belief = os.path.join(folder_belief, 'covariates')
+        if save_stat:
+            os.makedirs(folder_stat, exist_ok=True)
+        os.makedirs(folder_belief, exist_ok=True)
+        n_samples = Y.shape[1]
+        sample_weights = np.zeros(n_samples, dtype=dtype)
+        for sigma_g, inds_g in zip(fit.error_variance.variance, group_inds):
+            sample_weights[inds_g] = 1 / sigma_g
+        sigma_h = 1 / sample_weights.mean()
+        sample_weights *= sigma_h
+        sigma = (sigma_h * np.asarray(fit.error_variance.promotor) * np.ones(len(B))).reshape(-1, 1)
+        tasks = [(sigma, None, name, file_name, np.arange(n_samples))
+                 for name, file_name in zip(covariates, safe_filenames(covariates, 'covariate'))]
     logit_prior = np.log(prior_h1) - np.log1p(-prior_h1)
     # The likelihood ratios are stored in single precision: larger ones are capped.
     loglr_max = 88.72
     n_capped = 0
     skipped = dict()
-    for sigma, nu, name, file_name, inds in (pbar := tqdm(list(zip(promvar.T[..., None], nus,  group_names, file_names, group_inds)), dynamic_ncols=True, disable=None)):
+    for n_task, (sigma, nu, name, file_name, inds) in enumerate(pbar := tqdm(tasks, dynamic_ncols=True, disable=None)):
         pbar.set_postfix_str(name)
         # var = (B_hat * nu + sigma)
         var = sigma
@@ -466,11 +529,16 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
         # Contribution of motif m to promoter p in sample n: theta_pmn = B_pm V_mn, where
         # V is the deviation U of the activity (+ its mean M X if the means are tested too).
         V_g = U_g + MX[:, inds] if include_mean else U_g
+        if MX_cov is not None:
+            # ... or the part of the mean that is due to the covariate.
+            V_g = MX_cov[n_task] * sample_weights ** 0.5
         # Residual of the full model; without motif m it becomes R_pn + theta_pmn, so
         # loglr_pm = log L(full) - log L(without m) = sum_n [(R_pn + theta_pmn)^2 - R_pn^2] / (2 var_p)
         #          = [2 B_pm (R V^T)_pm + B_pm^2 sum_n V_mn^2] / (2 var_p).
         # Only (p, m) objects are ever formed, never the (p, m, n_g) tensor.
         R_g = Y[:, inds] - B @ U_g                        # (p, n_g)
+        if MX_cov is not None:
+            R_g *= sample_weights ** 0.5
         loglr = R_g @ V_g.T
         del R_g
         loglr *= 2
@@ -548,12 +616,17 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
                                                                           float_format='%.3f')
     if skipped:
         shown = ', '.join(f'{n} in {g}' for g, n in list(skipped.items())[:5])
-        shown += f', ... and {len(skipped) - 5} more groups' if len(skipped) > 5 else ''
+        what = 'group' if MX_cov is None else 'covariate'
+        shown += f', ... and {len(skipped) - 5} more {what}s' if len(skipped) > 5 else ''
         warn(f'Promoters whose error variance does not exceed {min_variance:g} are left out of the '
-             f'tables of the respective group ({shown} of {len(prom_names)} promoters).')
+             f'tables of the respective {what} ({shown} of {len(prom_names)} promoters).')
     if n_capped:
         warn(f'{n_capped} likelihood ratio(s) exceed the range of the single-precision tables in '
              f'"{folder_stat}" and are stored as {np.exp(loglr_max):.3g}; their beliefs are not affected.')
+    if MX_cov is not None:
+        # (the tables of groups that may be in the folder keep their description)
+        write_readme(output, grn_prior=float(prior_h1), grn_fdr=float(fdr_alpha), grn_min_variance=float(min_variance))
+        return
     write_readme(output, grn_prior=float(prior_h1), grn_means=bool(include_mean), grn_fdr=float(fdr_alpha),
                  grn_min_variance=float(min_variance))
         
