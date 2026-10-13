@@ -5,8 +5,8 @@ from pandas import DataFrame as DF
 from .utils import read_init, openers, ProjectData, subs_zeros
 from .utils import InputError, warn, load_stage, apply_clustering
 from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
-from .fit import variance_dof
-from .grn import grn, safe_filenames, filtered_motifs, held_out_inds, load_fit, load_predict
+from .fit import variance_dof, _error_lowrank_W, _activity_lowrank_V
+from .grn import grn, safe_filenames, covariate_filenames, filtered_motifs, held_out_inds, load_fit, load_predict
 from .export_readme import write_readme, register_file
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
 from scipy.special import erf, ndtr
@@ -386,10 +386,12 @@ def export_log_counts(output_folder: str, data: ProjectData, fit: FitResult,
         log_counts.to_csv(os.path.join(output_folder, 'test.tsv'), sep='\t')
     
 
-def motif_mean_covariance(motif_mean, motif_names=None, covariate_names=None, verbose=True) -> tuple:
+def motif_mean_covariance(motif_mean, motif_names=None, covariate_names=None, verbose=True,
+                          blocks: bool = False) -> tuple:
     """Standard errors of the motif-mean matrix M and the covariance of its intercept
     column mu_m (the average motif activities). Returns (std, cov): std has the shape
-    (m, c) of M, cov is (m, m).
+    (m, c) of M, cov is (m, m). With `blocks`, a third item is returned: the covariance
+    of the c coefficients of each motif (a row of M), of the shape (m, c, c).
 
     The covariance of vec(M) is the inverse of the FULL mc x mc Fisher matrix. Inverting
     each covariate's m x m diagonal block in isolation ignores correlations *between*
@@ -429,7 +431,38 @@ def motif_mean_covariance(motif_mean, motif_names=None, covariate_names=None, ve
     else:
         cov = cov + np.asarray(baseline_cov, dtype=np.float64)
         var[:, 0] = np.clip(np.diag(cov), 0.0, None)
+    if blocks:
+        per_motif = np.einsum('aibi->iab', cov_full.reshape(c, m, c, m)).copy()
+        per_motif[:, 0, 0] = var[:, 0]
+        return var ** 0.5, cov, per_motif
     return var ** 0.5, cov
+
+
+def canonical_factors(V: np.ndarray) -> np.ndarray:
+    """The low-rank factor V (s, k) of a covariance V V^T is defined up to a rotation of
+    its columns. This is the rotation with orthogonal columns sorted by their norms, the
+    largest first; the sign of a column is such that its largest entry (in absolute value)
+    is positive."""
+    V = np.asarray(V, dtype=np.float64)
+    u, d, _ = np.linalg.svd(V, full_matrices=False)
+    F = u * d
+    signs = np.sign(F[np.abs(F).argmax(axis=0), np.arange(F.shape[1])])
+    return F * np.where(signs == 0, 1.0, signs)
+
+
+def joint_covariate_tests(M: np.ndarray, blocks: np.ndarray, columns: list) -> tuple:
+    """Wald test of the hypothesis that all the effects M[:, columns] of a motif are zero,
+    for each motif. `blocks` (m, c, c) are the covariances of the rows of M. Returns
+    (stat, df, pvalue): the statistic is chi-squared with df degrees of freedom, the rank
+    of the covariance of the tested effects."""
+    a = np.asarray(M)[:, columns]
+    C = np.asarray(blocks)[:, columns][:, :, columns]
+    C = 0.5 * (C + np.swapaxes(C, 1, 2))
+    stat = np.einsum('ia,iab,ib->i', a, np.linalg.pinv(C, hermitian=True), a)
+    df = np.linalg.matrix_rank(C, hermitian=True)
+    pvalue = chi2.sf(stat, np.maximum(df, 1))
+    pvalue[df == 0] = np.nan
+    return stat, df, pvalue
 
 
 def _explain_singular_information(data: ProjectData, fit: FitResult) -> str:
@@ -591,7 +624,8 @@ def export_results(project_name: str, output_folder: str,
         ['intercept'] + [f'cov_{i}' for i in range(1, M_matrix.shape[1])]
     motif_mean = M_matrix[:, 0]
     # Joint standard errors of M and the covariance of its intercept column.
-    joint_std, motif_mean_cov = motif_mean_covariance(fit.motif_mean, motif_names, covariate_names)
+    joint_std, motif_mean_cov, effect_cov = motif_mean_covariance(fit.motif_mean, motif_names, covariate_names,
+                                                                  blocks=True)
     motif_mean_std = joint_std[:, 0]
 
     promoter_mean = fit.promoter_mean.mean.flatten()
@@ -649,8 +683,8 @@ def export_results(project_name: str, output_folder: str,
     for fname in os.listdir(cov_folder):
         if fname.endswith('.tsv'):
             os.remove(os.path.join(cov_folder, fname))
-    cov_file_names = safe_filenames([covariate_names[a] if a < len(covariate_names) else f'cov_{a}'
-                                     for a in range(M_matrix.shape[1])], what='covariate')
+    cov_file_names = covariate_filenames([covariate_names[a] if a < len(covariate_names) else f'cov_{a}'
+                                          for a in range(M_matrix.shape[1])])
     for a in range(M_matrix.shape[1]):
         eff = M_matrix[:, a]
         eff_std = joint_std[:, a]            # joint SE (accounts for covariate collinearity)
@@ -660,6 +694,44 @@ def export_results(project_name: str, output_folder: str,
         cname = cov_file_names[a]
         DF({'effect': eff, 'std': eff_std, 'z': z, 'pvalue': pvalue, 'fdr': fdr},
            index=motif_names).to_csv(os.path.join(cov_folder, f'{cname}.tsv'), sep='\t')
+
+    # Joint tests of the terms of the design that have several columns (a categorical
+    # covariate with more than two levels, an interaction with such a covariate): one TSV
+    # per term in tests/covariates/. A term of one column is tested in params/covariates/.
+    term_folder = os.path.join(output_folder, 'tests', 'covariates')
+    if os.path.isdir(term_folder):
+        for fname in os.listdir(term_folder):
+            if fname.endswith('.tsv'):
+                os.remove(os.path.join(term_folder, fname))
+    terms = [t for t in getattr(data, 'covariate_terms', None) or []
+             if len(t['columns']) > 1 and all(c in covariate_names for c in t['columns'])]
+    if terms and len(covariate_names) == M_matrix.shape[1]:
+        os.makedirs(term_folder, exist_ok=True)
+        for term, fname in zip(terms, covariate_filenames([t['name'] for t in terms])):
+            stat, df, pvalue = joint_covariate_tests(M_matrix, effect_cov,
+                                                     [covariate_names.index(c) for c in term['columns']])
+            fdr = np.full(len(pvalue), np.nan)
+            ok = np.isfinite(pvalue)
+            if ok.any():
+                fdr[ok] = multitest.multipletests(pvalue[ok], method='fdr_bh')[1]
+            DF({'stat': stat, 'df': df, 'pvalue': pvalue, 'fdr': fdr},
+               index=motif_names).to_csv(os.path.join(term_folder, f'{fname}.tsv'), sep='\t')
+    elif os.path.isdir(term_folder) and not os.listdir(term_folder):
+        os.rmdir(term_folder)
+
+    # Factors of the low-rank corrections (fit --activity-lowrank / --error-lowrank): a
+    # column per factor, in the rotation of canonical_factors.
+    for fname, factors in (('factors.tsv', _activity_lowrank_V(fit.motif_variance)),
+                           ('error_factors.tsv', _error_lowrank_W(fit.error_variance))):
+        fname = os.path.join(folder, fname)
+        if factors is None or not np.shape(factors)[1]:
+            if os.path.isfile(fname):
+                os.remove(fname)
+            continue
+        factors = canonical_factors(factors)
+        DF(factors, index=data.sample_names,
+           columns=[f'factor_{i + 1}' for i in range(factors.shape[1])]).to_csv(fname, sep='\t',
+                                                                                 index_label='sample')
     
                                                           
     if mu_p_test is not None:
@@ -931,7 +1003,8 @@ def parse_linear_expression(expr_str):
     return dict(sorted(coeffs.items(), key=lambda x: x[0]))
 
 
-def parse_contrast(expression: str, group_names: list) -> dict:
+def parse_contrast(expression: str, group_names: list, what: str = 'sample group',
+                   example: str = '"treated - control" or "(a + b) / 2 - c"') -> dict:
     """
     Parses a contrast: a linear combination of sample groups with numeric coefficients,
     written with +, -, *, / and parentheses. Returns a dictionary {group name: coefficient}.
@@ -944,14 +1017,17 @@ def parse_contrast(expression: str, group_names: list) -> dict:
     Example:
     >>> parse_contrast("(a + b) / 2 - `T-cell`", ['a', 'b', 'T-cell'])
     {'a': 0.5, 'b': 0.5, 'T-cell': -1.0}
+
+    `what` names the things that are combined, for the messages: the same parser serves
+    the contrasts of covariate effects.
     """
     expression = str(expression)
     group_names = [str(n) for n in group_names]
     def fail(reason: str):
         raise InputError(f'Cannot interpret the contrast "{expression}": {reason} A contrast is a '
-                         'linear combination of sample groups, e.g. "treated - control" or '
-                         '"(a + b) / 2 - c"; names with spaces, operators or a leading digit can be '
-                         f'quoted with backticks. Sample groups of this project: {_first_names(group_names, 20)}.')
+                         f'linear combination of {what}s, e.g. {example}; names with spaces, operators '
+                         'or a leading digit can be '
+                         f'quoted with backticks. {what.capitalize()}s of this project: {_first_names(group_names, 20)}.')
     def is_word(c: str):
         return c.isalnum() or c == '_'
     names = sorted(group_names, key=len, reverse=True)
@@ -998,7 +1074,7 @@ def parse_contrast(expression: str, group_names: list) -> dict:
             fail(f'unexpected character "{c}" at position {i + 1}.')
     unknown = list(dict.fromkeys(t for kind, t in tokens if kind == 'name' and t not in group_names))
     if unknown:
-        fail(f'unknown sample group(s) {_first_names(unknown)}.')
+        fail(f'unknown {what}(s) {_first_names(unknown)}.')
 
     # A value is a pair (coefficients of the groups, constant term).
     def scale(value, k):
@@ -1014,7 +1090,7 @@ def parse_contrast(expression: str, group_names: list) -> dict:
     def factor():
         nonlocal pos
         if pos >= len(tokens):
-            fail('it ends where a group name or a number is expected.')
+            fail(f'it ends where a {what.split()[-1]} name or a number is expected.')
         kind, token = tokens[pos]
         pos += 1
         if kind in ('+', '-'):
@@ -1029,7 +1105,7 @@ def parse_contrast(expression: str, group_names: list) -> dict:
                 fail('a closing parenthesis is missing.')
             pos += 1
             return value
-        fail(f'"{token}" stands where a group name or a number is expected.')
+        fail(f'"{token}" stands where a {what.split()[-1]} name or a number is expected.')
     def term():
         nonlocal pos
         value = factor()
@@ -1039,11 +1115,11 @@ def parse_contrast(expression: str, group_names: list) -> dict:
             other = factor()
             if op == '*':
                 if value[0] and other[0]:
-                    fail('it is not linear, as two sample groups are multiplied.')
+                    fail(f'it is not linear, as two {what}s are multiplied.')
                 value = scale(other, value[1]) if other[0] else scale(value, other[1])
             else:
                 if other[0]:
-                    fail('it is not linear, as it divides by a sample group.')
+                    fail(f'it is not linear, as it divides by a {what}.')
                 if other[1] == 0:
                     fail('it divides by zero.')
                 value = scale(value, 1.0 / other[1])
@@ -1060,12 +1136,62 @@ def parse_contrast(expression: str, group_names: list) -> dict:
     if pos < len(tokens):
         fail(f'"{tokens[pos][1]}" stands where an operator (+, -, *, /) is expected.')
     if abs(const) > 1e-12:
-        fail(f'it contains the constant term {const:g}, which has no meaning in a comparison of groups.')
+        fail(f'it contains the constant term {const:g}, which has no meaning in a comparison of {what}s.')
     coeffs = {g: coeffs[g] for g in group_names if abs(coeffs.get(g, 0.0)) > 1e-12}
     if not coeffs:
         fail('all its coefficients are zero, so it compares nothing.')
     return coeffs
 
+
+def export_covariate_contrast(project_name: str,  output_folder: str,
+                              contrasts: str, filename_postfix: str = None):
+    """Tests a linear combination of the effects of covariates on each motif, e.g.
+    "tissue_liver - tissue_muscle". The variables are the covariates as `create` lists
+    them; the reference level of a categorical covariate can be named too and stands for
+    zero. The standard error accounts for the covariances between the effects."""
+    if filename_postfix is None:
+        postfix = str()
+    else:
+        postfix = '_' + safe_filenames([filename_postfix], what='postfix')[0]
+    data = read_init(project_name)
+    data, fit = load_fit(project_name, data)
+    motif_names = data.motif_names
+    M = np.asarray(fit.motif_mean.mean)
+    if M.ndim == 1:
+        M = M.reshape(-1, 1)
+    covariate_names = getattr(data, 'covariate_names', None)
+    if not covariate_names or len(covariate_names) != M.shape[1]:
+        covariate_names = ['intercept'] + [f'cov_{i}' for i in range(1, M.shape[1])]
+    covariate_names = [str(c) for c in covariate_names]
+    if len(covariate_names) < 2:
+        raise InputError(f'The project "{project_name}" has no covariates, so there are no effects to compare. '
+                         'They are supplied with "maradoner create ... --covariates <table>".')
+    references = [str(t['reference']) for t in getattr(data, 'covariate_terms', None) or []
+                  if t.get('reference') is not None and str(t['reference']) not in covariate_names]
+    coeffs = parse_contrast(contrasts, covariate_names[1:] + references, what='covariate',
+                            example='"tissue_liver - tissue_muscle" or "(a + b) / 2 - c"')
+    c = np.zeros(len(covariate_names))
+    for name, v in coeffs.items():
+        if name in covariate_names:
+            c[covariate_names.index(name)] = v
+    if not np.any(c):
+        raise InputError(f'The contrast "{contrasts}" holds reference level(s) only ({", ".join(coeffs)}). The '
+                         'effect of a reference level is zero by definition, so there is nothing to test.')
+    _, _, blocks = motif_mean_covariance(fit.motif_mean, motif_names, covariate_names, blocks=True)
+    effect = M @ c
+    std = np.clip(np.einsum('a,iab,b->i', c, blocks, c), 0.0, None) ** 0.5
+    with np.errstate(divide='ignore', invalid='ignore'):
+        z = effect / std
+    pvalue = 2 * norm.sf(np.abs(z))
+    fdr = np.full(len(pvalue), np.nan)
+    ok = np.isfinite(pvalue)
+    if ok.any():
+        fdr[ok] = multitest.multipletests(pvalue[ok], method='fdr_bh')[1]
+    filename = os.path.join(output_folder, f'covariate_contrast{postfix}.tsv')
+    os.makedirs(output_folder, exist_ok=True)
+    DF({'effect': effect, 'std': std, 'z': z, 'pvalue': pvalue, 'fdr': fdr},
+       index=motif_names).to_csv(filename, sep='\t')
+    write_readme(output_folder)
 
 def export_contrast(project_name: str,  output_folder: str,
                     contrasts: str, filename_postfix: str = None):

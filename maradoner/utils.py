@@ -168,6 +168,9 @@ class ProjectData:
     # the model identical to the classic MARADONER (M X == mu_m 1_s^T).
     X: np.ndarray = None
     covariate_names: list = None
+    # Terms of the covariate design, see create.build_covariates. None for projects made
+    # by versions that did not store them.
+    covariate_terms: list = None
 
 
 def apply_clustering(data: ProjectData, fit) -> ProjectData:
@@ -227,6 +230,7 @@ def read_init(project_name: str) -> ProjectData:
         # i.e. the classic mu_m 1_s^T term.
         X = np.ones((1, len(sample_names)), dtype=float)
         covariate_names = ['intercept']
+    covariate_terms = init.get('covariate_terms', None)
     r = ProjectData(
         Y=init['expression'],
         B=init['loadings'],
@@ -241,6 +245,7 @@ def read_init(project_name: str) -> ProjectData:
         L=L,
         X=X,
         covariate_names=covariate_names,
+        covariate_terms=covariate_terms,
         fmt=fmt
         )
     return r

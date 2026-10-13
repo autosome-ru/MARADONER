@@ -65,7 +65,8 @@ from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
 from .export import export_results, export_loadings_product, Standardization, ANOVAType
-from .export import export_contrast, export_posterior_anova
+from .export import export_contrast, export_covariate_contrast, export_posterior_anova
+from .select_rank import select_activity_rank
 from .bayes_linreg import bayes_linreg
 from . import __version__ as project_version
 from .select import select_motifs_single
@@ -255,6 +256,9 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                                       'intercept), i.e. covariates such as sex or age are accounted for. Numeric covariates are z-scored, '
                                       'categorical ones are one-hot encoded. Every sample must have a row; missing cells are imputed (with a warning). '
                                       'A column is numeric if all of its values are numbers, so write categories as text (batch_1, not 1).'),
+            formula: str = Option(None, '--formula', help='A formula that chooses columns of the [dark_orange]covariates[/dark_orange] table and adds their '
+                                  'interactions: "+" joins terms, "a:b" is an interaction, "a*b" stands for "a + b + a:b". For example, '
+                                  '[dark_orange]"age * sex + batch"[/dark_orange]. By default every column of the table is used and there are no interactions.'),
             n_jobs: float = Option(0.5, help='Number of threads to use when reading datatables. If -1, maximal number of threads are used. If it is fractional in range (0, 1), '
                                    'the fraction maximal number is used. A whole number >= 1 is a number of threads.'),
             compression: Compression = Option(Compression.raw.value, help='Compression method used to store results.')):
@@ -281,6 +285,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                            motif_postfixes=loading_postfix,
                            motif_names_filename=motif_filename,
                            covariates_filename=covariates,
+                           covariates_formula=formula,
                            n_jobs=n_jobs,
                            verbose=True)
     p, s = r['expression'].shape
@@ -338,6 +343,53 @@ def _fit(name: str = Argument(..., help='Project name.'),
             error_lowrank=error_lowrank,
             activity_lowrank=activity_lowrank,
             gpu_decomposition=gpu_decomposition, x64=x64)
+    _done(t0)
+
+__select_rank_doc = 'Choose the number of factors for [purple]--activity-lowrank[/purple] of [bold cyan]fit[/bold cyan]. '\
+                    'Models with 1, 2, ... factors are fitted to the project one after another. A factor is accepted if it lowers the REML '\
+                    'deviance more than a factor does on datasets simulated from the model without it, where there is nothing to find: '\
+                    'the p-value is the probability of such a gain on one more simulated dataset, with the simulated gains taken for normal. '\
+                    'The command needs a fitted project and changes nothing in it.'
+
+@app.command('select-rank', help=__select_rank_doc)
+def _select_rank(name: str = Argument(..., help='Project name.'),
+                 max_rank: int = Option(5, '--max-rank', min=1, help='The largest number of factors to try.'),
+                 null: int = Option(5, '--null', min=0, help='Number of simulated datasets per factor, at least 3. Each one costs 2 model fits. '
+                                    'With [dark_orange]0[/dark_orange] only the gains are reported, for all ranks up to [dark_orange]max-rank[/dark_orange].'),
+                 alpha: float = Option(0.05, '--alpha', help='A factor is accepted if its p-value is below this level.'),
+                 full: bool = Option(False, '--full', help='Try all ranks up to [dark_orange]max-rank[/dark_orange] instead of stopping at the first '
+                                     'factor that is not accepted.'),
+                 seed: int = Option(0, help='Seed of the random number generator used for the simulated datasets.'),
+                 output: Path = Option(None, '--output', help='A file to save the table to (tab-separated).')):
+    t0 = time()
+    with spinner("Choosing the number of factors..."):
+        res = select_activity_rank(name, max_rank=max_rank, n_null=null, seed=seed, full=full, alpha=alpha)
+    t = Table('Factors', 'REML deviance', 'Gain', 'Gain on simulated data\nmean (min .. max)', 'p-value', 'Accepted',
+              title='Factors of the covariance of activities between samples')
+    lines = ['rank\tdeviance\tgain\tnull_mean\tnull_min\tnull_max\tpvalue\taccepted']
+    for step in res['steps']:
+        gain, sim = step['gain'], step['null']
+        row = [str(step['rank']), f'{step["deviance"]:.3f}', '' if gain is None else f'{gain:.3f}']
+        line = [str(step['rank']), f'{step["deviance"]:.6f}', '' if gain is None else f'{gain:.6f}']
+        if sim:
+            row += [f'{sum(sim) / len(sim):.3f} ({min(sim):.3f} .. {max(sim):.3f})', f'{step["pvalue"]:.2g}',
+                    'yes' if step['accepted'] else 'no']
+            line += [f'{sum(sim) / len(sim):.6f}', f'{min(sim):.6f}', f'{max(sim):.6f}', f'{step["pvalue"]:.6g}',
+                     'yes' if step['accepted'] else 'no']
+        else:
+            row += ['', '', '']
+            line += ['', '', '', '', '']
+        t.add_row(*row)
+        lines.append('\t'.join(line))
+    rprint(t)
+    if res['rank'] is not None:
+        rprint(f'Number of factors supported by the data: [bold]{res["rank"]}[/bold]' +
+               (f' (fit it with [cyan]maradoner fit {escape(name)} --activity-lowrank {res["rank"]}[/cyan])' if res['rank'] else ''))
+        if res['rank'] == res['steps'][-1]['rank'] and res['steps'][-1]['accepted'] and not res['capped']:
+            rprint(f'All {res["rank"]} factors that were tried are accepted: there may be more of them, see [purple]--max-rank[/purple].')
+    if output is not None:
+        with open(output, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
     _done(t0)
 
 __bayes_linreg_doc = '''Fit a single-sample Bayesian linear regression instead of the [bold]MARADONER[/bold] model.
@@ -614,10 +666,18 @@ def _contrast(name: str = Argument(..., help='Project name'),
                                 contrast: str = Argument(...,
                                                           help='An algebraic expression defining the contrast vector.'),
                                 output_folder: Path = Argument(..., help='Output folder.'),
-                                postfix: str = Option(None, help='Postfix to add to the results file.')):
+                                postfix: str = Option(None, help='Postfix to add to the results file.'),
+                                covariates: bool = Option(False, '--covariates', help='The variables of the contrast are covariates (as [bold cyan]create[/bold cyan] '
+                                                          'lists them) instead of groups, and their effects on motif activities are compared: '
+                                                          '"[dark_orange]tissue_liver - tissue_muscle[/dark_orange]". The reference level of a categorical '
+                                                          'covariate can be named too, its effect is zero. The result is saved as '
+                                                          '[dark_orange]covariate_contrast.tsv[/dark_orange].')):
     t0 = time()
     with spinner("Performing and saving a pairwise test..."):
-        export_contrast(name, output_folder, contrast, postfix)
+        if covariates:
+            export_covariate_contrast(name, output_folder, contrast, postfix)
+        else:
+            export_contrast(name, output_folder, contrast, postfix)
     _done(t0)
 
 

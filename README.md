@@ -66,7 +66,7 @@ The commands depend on each other: `fit` needs `create`, `predict` needs `fit`, 
 | `activities/activity.tsv` | The two tables above divided by each other, i.e. standardized activities. |
 | `activities/z_score.tsv` | Absolute z-scores per group and an `overall` score per motif. |
 | `activities/activity_raw.tsv` | Predicted deviations per sample. |
-| `params/motif_means.tsv` | Mean activity of each motif and its standard error (`params/covariates/` holds the same for every covariate). |
+| `params/motif_means.tsv` | Mean activity of each motif and its standard error (`params/covariates/` holds the same for every covariate, and `tests/covariates/` a joint test for each covariate of more than two levels). |
 | `params/motif_variances.tsv`, `params/group_variances.tsv` | Variance parameters with standard errors: `tau` per motif; error variance `sigma` and activity variance `nu` per group. `filtered_motif_variances.tsv` lists the motifs that `predict` left out because their variance is negligible. |
 | `params/promoter_means.tsv`, `params/sample_means.tsv` | Promoter-wise and sample-wise intercepts. |
 | `params/correlations/` | Correlations between the parameter estimates. |
@@ -100,6 +100,10 @@ Motifs appear in the activity and test tables only if `predict` kept them (see `
     maradoner contrast my_project "treated - control" path/to/output_folder
     maradoner contrast my_project "(a + b + c) / 3 - d" path/to/output_folder
     ```
+    With `--covariates`, the variables are covariates in place of groups, and their effects on motif activities are compared (`covariate_contrast.tsv`). The reference level of a categorical covariate stands for zero.
+    ```bash
+    maradoner contrast my_project "tissue_liver - tissue_muscle" path/to/output_folder --covariates
+    ```
 *   **`grn`**: Test each promoter against each motif in each group ("gene regulatory network"). The output is large: one promoters x motifs table per group.
     ```bash
     maradoner grn my_project path/to/output_folder
@@ -107,6 +111,10 @@ Motifs appear in the activity and test tables only if `predict` kept them (see `
     In a project with covariates, `--covariate <name>` tests the effect of a covariate on motif activities in place of the activities. All samples are used, and one table per covariate is written to `belief/covariates`.
     ```bash
     maradoner grn my_project path/to/output_folder --covariate age
+    ```
+*   **`select-rank`**: Choose the number of factors for `fit --activity-lowrank`. Models with 1, 2, ... factors are fitted, and a factor is accepted if it lowers the REML deviance more than a factor does on data simulated from the model without it. Needs a fitted project and changes nothing in it.
+    ```bash
+    maradoner select-rank my_project --max-rank 3
     ```
 *   **`select-motifs`**: If you provided multiple loading matrices in `create` (e.g., from different databases) with unique postfixes, this command helps select the single "best" variant for each motif based on statistical criteria. The output is a list of motif names intended to be used with the `--motif-filename` option in a subsequent `create` run.
     ```bash
@@ -127,7 +135,8 @@ Motifs appear in the activity and test tables only if `predict` kept them (see `
 ## Model extensions
 
 *   `create --covariates covariates.tsv`: mean motif activities depend on sample covariates.
-*   `fit --error-lowrank k` / `fit --activity-lowrank k`: low-rank corrections for correlated noise / correlated activities across samples.
+*   `create --covariates covariates.tsv --formula "age * sex + batch"`: a formula chooses columns of the table and adds their interactions (`a:b`; `a * b` stands for `a + b + a:b`).
+*   `fit --error-lowrank k` / `fit --activity-lowrank k`: low-rank corrections for correlated noise / correlated activities across samples. `export` writes the factors to `params/error_factors.tsv` / `params/factors.tsv`; the latter is a valid table for `create --covariates`.
 *   `fit --clustering KMeans|NMF --num-clusters k`: replace motifs by clusters of motifs with similar loadings (useful when there are more motifs than the data can tell apart); all later commands then report clusters.
 *   `fit --no-motif-variance`: one common variance for all motifs, closer to the classical (IS)MARA.
 *   `fit --promoter-variance` *(experimental)*: heuristic reweighting of promoters by their noise level.

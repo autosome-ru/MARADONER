@@ -126,6 +126,15 @@ _FILES = [
      'categorical ones are one-hot encoded).',
      ['`effect`: estimate.', '`std`: standard error.', '`z`: effect / std.', '`pvalue`: two-sided.',
       '`fdr`: Benjamini-Hochberg.']),
+    (r'params/factors\.tsv', 'samples x factors',
+     'Factors of `fit --activity-lowrank`: hidden properties of samples that the activities of many '
+     'motifs follow. The covariance of activity deviations between samples is diag(nu) + F F^T with F '
+     'this table. The columns are orthogonal and sorted by their norms; the sign of a column is '
+     'arbitrary. A valid table for `create --covariates`.', None),
+    (r'params/error_factors\.tsv', 'samples x factors',
+     'Factors of `fit --error-lowrank`: the covariance of errors between samples is diag(sigma) + F F^T '
+     'with F this table. The columns are orthogonal and sorted by their norms; the sign of a column '
+     'is arbitrary.', None),
     (r'params/motif_variances\.tsv', 'motifs',
      'Variance of activity deviations per motif. The variance of motif m in group g is tau_m * nu_g.',
      ['`tau`: estimate.', '`std`: standard error.']),
@@ -168,6 +177,17 @@ _FILES = [
      'activities and their posterior covariances.',
      ['`stat`: test statistic.', '`p-value`: chi2 with (groups - 1) degrees of freedom.',
       '`FDR`: Benjamini-Yekutieli.']),
+    (r'tests/covariates/[^/]+\.tsv', 'motifs',
+     'One table per term of the covariate design with several columns (a categorical covariate with '
+     'more than two levels, an interaction with one). Do the effects of the term on a motif differ '
+     'from zero? Joint Wald test of its columns in `params/covariates/`.',
+     ['`stat`: test statistic.', '`df`: its degrees of freedom: the number of columns of the term, or fewer if '
+      'their estimates are linearly dependent.',
+      '`pvalue`: chi2 with df degrees of freedom.', '`fdr`: Benjamini-Hochberg.']),
+    (r'(.*/)?covariate_contrast[^/]*\.tsv', 'motifs',
+     'Test of a linear combination of covariate effects (`maradoner contrast --covariates`).',
+     ['`effect`: the combination of the effects.', '`std`: its standard error.', '`z`: effect / std.',
+      '`pvalue`: two-sided.', '`fdr`: Benjamini-Hochberg.']),
     (r'(.*/)?contrast[^/]*\.tsv', 'motifs',
      'Test of a linear combination of group activities (`maradoner contrast`).',
      ['`z_stat`: contrast / its standard deviation.', '`pval`: two-sided.', '`fdr`: Benjamini-Yekutieli.']),
@@ -266,6 +286,8 @@ def _collapse(relpath: str, pattern: str) -> str:
             return f'{folder}/<group>' + os.path.splitext(relpath)[1]
     if pattern == r'params/covariates/[^/]+\.tsv':
         return 'params/covariates/<covariate>.tsv'
+    if pattern == r'tests/covariates/[^/]+\.tsv':
+        return 'tests/covariates/<term>.tsv'
     return relpath
 
 

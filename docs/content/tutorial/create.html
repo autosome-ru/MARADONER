@@ -83,7 +83,7 @@ sample_3	F	47	batch_2
 sample_4	M	29	batch_2
 </pre>
 
-<p>The mean activity of a motif then becomes a linear function of the covariates, and <code>export</code> writes a table of effects for each of them. The rules for the table, an example and the meaning of the effects are in the <a href="./covariates.html">Covariates</a> section.</p>
+<p>The mean activity of a motif then becomes a linear function of the covariates, and <code>export</code> writes a table of effects for each of them. The <code>--formula</code> option chooses columns of the table and adds their interactions, e.g. <code>--formula "age * sex + batch"</code>. The rules for the table, an example and the meaning of the effects are in the <a href="./covariates.html">Covariates</a> section.</p>
 
 <h2 id="transform">Loading transformations</h2>
 

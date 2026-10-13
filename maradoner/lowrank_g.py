@@ -119,13 +119,17 @@ def _init_V(P, Z, BTB, Sigma, nu, gii, k):
 
 
 def estimate_activity_lowrank(Z, BTB, P, gii, group_inds, k, Sigma0, nu0,
-                              fix_ind, fix_val, maxiter=3000, verbose=False):
+                              fix_ind, fix_val, maxiter=3000, verbose=False,
+                              V0=None, silent=False):
     """Joint REML fit of (Sigma, nu, V) for G = diag(nu) + V V^T, with the closed-form
     gradient of loglik_G_value_and_grad. One nu (fix_ind) is held at fix_val to pin the
     Sigma<->G scale. The variances are first optimised through their square roots and
     then directly under non-negativity bounds, so that they can reach zero exactly and
     leave it. If the refit does not improve on the diagonal model (Sigma0, nu0), the
     latter is returned with an (s, 0) V.
+    V0 (s, k) is an optional starting point for V; by default it is taken from the
+    residual sample covariance. With `silent` no warnings are printed (used by the choice
+    of the rank, where the function is called many times, also with k = 0).
     Returns (Sigma, nu, V, dev)."""
     import jax
     jax.config.update("jax_enable_x64", True)
@@ -145,7 +149,10 @@ def estimate_activity_lowrank(Z, BTB, P, gii, group_inds, k, Sigma0, nu0,
     Sigma0 = np.asarray(Sigma0, dtype=np.float64)
     nu0 = np.asarray(nu0, dtype=np.float64)
     fix_val = float(fix_val)
-    V0 = _init_V(P, Z, BTB, Sigma0, nu0, gii, k)
+    if V0 is None:
+        V0 = _init_V(P, Z, BTB, Sigma0, nu0, gii, k)
+    else:
+        V0 = np.asarray(V0, dtype=np.float64).reshape(s, k)
     n_var = m + g - 1
 
     def assemble(x):
@@ -213,11 +220,12 @@ def estimate_activity_lowrank(Z, BTB, P, gii, group_inds, k, Sigma0, nu0,
     if verbose:
         print(f'[activity-lowrank k={k}] deviance {dev:.4f} (converged={res.success})')
     if not dev < f_diag:
-        warn(f'The rank-{k} correction to the covariance of activities between samples '
-             '(--activity-lowrank) did not improve the likelihood; the model without the '
-             'correction is kept.')
+        if not silent:
+            warn(f'The rank-{k} correction to the covariance of activities between samples '
+                 '(--activity-lowrank) did not improve the likelihood; the model without the '
+                 'correction is kept.')
         return Sigma0, nu0, np.zeros((s, 0)), float(f_diag)
-    if not res.success:
+    if not res.success and not silent:
         warn(f'The optimisation of the {stage} did not converge ({res.message}); the '
              'estimates of the variances of motif activities may be inaccurate.')
     return Sigma, nu, V, dev

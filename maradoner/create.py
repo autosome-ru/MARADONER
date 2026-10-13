@@ -2,6 +2,7 @@ from .utils import logger_print, warn, openers, InputError, stage_filename
 from .dataset_filter import filter_lowexp
 from .drist import DRIST
 import multiprocessing
+import itertools
 import scipy.stats as st
 import datatable as dt
 import pandas as pd
@@ -531,8 +532,127 @@ def read_groups(sample_groups, sample_names: list, subset: bool = False, row_nam
 # Covariates
 # ------------------------------------------------------------------------------------------------
 
+def parse_formula(formula: str, columns: list) -> list:
+    """Terms of a formula over the columns of the covariate table. "+" joins terms, "a:b"
+    is the interaction of a and b, "a*b" stands for "a + b + a:b"; parentheses group. The
+    formula is split into tokens against the actual column names (the longest name that
+    fits is taken), and any name can be quoted with backticks. Returns a list of tuples
+    of column names, one tuple per term, without repeats.
+
+    Example:
+    >>> parse_formula('age * sex + batch', ['age', 'sex', 'batch'])
+    [('age',), ('sex',), ('age', 'sex'), ('batch',)]
+    """
+    formula = str(formula)
+    columns = [str(c) for c in columns]
+    def fail(reason: str):
+        raise InputError(f'Cannot interpret the formula "{formula}": {reason} A formula lists columns of the '
+                         'covariate table joined by "+", with "a:b" for an interaction and "a*b" for '
+                         '"a + b + a:b", e.g. "age * sex + batch"; a name with spaces or operators can be '
+                         f'quoted with backticks. Columns of the table: {_show(columns, 20)}.')
+    def is_word(c: str):
+        return c.isalnum() or c == '_'
+    text = formula.strip()
+    if text.startswith('~'):
+        text = text[1:]
+    names = sorted(columns, key=len, reverse=True)
+    word = re.compile(r'[\w.]+')
+    tokens = list()
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c == '`':
+            j = text.find(c, i + 1)
+            if j < 0:
+                fail('a backtick is never closed.')
+            tokens.append(('name', text[i + 1:j]))
+            i = j + 1
+            continue
+        name = None
+        if not (i and is_word(text[i - 1]) and is_word(c)):
+            for candidate in names:
+                j = i + len(candidate)
+                if text.startswith(candidate, i) and not (j < n and is_word(candidate[-1]) and is_word(text[j])):
+                    name = candidate
+                    break
+        if name is not None:
+            tokens.append(('name', name))
+            i += len(name)
+        elif c in '+:*()':
+            tokens.append((c, c))
+            i += 1
+        elif word.match(text, i):
+            j = word.match(text, i).end()
+            tokens.append(('name', text[i:j]))
+            i = j
+        else:
+            fail(f'unexpected character "{c}".')
+    unknown = list(dict.fromkeys(t for kind, t in tokens if kind == 'name' and t not in columns))
+    if unknown:
+        fail(f'there is no column {_show(unknown)} in the table.')
+
+    # A value is a list of terms; a term is a tuple of column names.
+    def union(a, b):
+        return a + [t for t in b if frozenset(t) not in {frozenset(x) for x in a}]
+    def interact(a, b):
+        res = list()
+        for x in a:
+            for y in b:
+                res = union(res, [x + tuple(f for f in y if f not in x)])
+        return res
+    pos = 0
+    def peek():
+        return tokens[pos][0] if pos < len(tokens) else None
+    def atom():
+        nonlocal pos
+        if pos >= len(tokens):
+            fail('it ends where a column name is expected.')
+        kind, token = tokens[pos]
+        pos += 1
+        if kind == 'name':
+            return [(token,)]
+        if kind == '(':
+            value = expression()
+            if peek() != ')':
+                fail('a closing parenthesis is missing.')
+            pos += 1
+            return value
+        fail(f'"{token}" stands where a column name is expected.')
+    def interaction():
+        nonlocal pos
+        value = atom()
+        while peek() == ':':
+            pos += 1
+            value = interact(value, atom())
+        return value
+    def product():
+        nonlocal pos
+        value = interaction()
+        while peek() == '*':
+            pos += 1
+            other = interaction()
+            value = union(union(value, other), interact(value, other))
+        return value
+    def expression():
+        nonlocal pos
+        value = product()
+        while peek() == '+':
+            pos += 1
+            value = union(value, product())
+        return value
+    if not tokens:
+        fail('it is empty.')
+    terms = expression()
+    if pos < len(tokens):
+        fail(f'"{tokens[pos][1]}" stands where an operator (+, :, *) is expected.')
+    return terms
+
+
 def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int = 1,
-                     verbose: bool = True):
+                     verbose: bool = True, formula: str = None):
     """Read a covariate/metadata table and build the design matrix X of shape
     (c, s) aligned to ``sample_names``.
 
@@ -544,7 +664,16 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
     mean (numeric) / most-frequent level (categorical), constant columns are dropped, and
     covariates that are linear combinations of the others are rejected.
 
-    Returns (X, covariate_names).
+    By default every column is a term of the design. With a `formula` (see parse_formula)
+    only the columns named in it are used, and it may hold interactions: the columns of
+    an interaction are the products of the encoded columns of its factors, centred, and
+    are named after them with a colon ("age:sex_M"). Interaction columns that are
+    constant or linear combinations of the columns before them are dropped with a warning.
+
+    Returns (X, covariate_names, terms). `terms` is a list of dictionaries, one per term
+    that is left in the design: its `name`, `kind` (numeric, categorical or interaction),
+    the names of its `columns` and, for a categorical covariate, the name its `reference`
+    level would have as a column.
     """
     path = os.fspath(covariates_filename)
     sample_names = [str(s) for s in sample_names]
@@ -584,8 +713,15 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
     df.index = ids[first]
     # Align to the samples of the project.
     df = df.reindex(sample_names)
+    term_factors = None
+    if formula is not None and str(formula).strip():
+        term_factors = parse_formula(formula, df.columns)
+        used = {f for t in term_factors for f in t}
+        df = df[[c for c in df.columns if str(c) in used]]
     rows = [np.ones(len(sample_names), dtype=float)]
     names = ['intercept']
+    # Encoded columns of each column of the table, and what is known about the column.
+    coded, column_info = dict(), dict()
     imputed, constant, empty = list(), list(), list()
     for col in df.columns:
         series = df[col]
@@ -620,8 +756,8 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
                 constant.append(str(col))
                 continue
             v = (v - v.mean()) / std
-            rows.append(v.values.astype(float))
-            names.append(str(col))
+            coded[str(col)] = [(str(col), v.values.astype(float))]
+            column_info[str(col)] = dict(kind='numeric')
         else:
             s = series.astype('object')
             mode = s.dropna()
@@ -632,13 +768,17 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
             dummies = pd.get_dummies(s, prefix=str(col), drop_first=True)
             if dummies.shape[1] == 0:
                 constant.append(str(col))
+            levels = list()
             for dcol in dummies.columns:
                 v = dummies[dcol].astype(float)
                 if v.std() == 0:
                     continue
                 v = v - v.mean()
-                rows.append(v.values.astype(float))
-                names.append(str(dcol))
+                levels.append((str(dcol), v.values.astype(float)))
+            if levels:
+                coded[str(col)] = levels
+                column_info[str(col)] = dict(kind='categorical',
+                                             reference=str(pd.get_dummies(s, prefix=str(col)).columns[0]))
     if empty:
         warn(f'Covariate(s) {_show(empty)} of "{path}" have no values at all and were dropped.')
     if constant:
@@ -648,6 +788,44 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
         warn('Missing values of the covariate table were imputed (column mean for numeric covariates, most '
              'frequent level for categorical ones): ' + ', '.join(f'"{c}" ({k} of {len(sample_names)} samples)'
                                                                    for c, k in imputed) + '.')
+    if term_factors is None:
+        term_factors = [(c,) for c in coded]
+    else:
+        lost = [':'.join(t) for t in term_factors if any(f not in coded for f in t)]
+        if lost:
+            warn(f'Term(s) {_show(lost)} of the formula involve dropped covariates and were dropped as well.')
+        term_factors = [t for t in term_factors if all(f in coded for f in t)]
+        main = {t[0] for t in term_factors if len(t) == 1}
+        orphans = [f'{":".join(t)} (without {", ".join(f for f in t if f not in main)})'
+                   for t in term_factors if len(t) > 1 and any(f not in main for f in t)]
+        if orphans:
+            warn(f'The formula has interaction(s) without the covariates they are made of: {"; ".join(orphans)}. '
+                 'The columns of an interaction are products of the encoded (centred) covariates, and its '
+                 'effects are easier to interpret when these covariates are in the model too ("a * b").')
+    terms, interaction_columns, degenerate = list(), set(), list()
+    for factors in term_factors:
+        if len(factors) == 1:
+            columns = coded[factors[0]]
+            info = dict(column_info[factors[0]])
+        else:
+            columns = list()
+            for combination in itertools.product(*(coded[f] for f in factors)):
+                v = np.prod([c[1] for c in combination], axis=0)
+                v = v - v.mean()
+                name = ':'.join(c[0] for c in combination)
+                if np.linalg.norm(v) <= 1e-8 * len(v) ** 0.5:
+                    degenerate.append(name)
+                    continue
+                columns.append((name, v))
+            interaction_columns.update(name for name, _ in columns)
+            info = dict(kind='interaction')
+        for name, v in columns:
+            rows.append(v)
+            names.append(name)
+        terms.append(dict(name=':'.join(factors), columns=[name for name, _ in columns], **info))
+    if degenerate:
+        warn(f'Interaction column(s) {_show(degenerate)} are constant over the samples of the project and were '
+             'dropped.')
     if len(names) == 1:
         warn(f'No usable covariate is left in "{path}"; the project is created with the intercept only.')
     repeated = sorted({n for n in names if names.count(n) > 1})
@@ -658,19 +836,29 @@ def build_covariates(covariates_filename: str, sample_names: list, n_jobs: int =
     if X.shape[0] > X.shape[1]:
         raise InputError(f'There are {X.shape[0] - 1} covariates (plus the intercept) for only {X.shape[1]} '
                          f'samples, so their effects cannot be estimated. Remove covariates from "{path}".')
-    accepted, dependent = [0], list()
+    accepted, dependent, aliased = [0], list(), list()
     for i in range(1, X.shape[0]):
         A = X[accepted].T
         coef = np.linalg.lstsq(A, X[i], rcond=None)[0]
         if np.linalg.norm(X[i] - A @ coef) <= 1e-8 * max(np.linalg.norm(X[i]), 1.0):
             parts = [names[accepted[k]] for k in np.flatnonzero(np.abs(coef) > 1e-6)]
-            dependent.append(f'"{names[i]}" is a combination of {", ".join(chr(34) + p + chr(34) for p in parts)}')
+            what = f'"{names[i]}" is a combination of {", ".join(chr(34) + p + chr(34) for p in parts)}'
+            # (a combination of levels that occurs in no sample makes such a column)
+            (aliased if names[i] in interaction_columns else dependent).append(what)
         else:
             accepted.append(i)
     if dependent:
         raise InputError(f'The covariates of "{path}" are linearly dependent, so their effects cannot be told '
                          f'apart: {"; ".join(dependent[:5])}. Remove one covariate of each such set.')
-    return X, names
+    if aliased:
+        warn(f'{len(aliased)} interaction column(s) are linear combinations of the columns before them and were '
+             f'dropped: {"; ".join(aliased[:5])}{"; ..." if len(aliased) > 5 else ""}.')
+        X = X[accepted]
+        names = [names[i] for i in accepted]
+        for term in terms:
+            term['columns'] = [c for c in term['columns'] if c in names]
+    terms = [term for term in terms if term['columns']]
+    return X, names, terms
 
 
 # ------------------------------------------------------------------------------------------------
@@ -728,11 +916,15 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
                    motif_expression_filenames=None, loading_matrix_transformations=None, sample_groups=None, motif_postfixes=None,
                    promoter_filter_lowexp_cutoff=0.9, promoter_filter_plot_filename=None, promoter_filter_max=True,
                    sample_groups_subset=False,  motif_names_filename=None, covariates_filename=None,
+                   covariates_formula=None,
                    n_jobs:float = 0.5, compression='raw', dump=True, verbose=True):
     project_name = os.fspath(project_name)
     # ---- arguments (nothing is read yet) ----
     if compression not in openers:
         raise InputError(f'Unknown compression "{compression}". Valid values: {", ".join(openers)}.')
+    if covariates_formula and not covariates_filename:
+        raise InputError('"--formula" describes the covariates of the table given with "--covariates", '
+                         'but there is no such table.')
     n_jobs = _resolve_n_jobs(n_jobs)
     w = promoter_filter_lowexp_cutoff
     if not (isinstance(w, (int, float, np.integer, np.floating)) and 0 < w <= 1):
@@ -802,10 +994,11 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
              f'{Y_all.max():g}), but MARADONER expects expression on a log scale, e.g. log2(TPM + 1).')
     if covariates_filename:
         logger_print('Building covariate design matrix...', verbose)
-        covariates, covariate_names = build_covariates(covariates_filename, sample_names,
-                                                       n_jobs=n_jobs, verbose=verbose)
+        covariates, covariate_names, covariate_terms = build_covariates(covariates_filename, sample_names,
+                                                                        n_jobs=n_jobs, verbose=verbose,
+                                                                        formula=covariates_formula)
     else:
-        covariates, covariate_names = None, None
+        covariates, covariate_names, covariate_terms = None, None, None
 
     # ---- loading matrices ----
     tables = [_read_table(f, 'loading matrix', n_jobs, col_label='motif') for f in loading_matrix_filenames]
@@ -993,6 +1186,7 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
            'weights': weights,
            'covariates': covariates,
            'covariate_names': covariate_names,
+           'covariate_terms': covariate_terms,
            'groups': sample_groups}
     if dump:
         logger_print('Saving project...', verbose)

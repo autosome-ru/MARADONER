@@ -2404,6 +2404,7 @@ def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]
                          motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
                          L=L_d, X=getattr(data, 'X', None),
                          covariate_names=getattr(data, 'covariate_names', None),
+                         covariate_terms=getattr(data, 'covariate_terms', None),
                          fmt=data.fmt)
     data = ProjectData(Y=Y, B=B, K=data.K, weights=data.weights,
                          group_inds=data.group_inds, group_names=data.group_names,
@@ -2411,6 +2412,7 @@ def split_data(data: ProjectData, inds: list) -> tuple[ProjectData, ProjectData]
                          motif_postfixes=data.motif_postfixes, sample_names=data.sample_names,
                          L=L, X=getattr(data, 'X', None),
                          covariate_names=getattr(data, 'covariate_names', None),
+                         covariate_terms=getattr(data, 'covariate_terms', None),
                          fmt=data.fmt)
     return data_d, data
 

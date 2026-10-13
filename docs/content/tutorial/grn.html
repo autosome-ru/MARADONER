@@ -235,9 +235,11 @@ Here, $μ$ is the mean activity of the motif, $a$ is its effect of a covariate, 
 
 <p>Here, the value of the option is the name of a covariate as <code>create</code> lists it. In the second model, the motif keeps its mean and its deviations and loses its effect of age. An effect is the same in all groups, so the samples are no longer split by groups. All of them enter one likelihood, each sample with the error variance of its group. The outcome is one table, <i>results/belief/covariates/age.hdf</i>, with a threshold next to it in <i>age.txt</i>.</p>
 
-<p>The threshold is 0.87, and 66488 of the 840658 pairs (7.9%) pass it. All of them belong to motifs with a true effect of age. The stronger the effect the more promoters are linked to a motif: 31% of the pairs pass for the motifs with a true effect of 0.4 or more in absolute value, and none for those with an effect below 0.1. For the <i>batch_batch_2</i> covariate, 1 pair of the 840658 passes. That's fine: the batches were assigned at random.</p>
+<p>The threshold is 0.87, and 67649 of the 968500 pairs (7.0%) pass it. All of them belong to motifs with a true effect of age. The stronger the effect the more promoters are linked to a motif: 31% of the pairs pass for the motifs with a true effect of 0.4 or more in absolute value, and none for those with an effect below 0.1. For the <i>batch_batch_2</i> covariate, 1 pair of the 968500 passes. That's fine: the batches were assigned at random.</p>
 
-<p>The option can be given several times for a table per covariate, and <code>--covariate all</code> stands for all the covariates of a project. The motifs removed by <code>predict</code> are absent from these tables as well, even though such a motif may have an effect of a covariate.</p>
+<p>The option can be given several times for a table per covariate, and <code>--covariate all</code> stands for all the covariates of a project. The name of an <a href="./covariates.html#formula">interaction</a> is accepted too.</p>
+
+<p>These tables hold all motifs of the project. A motif left out by <code>predict</code> has no deviations to speak of, but it has an effect of a covariate like any other motif. Here 66 motifs were left out, and 7 of them have links.</p>
 
 <h2 id="choose">Which mode suits which question?</h2>
 
@@ -286,7 +288,7 @@ Here, $μ$ is the mean activity of the motif, $a$ is its effect of a covariate, 
 
 <h3 id="choose-covariate">--covariate</h3>
 
-<p>This mode is for a property of samples known beforehand and passed to <code>create</code>. It is not tied to a group, and it gains from the number of samples. In the example <a href="#covariates">above</a>, 66487 of the 66488 links belong to motifs with a significant effect of age in <i>params/covariates/age.tsv</i>. So the table of effects tells what motifs respond to a covariate, and the network adds the promoters.</p>
+<p>This mode is for a property of samples known beforehand and passed to <code>create</code>. It is not tied to a group, and it gains from the number of samples. In the example <a href="#covariates">above</a>, 67648 of the 67649 links belong to motifs with a significant effect of age in <i>params/covariates/age.tsv</i>. So the table of effects tells what motifs respond to a covariate, and the network adds the promoters.</p>
 
 <p>For a categorical covariate, a link is about the difference between a level and the reference level.</p>
 

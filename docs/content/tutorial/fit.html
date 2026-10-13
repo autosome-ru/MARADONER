@@ -116,7 +116,7 @@ So each motif has a mean activity $μ_m$ and a variance $τ$, and each group of 
     </tr>
     <tr>
       <td><code>--activity-lowrank &lt;int&gt;</code></td>
-      <td>Rank $k$ of a low-rank correction to the covariance of the activities across samples: it becomes $G + V V^T$, with $G$ being a diagonal matrix of $ν$. Captures hidden factors of samples along which motif activities change together, as explained in the <a href="./lowrank.html">Hidden covariates</a> section. Requires motif variances</td>
+      <td>Rank $k$ of a low-rank correction to the covariance of the activities across samples: it becomes $G + V V^T$, with $G$ being a diagonal matrix of $ν$. Captures hidden factors of samples along which motif activities change together, as explained in the <a href="./lowrank.html">Hidden covariates</a> section. The rank is chosen with the <a href="./lowrank.html#rank"><code>select-rank</code></a> command. Requires motif variances</td>
       <td>0</td>
     </tr>
     <tr>

@@ -61,6 +61,21 @@ def safe_filenames(names: list, what: str = 'group') -> list:
              f'names; their files are named differently: {shown}.')
     return res
 
+def covariate_filenames(names: list) -> list:
+    """File names for the tables that are written one per covariate or per term of the
+    covariate design. The colon of an interaction ("age:sex_M") is not allowed in file
+    names of every system and is replaced by a dot; the rest is as in safe_filenames.
+    Names that coincide after that get a numeric suffix."""
+    res = safe_filenames([str(n).replace(':', '.') for n in names], what='covariate')
+    used = set()
+    for i, name in enumerate(res):
+        k = 2
+        while res[i] in used:
+            res[i] = f'{name}_{k}'
+            k += 1
+        used.add(res[i])
+    return res
+
 def load_fit(project_name: str, data: ProjectData) -> tuple:
     """Load the fit of a project and bring `data` in line with it (cluster profiles
     instead of motifs if the fit was made with "--clustering"). Returns (data, fit)."""
@@ -471,7 +486,20 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
     Y = Y - BMX
     
     filtered = filtered_motifs(activities)
-    if len(filtered):
+    R_cov = None
+    if MX_cov is not None:
+        # A motif dropped by `predict` has no deviations, but it has effects of covariates
+        # like any other motif: all motifs are tested against a covariate. The residual of
+        # the full model is the same for all covariates and is computed once, with the
+        # loadings of the motifs that have deviations.
+        B_kept = np.delete(B, filtered, axis=1) if len(filtered) else B
+        if B_kept.shape[1] != U.shape[0]:
+            raise InputError(f'Loading matrix has {B_kept.shape[1]} motifs after filtering but the '
+                             f'predicted activities have {U.shape[0]}. The "{project_name}.predict" '
+                             'file is out of sync with the loading matrix -- re-run "maradoner predict".')
+        R_cov = Y - B_kept @ U
+        del B_kept
+    elif len(filtered):
         motif_names = list(np.delete(np.asarray(motif_names, dtype=object), filtered))
         B = np.delete(B, filtered, axis=1)
         MX = np.delete(MX, filtered, axis=0)
@@ -479,7 +507,7 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
             MX_cov = np.delete(MX_cov, filtered, axis=1)
         motif_mean = np.delete(motif_mean, filtered)
         motif_variance = np.delete(motif_variance, filtered)
-    if B.shape[1] != U.shape[0]:
+    if R_cov is None and B.shape[1] != U.shape[0]:
         raise InputError(f'Loading matrix has {B.shape[1]} motifs after filtering but the '
                          f'predicted activities have {U.shape[0]}. The "{project_name}.predict" '
                          'file is out of sync with the loading matrix -- re-run "maradoner predict".')
@@ -514,7 +542,7 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
         sample_weights *= sigma_h
         sigma = (sigma_h * np.asarray(fit.error_variance.promotor) * np.ones(len(B))).reshape(-1, 1)
         tasks = [(sigma, None, name, file_name, np.arange(n_samples))
-                 for name, file_name in zip(covariates, safe_filenames(covariates, 'covariate'))]
+                 for name, file_name in zip(covariates, covariate_filenames(covariates))]
     logit_prior = np.log(prior_h1) - np.log1p(-prior_h1)
     # The likelihood ratios are stored in single precision: larger ones are capped.
     loglr_max = 88.72
@@ -528,17 +556,19 @@ def grn(project_name: str,  output: str, use_hdf=True, save_stat=False,
         U_g = U[:, inds]                                  # (m, n_g)
         # Contribution of motif m to promoter p in sample n: theta_pmn = B_pm V_mn, where
         # V is the deviation U of the activity (+ its mean M X if the means are tested too).
-        V_g = U_g + MX[:, inds] if include_mean else U_g
-        if MX_cov is not None:
+        if MX_cov is None:
+            V_g = U_g + MX[:, inds] if include_mean else U_g
+        else:
             # ... or the part of the mean that is due to the covariate.
             V_g = MX_cov[n_task] * sample_weights ** 0.5
         # Residual of the full model; without motif m it becomes R_pn + theta_pmn, so
         # loglr_pm = log L(full) - log L(without m) = sum_n [(R_pn + theta_pmn)^2 - R_pn^2] / (2 var_p)
         #          = [2 B_pm (R V^T)_pm + B_pm^2 sum_n V_mn^2] / (2 var_p).
         # Only (p, m) objects are ever formed, never the (p, m, n_g) tensor.
-        R_g = Y[:, inds] - B @ U_g                        # (p, n_g)
-        if MX_cov is not None:
-            R_g *= sample_weights ** 0.5
+        if MX_cov is None:
+            R_g = Y[:, inds] - B @ U_g                    # (p, n_g)
+        else:
+            R_g = R_cov * sample_weights ** 0.5
         loglr = R_g @ V_g.T
         del R_g
         loglr *= 2
