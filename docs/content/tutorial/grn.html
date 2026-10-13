@@ -50,6 +50,92 @@ By default, $π$ is a neutral 0.5.</p>
 
 <p>Nothing is fitted anew at this step. The estimates are plugged in as if they were exact, hence the word "heuristic" above.</p>
 
+<h2 id="parts">What exactly is taken out?</h2>
+
+<p>The picture above has 2 models, and they differ in one motif at one promoter. Let $b$ be the loading of the motif at the promoter. In a sample $n$, the full model holds the term
+$$b (μ + a x_n + u_n).$$
+Here, $μ$ is the mean activity of the motif, $a$ is its effect of a covariate, $x_n$ is the covariate in the sample and $u_n$ is the deviation of the activity in the sample. The term with $a$ is there only in a project with <a href="./covariates.html">covariates</a>, and with several covariates it is a sum over them. The second model lacks a part of that term, and the part depends on the options:</p>
+
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 232" role="img" aria-label="The parts of an activity taken out of the second model: all 3 by default, the deviation with --no-means, the effect of a covariate with --covariate.">
+<text class="sub" x="475" y="20" text-anchor="middle">activity of the motif in a sample</text>
+<text x="10" y="58">default</text>
+<text class="sub" x="10" y="77">a table per group</text>
+<rect class="box-w" x="200" y="36" width="140" height="50" rx="4"/>
+<text x="270" y="57" text-anchor="middle">Mean</text>
+<text class="sub" x="270" y="76" text-anchor="middle">taken out</text>
+<rect class="box-w" x="364" y="36" width="200" height="50" rx="4"/>
+<text x="464" y="57" text-anchor="middle">Effect × covariate</text>
+<text class="sub" x="464" y="76" text-anchor="middle">taken out</text>
+<rect class="box-w" x="588" y="36" width="162" height="50" rx="4"/>
+<text x="669" y="57" text-anchor="middle">Deviation</text>
+<text class="sub" x="669" y="76" text-anchor="middle">taken out</text>
+<text x="352" y="66" text-anchor="middle">+</text>
+<text x="576" y="66" text-anchor="middle">+</text>
+<text class="cmd" x="10" y="124">--no-means</text>
+<text class="sub" x="10" y="143">a table per group</text>
+<rect class="box" x="200" y="102" width="140" height="50" rx="4"/>
+<text x="270" y="123" text-anchor="middle">Mean</text>
+<text class="sub" x="270" y="142" text-anchor="middle">stays</text>
+<rect class="box" x="364" y="102" width="200" height="50" rx="4"/>
+<text x="464" y="123" text-anchor="middle">Effect × covariate</text>
+<text class="sub" x="464" y="142" text-anchor="middle">stays</text>
+<rect class="box-w" x="588" y="102" width="162" height="50" rx="4"/>
+<text x="669" y="123" text-anchor="middle">Deviation</text>
+<text class="sub" x="669" y="142" text-anchor="middle">taken out</text>
+<text x="352" y="132" text-anchor="middle">+</text>
+<text x="576" y="132" text-anchor="middle">+</text>
+<text class="cmd" x="10" y="190">--covariate</text>
+<text class="sub" x="10" y="209">a table per covariate</text>
+<rect class="box" x="200" y="168" width="140" height="50" rx="4"/>
+<text x="270" y="189" text-anchor="middle">Mean</text>
+<text class="sub" x="270" y="208" text-anchor="middle">stays</text>
+<rect class="box-w" x="364" y="168" width="200" height="50" rx="4"/>
+<text x="464" y="189" text-anchor="middle">Effect × covariate</text>
+<text class="sub" x="464" y="208" text-anchor="middle">taken out</text>
+<rect class="box" x="588" y="168" width="162" height="50" rx="4"/>
+<text x="669" y="189" text-anchor="middle">Deviation</text>
+<text class="sub" x="669" y="208" text-anchor="middle">stays</text>
+<text x="352" y="198" text-anchor="middle">+</text>
+<text x="576" y="198" text-anchor="middle">+</text>
+</svg>
+</figure>
+
+<p>In the picture, a row is a mode of <code>grn</code>, and an orange part is absent from the second model. A grey part stays in both models and is not tested. Written out, the term of the second model is</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Mode</th>
+      <th scope="col">Full model</th>
+      <th scope="col">Second model</th>
+      <th scope="col">The question</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Default</td>
+      <td>$b (μ + a x_n + u_n)$</td>
+      <td>0</td>
+      <td>Does the motif matter for the promoter in this group at all?</td>
+    </tr>
+    <tr>
+      <td><code>--no-means</code></td>
+      <td>$b (μ + a x_n + u_n)$</td>
+      <td>$b (μ + a x_n)$</td>
+      <td>Does the deviation of the motif in this group matter for the promoter?</td>
+    </tr>
+    <tr>
+      <td><code>--covariate</code></td>
+      <td>$b (μ + a x_n + u_n)$</td>
+      <td>$b (μ + u_n)$</td>
+      <td>Does the effect of the covariate on the motif matter for the promoter?</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The terms of all the other motifs are the same in both models. In the first 2 modes the likelihoods are computed over the samples of a group. In the third one they are computed over all samples, as discussed <a href="#covariates">below</a>.</p>
+
 <h2 id="network">From beliefs to a network</h2>
 
 <p>A table of beliefs is not a network yet. For each group, {name} also finds a threshold: the pairs with a belief at or above it have a Bayesian false discovery rate of 0.05. The threshold is a single number saved next to the table, e.g. <i>results/belief/group_1.txt</i>. The pairs passing it are the links of the network of the group:</p>
@@ -141,17 +227,76 @@ By default, $π$ is a neutral 0.5.</p>
 
 <h2 id="covariates">What about covariates?</h2>
 
-<p>In a project with <a href="./covariates.html">covariates</a>, an activity has one more part: the effect of a covariate times the covariate. By default it is tested in one lump with the mean and the deviation. With <code>--no-means</code> it is not tested at all, as it stays in both models. The <code>--covariate</code> option tests it alone. Let's take the project of the <a href="./covariates.html#example">Covariates</a> section and look for the promoters explained by the effect of age:</p>
+<p>In a project with <a href="./covariates.html">covariates</a>, an activity has a part due to them: the effect of a covariate times the covariate. As the <a href="#parts">table above</a> shows, by default it is tested in one lump with the mean and the deviation, and with <code>--no-means</code> it is not tested at all. The <code>--covariate</code> option tests it alone. Let's take the project of the <a href="./covariates.html#example">Covariates</a> section and look for the promoters explained by the effect of age:</p>
 
 <pre class="prettyprint">
 > maradoner grn MyProject results --covariate age
 </pre>
 
-<p>Here, the value of the option is the name of a covariate as <code>create</code> lists it. The second model of the picture above is now different: the motif keeps its mean and its deviations there and loses its effect of age. An effect is the same in all groups, so the samples are no longer split by groups. All of them enter one likelihood, each sample with the error variance of its group. The outcome is one table, <i>results/belief/covariates/age.hdf</i>, with a threshold next to it in <i>age.txt</i>.</p>
+<p>Here, the value of the option is the name of a covariate as <code>create</code> lists it. In the second model, the motif keeps its mean and its deviations and loses its effect of age. An effect is the same in all groups, so the samples are no longer split by groups. All of them enter one likelihood, each sample with the error variance of its group. The outcome is one table, <i>results/belief/covariates/age.hdf</i>, with a threshold next to it in <i>age.txt</i>.</p>
 
 <p>The threshold is 0.87, and 66488 of the 840658 pairs (7.9%) pass it. All of them belong to motifs with a true effect of age. The stronger the effect the more promoters are linked to a motif: 31% of the pairs pass for the motifs with a true effect of 0.4 or more in absolute value, and none for those with an effect below 0.1. For the <i>batch_batch_2</i> covariate, 1 pair of the 840658 passes. That's fine: the batches were assigned at random.</p>
 
 <p>The option can be given several times for a table per covariate, and <code>--covariate all</code> stands for all the covariates of a project. The motifs removed by <code>predict</code> are absent from these tables as well, even though such a motif may have an effect of a covariate.</p>
+
+<h2 id="choose">Which mode suits which question?</h2>
+
+<p>The 3 modes answer different questions, and a link means a different thing in each:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Question</th>
+      <th scope="col">Mode</th>
+      <th scope="col">A link says</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>What regulates a promoter in a given condition?</td>
+      <td>Default</td>
+      <td>The expression of the promoter in the group is explained better with the motif than without it</td>
+    </tr>
+    <tr>
+      <td>What makes a group different from the others?</td>
+      <td><code>--no-means</code></td>
+      <td>The expression of the promoter in the group departs from its usual level, and the deviation of the motif in the group explains it</td>
+    </tr>
+    <tr>
+      <td>What changes with age, dose, time or another property of samples?</td>
+      <td><code>--covariate</code></td>
+      <td>The expression of the promoter follows the covariate across the samples, and the effect of the covariate on the motif explains it</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="choose-default">Default</h3>
+
+<p>The default network describes a group as such. Most of it comes from the mean activities. In the <a href="./quickstart.html#Example">Quickstart</a> example, the share of promoters linked to a motif in <i>group_1</i> has a correlation of 0.96 with the absolute value of the true mean activity of the motif. Hence the networks of different groups share many links: for a pair of groups, a median of 27% of the links found in either group is found in both.</p>
+
+<p>This mode suits a project where the groups are studied one at a time, and a question about the regulators of a gene in general. It suits a comparison of groups poorly: a link present in one table and absent from another may be a matter of the threshold or of the error variance of a group.</p>
+
+<h3 id="choose-nomeans">--no-means</h3>
+
+<p>A deviation is the activity of a motif in a group relative to its average over all samples. A network of deviations therefore holds what is specific to a group. A motif equally active everywhere has no links in it, however strong it is as a regulator.</p>
+
+<p>This network is much smaller. In the same example the default mode finds from 7777 to 122352 links per group, and <code>--no-means</code> finds from 14 to 125. That's expected: a group there has 5 or 6 samples, and a deviation is small next to a mean. The mode goes well with the <a href="./test.html">tests</a>: a motif is first found to differ between groups, and its links then tell at what promoters the difference shows.</p>
+
+<p>In a project with covariates, a difference between groups that follows a covariate is absent from the deviations, and hence from this network.</p>
+
+<h3 id="choose-covariate">--covariate</h3>
+
+<p>This mode is for a property of samples known beforehand and passed to <code>create</code>. It is not tied to a group, and it gains from the number of samples. In the example <a href="#covariates">above</a>, 66487 of the 66488 links belong to motifs with a significant effect of age in <i>params/covariates/age.tsv</i>. So the table of effects tells what motifs respond to a covariate, and the network adds the promoters.</p>
+
+<p>For a categorical covariate, a link is about the difference between a level and the reference level.</p>
+
+<h3 id="choose-all">In all modes</h3>
+
+<ul>
+  <li>A belief is a posterior probability under plugged-in estimates. It is not a p-value, and the false discovery rate of the threshold is a Bayesian one;</li>
+  <li>A link needs a non-zero loading. It says that the model explains the promoter better with the motif. It is no proof that a transcription factor binds there;</li>
+  <li>The default mode and <code>--no-means</code> write files of the same names, so they need different output folders. The tables of <code>--covariate</code> go to a separate subfolder and may share a folder with either.</li>
+</ul>
 
 <h2 id="read">Reading the tables</h2>
 
