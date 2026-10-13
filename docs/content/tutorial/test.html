@@ -1,0 +1,154 @@
+<h2 id="scheme">General scheme</h2>
+
+<p>There are 2 ways to test a hypothesis about a motif in {name}:</p>
+
+<ol>
+  <li>Through the parameters. Estimates of the motif variance $τ$ and of the mean activity $μ_m$ are asymptotically normal, and their standard errors come from the Fisher information;</li>
+  <li>Through the predicted activities. The deviations of activity in each group have a posterior distribution with a known covariance matrix. This is also the approach of the original MARA.</li>
+</ol>
+
+<p>The first way answers questions about a motif in general, and the second one compares groups. The tests are listed below.</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Question</th>
+      <th scope="col">Way</th>
+      <th scope="col">Where</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Does the activity of a motif vary across samples at all?</td>
+      <td>Parameters</td>
+      <td><i>tests/asymptotics_based/anova.tsv</i></td>
+    </tr>
+    <tr>
+      <td>Is a motif an activator or a repressor on average?</td>
+      <td>Parameters</td>
+      <td><i>tests/asymptotics_based/sign.tsv</i></td>
+    </tr>
+    <tr>
+      <td>Does the activity of a motif differ between groups?</td>
+      <td>Activities</td>
+      <td><i>tests/prediction_based/anova.tsv</i></td>
+    </tr>
+    <tr>
+      <td>Does it differ between the groups of my choice?</td>
+      <td>Activities</td>
+      <td>The <code>anova</code> command</td>
+    </tr>
+    <tr>
+      <td>Does a combination of groups, e.g. a difference of 2, differ from zero?</td>
+      <td>Activities</td>
+      <td>The <code>contrast</code> command</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The first 3 tables are written by <a href="./export.html"><code>export</code></a>. All tests need a prior run of <code>predict</code>.</p>
+
+<h2 id="anova">Does a motif vary at all?</h2>
+
+<p>A motif of constant activity has a variance $τ$ of zero, so the hypothesis tested is $τ = 0$ against $τ > 0$. The <i>tests/asymptotics_based/anova.tsv</i> table has 2 tests of it:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Columns</th>
+      <th scope="col">Test</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>stat</b>, <b>p-value</b>, <b>FDR</b></td>
+      <td>A likelihood-ratio test. Zero is on the boundary of the allowed values of a variance, so the p-value is taken from an equal mixture of $χ^2$ distributions with 0 and 1 degrees of freedom. The FDR is that of Benjamini and Hochberg over all motifs of the model</td>
+    </tr>
+    <tr>
+      <td><b>wald_stat</b>, <b>wald_p-value</b>, <b>wald_fdr</b></td>
+      <td>A one-sided Wald test with the statistic $τ$ over its standard error. It is the older one and has much less power</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>In the <a href="./quickstart.html#Example">Quickstart</a> example, the likelihood-ratio test finds 366 motifs at an FDR of 0.05, and 1 of them is a motif of constant activity.</p>
+
+<p>The <code>--anova-mode negative</code> option of <code>export</code> reports the opposite tail of the Wald statistic. A small p-value then says that the estimate of $τ$ is unusually close to zero for its standard error. That alone is no evidence that a motif does not vary.</p>
+
+<h2 id="sign">Activator or repressor?</h2>
+
+<p>The mean activity of a motif has a sign: positive for a motif whose presence raises the expression on average, negative for one that lowers it. The <i>tests/asymptotics_based/sign.tsv</i> table tests the sign of each motif, the ones left out by <code>predict</code> included:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Columns</th>
+      <th scope="col">Meaning</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>stat</b></td>
+      <td>The mean activity over its standard error</td>
+    </tr>
+    <tr>
+      <td><b>pvalue_pos</b>, <b>fdr_pos</b></td>
+      <td>A one-sided test with the alternative of a positive mean</td>
+    </tr>
+    <tr>
+      <td><b>pvalue_neg</b>, <b>fdr_neg</b></td>
+      <td>A one-sided test with the alternative of a negative mean</td>
+    </tr>
+    <tr>
+      <td><b>zero</b>, <b>fdr_zero</b></td>
+      <td>The probability of a standard normal variable being closer to zero than <b>stat</b> is. A small value says that the mean is close to zero for its standard error</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="alert alert-warning" role="alert">
+The <b>zero</b> column is no p-value of a test that the mean is zero. For a proper test of that kind, <code>export</code> has the <code>--zero-margin &lt;float&gt;</code> option. With it, the column becomes an equivalence test with the null hypothesis of the absolute mean being at least the margin.
+</div>
+
+<p>In the Quickstart example, 172 motifs get a positive sign and 167 a negative one at an FDR of 0.05. The true means are known there, and every one of the 337 calls made for an active motif has the right sign. The other 2 calls are for motifs with a true mean of zero.</p>
+
+<h2 id="groups">Comparing groups</h2>
+
+<p>The <i>tests/prediction_based/anova.tsv</i> table tests whether the activity of a motif is the same in all groups. It is a $χ^2$ test on the predicted deviations and their posterior covariances, with the number of groups minus 1 degrees of freedom. The FDR is that of Benjamini and Yekutieli.</p>
+
+<p>Often only some of the groups are of interest. The <code>anova</code> command runs the same test for the groups listed after the name of the output table:</p>
+
+<pre class="prettyprint">
+> maradoner anova MyProject results/anova_1_2_3.tsv group_1 group_2 group_3
+</pre>
+
+<pre>
+	stat	p-value	FDR
+motif_1	0.2138217015255737	0.8986057794393304	1.0
+motif_2	1.7574175670680292	0.4153188321271469	1.0
+inactive_motif_3	1.5194507974656637	0.4677948664373861	1.0
+</pre>
+
+<p>Here, 107 motifs of 440 differ between the 3 groups at an FDR of 0.05. If the table is put into a folder made by <code>export</code>, it gets an entry in the <i>README.md</i> there.</p>
+
+<h2 id="contrast">Contrasts</h2>
+
+<p>A contrast is a weighted sum of group activities. The simplest one is a difference of 2 groups. The <code>contrast</code> command takes it as an algebraic expression of group names:</p>
+
+<pre class="prettyprint">
+> maradoner contrast MyProject "group_2 - group_1" results
+> maradoner contrast MyProject "(group_1 + group_2 + group_3) / 3 - group_4" results --postfix first3_vs_4
+</pre>
+
+<p>For each motif, the weighted sum of its activities is divided by the standard deviation of that sum, and the result is tested with a two-sided z-test. The first command writes <i>results/contrast.tsv</i>:</p>
+
+<pre>
+	z_stat	pval	fdr
+motif_170	-8.540774231026656	1.3332548119273329e-17	3.9099771677659717e-14
+motif_307	-8.038610821576388	9.086266174284185e-16	1.332344461233858e-12
+motif_9	7.761655228814863	8.3828033823961e-15	8.194625046870274e-12
+</pre>
+
+<p>The rows shown are the 3 motifs of the largest absolute <b>z_stat</b>. A negative one stands for a motif less active in <i>group_2</i> than in <i>group_1</i>. The FDR is that of Benjamini and Yekutieli.</p>
+
+<p>The <code>--postfix</code> option of the second command adds a postfix to the name of the table, and the result goes to <i>results/contrast_first3_vs_4.tsv</i>. Without it, each run would overwrite the table of the previous one.</p>

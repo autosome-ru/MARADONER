@@ -1,0 +1,97 @@
+<!doctype html><html lang=en xmlns:m=http://www.w3.org/1998/Math/MathML> <head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1"><meta name=description content=Quickstart><meta name=keywords content="tutorial, quickstart, howto, installation, usage"><meta name=author content="Georgy Meshcheryakov"><link rel="shortcut icon" href=../files/favicon.ico><title>Quickstart |Tutorial</title><link rel=stylesheet href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap"><link rel=stylesheet href=../css/jqmath-0.4.3.min.css><link rel=stylesheet href=../css/mathfont.css><link rel=stylesheet href=../css/maradoner.css><script src=../js/jqmath-vanilla.min.js></script></head> <body> <header class=top> <div class=top-in> <a class=brand href=../index.html><img src=../files/doner.png alt width=543 height=375><span>MARADONER</span></a> <nav class=tabs aria-label=Site> <a href=../index.html>About</a> <a href=../tutorial/quickstart.html aria-current=page>Tutorial</a> <a href=../faq.html>F.A.Q.</a> <a href=../contact.html>Contact</a> <a href=../cite.html>Cite</a> </nav> </div> </header> <div class="wrap has-pages has-toc"> <nav class=pages aria-label=Tutorial> <a class=active href=quickstart.html aria-current=page>Quickstart</a> <a href=create.html>Reading dataset</a> <a href=fit.html>Parameters estimation</a> <a href=predict.html>Motif activities</a> <a href=gof.html>Goodness of fit</a> <a href=export.html>Results</a> <a href=test.html>Tests</a> <a href=covariates.html>Covariates</a> <a href=lowrank.html>Hidden covariates</a> <a href=grn.html>Regulatory network</a> <a href=other.html>Other models</a> <a href=clockworks.html>How it works</a> </nav> <main> <h1>Quickstart</h1> <h2 id=install>Installation</h2> <p><b>MARADONER</b> is best installed via the <i>pip</i> package manager:</p> <pre class=prettyprint>
+> pip install maradoner
+</pre> <p>Alternatively, the latest version can be fetched from the git repository:</p> <pre class=prettyprint>
+> git clone https://github.com/autosome-ru/maradoner
+> cd maradoner
+> pip install .
+</pre> <p><b>MARADONER</b> needs Python 3.11 or newer.</p> <h2 id=overview>Overview</h2> <p>A user communicates with <b>MARADONER</b> through the command-line interface. After the package is installed, the environment should become aware of the <code class=nw>maradoner</code> command. Let's check that it is indeed the case by invoking</p> <pre class=prettyprint>
+> maradoner --help
+</pre> <p>A list of available commands alongside their short descriptions should appear. Help is available for any listed command as well, e.g.</p> <pre class=prettyprint>
+> maradoner create --help
+</pre> <p>In theory, <code class=nw>help</code> should provide sufficient information to deduce how to do everything. This can be infeasible in practice, though, and the goal of this tutorial is to explain everything in greater detail and in an easier-to-follow fashion.</p> <p>A <b>MARADONER</b> session always starts with <i>creating</i> a project from the data of interest. That is done with the <code class=nw>create</code> command. It takes a project name, a table of promoter expression and a matrix of motif loadings:</p> <pre class=prettyprint>
+> maradoner create MyProject expression.tsv loadings.tsv --sample-groups groups.json
+</pre> <p>Here, <i>groups.json</i> tells which samples are replicates of the same condition. Data formats and filters are explained in the <a href=./create.html>next</a> section. After <b>MARADONER</b> is done reading the tables, it writes the <i>MyProject.init.raw</i> file. <b>MARADONER</b> stores intermediate results in files whose names start with the project name followed by the step name and a compression method (<i>raw</i> stands for none):</p> <p><i>{ProjectName}.{StepName}.{CompressionMethod}</i></p> <p>The init file holds the data after filtering, so it can be moved to another machine, and all the other steps run there without the source tables.</p> <p>Usually, after the project is created, we fit model parameters to the data with the <code class=nw>fit</code> command:</p> <pre class=prettyprint>
+> maradoner fit MyProject
+</pre> <p>This step estimates the noise level of each group of samples, the variance of activity of each motif and the mean activity of each motif. More on that in the <a href=./fit.html>Fit</a> section of the tutorial. Successful invocation of the command should result in the <i>MyProject.fit.raw</i> file being created.</p> <p>Next, we predict motif activities with <code class=nw>predict</code>:</p> <pre class=prettyprint>
+> maradoner predict MyProject
+</pre> <p>The result is saved to <i>MyProject.predict.raw</i>. It holds the deviation of the activity of each motif from its mean in each group, as covered in the <a href=./predict.html>Motif activities</a> section.</p> <p>Finally, we export all our results as tabular data to a folder <i>result_folder</i>:</p> <pre class=prettyprint>
+> maradoner export MyProject result_folder
+</pre> <p>The other commands are optional. A possible workflow is depicted in the diagram below:</p> <figure class=diagram> <svg xmlns=http://www.w3.org/2000/svg viewbox="0 0 760 240" role=img aria-label="Workflow: create, fit, predict, export, with optional goodness of fit, group tests and regulatory network after predict."> <defs> <marker id=wf-head viewbox="0 0 10 10" refx=9 refy=5 markerwidth=8 markerheight=8 orient=auto><path class=head d="M0 1 L10 5 L0 9 z"/></marker> </defs> <path class=arrow marker-end=url(#wf-head) d="M170 48 H203"/> <path class=arrow marker-end=url(#wf-head) d="M365 48 H398"/> <path class=arrow marker-end=url(#wf-head) d="M560 48 H588"/> <path class=arrow-opt marker-end=url(#wf-head) d="M440 80 L300 158"/> <path class=arrow-opt marker-end=url(#wf-head) d="M480 80 V158"/> <path class=arrow-opt marker-end=url(#wf-head) d="M520 80 L655 158"/> <a href=./create.html><rect class=box x=10 y=16 width=160 height=64 rx=4 /> <text x=90 y=43 text-anchor=middle>Read data</text><text class=cmd x=90 y=65 text-anchor=middle>create</text></a> <a href=./fit.html><rect class=box x=205 y=16 width=160 height=64 rx=4 /> <text x=285 y=43 text-anchor=middle>Estimate parameters</text><text class=cmd x=285 y=65 text-anchor=middle>fit</text></a> <a href=./predict.html><rect class=box x=400 y=16 width=160 height=64 rx=4 /> <text x=480 y=43 text-anchor=middle>Predict activities</text><text class=cmd x=480 y=65 text-anchor=middle>predict</text></a> <a href=./export.html><rect class=box x=590 y=16 width=160 height=64 rx=4 /> <text x=670 y=43 text-anchor=middle>Export tables</text><text class=cmd x=670 y=65 text-anchor=middle>export</text></a> <a href=./gof.html><rect class=box x=205 y=160 width=160 height=64 rx=4 /> <text x=285 y=187 text-anchor=middle>Goodness of fit</text><text class=cmd x=285 y=209 text-anchor=middle>gof</text></a> <a href=./test.html><rect class=box x=400 y=160 width=160 height=64 rx=4 /> <text x=480 y=187 text-anchor=middle>Group tests</text><text class=cmd x=480 y=209 text-anchor=middle>anova, contrast</text></a> <a href=./grn.html><rect class=box x=590 y=160 width=160 height=64 rx=4 /> <text x=670 y=187 text-anchor=middle>Regulatory network</text><text class=cmd x=670 y=209 text-anchor=middle>grn</text></a> </svg> </figure> <p>The commands depend on each other: <code class=nw>fit</code> needs <code class=nw>create</code>, <code class=nw>predict</code> needs <code class=nw>fit</code>, and the commands of the lower row need <code class=nw>predict</code>. A new run of an earlier step makes the later ones outdated. <b>MARADONER</b> removes their files, so after a new <code class=nw>fit</code> we run <code class=nw>predict</code> again.</p> <h2 id=Example>Example</h2> <p><b>MARADONER</b> arrives with a generator of synthetic data. A synthetic dataset suits a tutorial well, as the true values of all parameters are known and the estimates can be checked against them. First, let's generate one:</p> <pre class=prettyprint>
+> maradoner generate demo
+</pre> <p>In the current working directory, a folder <i>demo</i> should appear. It holds the 3 input files (<i>expression.tsv</i>, <i>loadings.tsv</i> and <i>groups.json</i>) and the true parameters (<i>activities.tsv</i>, <i>sigma.tsv</i>, <i>motif_means.tsv</i> and others). The dataset has 2000 promoters, 500 motifs and 57 samples in 10 groups. The activity of 100 motifs is zero in all samples, and their names start with <i>inactive_</i>.</p> <p>Then we run the <code class=nw>create</code> command with the <code class=nw>--loading-transform none</code> argument. By default, <b>MARADONER</b> transforms each column of the loading matrix to put all motifs on one scale (more on that in <a href=./create.html#transform>Loading transformations</a>). The synthetic expression, however, was generated from the loadings exactly as they are in the file, hence we turn the transformation off:</p> <pre class=prettyprint>
+> maradoner create MyProject demo/expression.tsv demo/loadings.tsv --sample-groups demo/groups.json --loading-transform none
+</pre> <p>After it is done, <b>MARADONER</b> provides some dataset statistics:</p> <pre>
+Reading dataset...
+Filtering promoters of low expression...
+[warning] Low-expression filter: the low-expression component of the fitted mixture (weight 0.0%) is not the more probable component for any promoter, so the data have no clearly separated class of unexpressed promoters. Only the promoters of the lowest expression were removed (57 of 2000); use --filter-lowexp-w 1 to keep them all.
+Low-expression filter: 57 of 2000 promoters were dropped, 1943 kept.
+Saving project...
+
+Number of promoters: 1943, number of motifs: 500, number of samples: 57, number of groups: 10
+✔️ Done!         time: 1.51 s.
+</pre> <p>The warning is fine and almost self-explanatory. Real data have a class of silent promoters, and <b>MARADONER</b> looks for it to drop them. Synthetic data have none, so only the 57 promoters of the lowest expression are gone. The filter also draws what it has done:</p> <div class="figs n1 half"> <figure><a href=../files/filter_plot.png><img src=../files/filter_plot.png alt=MyProject.filter-plot.png></a><figcaption><i>MyProject.filter-plot.png</i></figcaption></figure> </div> <p>The histogram is the expression of promoters, and the curve is the mixture fitted to it. The colour of the curve is the probability that a promoter of that expression is kept: blue is 0 and green is 1. The filter is discussed in the <a href=./create.html#filter>Reading dataset</a> section.</p> <p>Now, let's obtain parameter estimates for the model:</p> <pre class=prettyprint>
+> maradoner fit MyProject
+</pre> <p>After a few seconds, we should see the following:</p> <pre>
+Transforming data...
+Computing low-rank decompositions of the loading matrix...
+Estimating error variances...
+---------------
+Current objective: 149199.4516
+Objective at a start: 154963.3193
+Objective after a warm-up: 149199.4518
+Objective after momentum optimization: 149199.4516
+Current gradient norm: 4.2854e-08
+---------------
+Estimating promoter-wise means...
+Estimating variances of motif activities...
+---------------
+Current objective: -118060.6118
+Objective at a start: -118011.8096
+Objective after a warm-up: -118017.1822
+Objective after momentum optimization: -118017.1822
+Current gradient norm: 2.9425e-07
+---------------
+Smallest eigenvalue of the Fisher information of the variances (scaled to a unit diagonal): 0.04520394801248728
+Estimating motif means...
+Estimating sample means...
+
+✔️ Done!         time: 5.04 s.
+</pre> <p>The 2 blocks between the dashed lines are the 2 numerical optimizations of the fit: the first one is for the error variances, the second one is for the variances of motif activities. The gradient norm at the end of each block is close to zero, hence both have converged. The eigenvalue of the Fisher information is positive, so every variance parameter is identified by the data and has a standard error. When it is not the case, <b>MARADONER</b> prints a warning with the probable cause.</p> <p>Next, we predict motif activities and compute the goodness of fit:</p> <pre class=prettyprint>
+> maradoner predict MyProject
+> maradoner gof MyProject
+</pre> <pre>
+                           Fraction of variance explained (Total)
+┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Set   ┃ centering               ┃ + mean motif activity ┃ + group-specific motif activity ┃
+┃ Y =   ┃ mu_p 1_s^T + 1_p mu_s^T ┃ + B M X               ┃ + B U                           ┃
+┡━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ train │ 0.053025                │ 0.631743              │ 0.951265                        │
+└───────┴─────────────────────────┴───────────────────────┴─────────────────────────────────┘
+</pre> <p>The columns are 3 nested models. Promoter and sample means alone explain 5% of the variance of the expression. With the mean motif activities added it is 63%, and with the activities of each group it is 95%. More details are in the <a href=./gof.html>Goodness of fit</a> section.</p> <p>Finally, we export the results in a tabular form:</p> <pre class=prettyprint>
+> maradoner export MyProject results
+</pre> <p>The <i>results</i> folder now has the tables and a <i>README.md</i> file with a description of every table and every column in it. Let's take a look at some of them, starting with the variances of groups:</p> <pre class=prettyprint>
+> head -4 results/params/group_variances.tsv
+</pre> <pre>
+	sigma	sigma_std	nu	nu_std
+group_1	1.1980252679782921	0.018713762295625304	0.011435774750403752	0.0006575606857800102
+group_10	1.0415625112587141	0.017899609814909023	0.010299003215052907	0.0006184461062784683
+group_2	1.4550496356385987	0.022626370390779395	0.014874855285232802	0.0008485312731564691
+</pre> <p>Here, <b>sigma</b> is the error variance of a group. Its true values are in <i>demo/sigma.tsv</i>: 1.2032 for <i>group_1</i>, 1.0563 for <i>group_10</i> and 1.4547 for <i>group_2</i>. Over the 10 groups the estimates are off by 0.9% on average. The estimated mean activities of motifs (<i>results/params/motif_means.tsv</i>) have a correlation of 0.994 with the true ones (<i>demo/motif_means.tsv</i>).</p> <p>The next table tests whether the activity of a motif varies across samples at all:</p> <pre class=prettyprint>
+> cut -f1-4 results/tests/asymptotics_based/anova.tsv | head -5
+</pre> <pre>
+	stat	p-value	FDR
+motif_1	200.3568137989603	8.728457136521635e-46	2.3463594453015148e-45
+motif_2	4.667415152383476	0.015370080121629697	0.021288199614445565
+inactive_motif_3	0.3552537909882342	0.2755770239378897	0.33362835827831683
+motif_4	173.89705895563748	5.212365813227326e-40	1.3573869305279495e-39
+</pre> <p>The table has 440 motifs out of 500. Where are the other 60? Their variance was estimated as zero, so <code class=nw>predict</code> had nothing to predict for them and left them out. They are listed in <i>results/params/filtered_motif_variances.tsv</i>, and 51 of them are inactive motifs. The other 9 are active motifs with a small true variance: 0.054 at most, against a median of 0.34. Of the 440 motifs in the table, 366 pass the FDR threshold of 0.05, and 1 of those is an inactive one. That's fine at this threshold.</p> <p>The activities are in the <i>results/activities</i> folder:</p> <pre class=prettyprint>
+> cut -f1-4 results/activities/activity.tsv | head -5
+</pre> <pre>
+	group_1	group_10	group_2
+motif_1	4.133243140589579	-3.5091015825203997	4.338709020333753
+motif_2	0.05777635556433165	-0.12651655761007372	-0.41085475188123327
+inactive_motif_3	0.15207927482971603	-0.8116466142524963	0.9733592975885609
+motif_4	0.3947415107085393	-0.39390905635815227	0.22364751235347713
+</pre> <p>Each number is a z-score: the deviation of the activity of a motif from its mean in a group, divided by the posterior standard deviation. So <i>motif_1</i> is more active than on average in <i>group_1</i> and <i>group_2</i>, and less active in <i>group_10</i>.</p> <p>Likewise, we can compare 2 groups directly:</p> <pre class=prettyprint>
+> maradoner contrast MyProject "group_2 - group_1" results
+</pre> <p>This adds the <i>results/contrast.tsv</i> table with a z-test for each motif. Here, 69 motifs differ between the 2 groups at an FDR of 0.05. Contrasts and the other tests are covered in the <a href=./test.html>Tests</a> section.</p> </main> <details class=toc open> <summary>On this page</summary> <nav> <a href=#install>Installation</a> <a href=#overview>Overview</a> <a href=#Example>Example</a> </nav> </details> </div> <script src=../js/prettify.js></script> <script src=../js/maradoner.js></script> </body> </html> 

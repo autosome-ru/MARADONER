@@ -1,0 +1,69 @@
+/*
+The STIX fonts are released under the SIL Open Font License. See the files in
+this directory for details. The font can be obtained from several TeX
+distributions or package managers.
+
+The WOFF fonts have been obtained from
+http://downloads.sourceforge.net/project/stixfonts/
+*/
+
+@namespace url('http://www.w3.org/1999/xhtml');
+@namespace m url('http://www.w3.org/1998/Math/MathML');
+
+
+@font-face {
+    font-family: STIX Two Text;
+    src: local('STIXTwoText'),
+         url('STIXTwoText-Regular.woff2'),
+         url('STIXTwoText-Regular.woff');
+}
+@font-face {
+    font-family: STIX Two Text;
+    src: local('STIXTwoText-Bold'),
+         url('STIXTwoText-Bold.woff2'),
+         url('STIXTwoText-Bold.woff');
+    font-weight: bold;
+}
+@font-face {
+    font-family: STIX Two Text;
+    src: local('STIXTwoText-Italic'),
+         url('STIXTwoText-Italic.woff2'),
+         url('STIXTwoText-Italic.woff');
+    font-style: italic;
+}
+@font-face {
+    font-family: STIX Two Text;
+    src: local('STIXTwoText-BoldItalic'),
+         url('STIXTwoText-BoldItalic.woff2'),
+         url('STIXTwoText-BoldItalic.woff');
+    font-weight: bold;
+    font-style: italic;
+}
+@font-face {
+    font-family: STIX Two Math;
+    src: local('STIXTwoMath-Regular'),
+         url('STIXTwoMath-Regular.woff2'),
+         url('STIXTwoMath-Regular.woff');
+}
+
+.htmlmathparagraph, m|mtext {
+    font-family: STIX Two Text;
+}
+m|math {
+    font-family: STIX Two Math;
+}
+
+.oldstylenumbers {
+    font-variant-numeric: oldstyle-nums; /* Recommended syntax */
+    font-feature-settings: 'onum';         /* OpenType feature syntax */
+    -moz-font-feature-settings: 'onum';    /* Gecko <= 33 syntax */
+    -webkit-font-feature-settings: 'onum'; /* Blink syntax */
+}
+
+@font-feature-values STIX Two Math { @styleset { calligraphic: 1; } }
+m|*.calligraphic {
+    font-variant-alternates: styleset(calligraphic); /* Recommended syntax */
+    font-feature-settings: 'ss01';         /* OpenType feature syntax */
+    -moz-font-feature-settings: 'ss01';    /* Gecko <= 33 syntax */
+    -webkit-font-feature-settings: 'ss01'; /* Blink syntax */
+}

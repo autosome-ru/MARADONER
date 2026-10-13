@@ -1,0 +1,123 @@
+<h2 id="gof">Fraction of variance explained</h2>
+
+<p>How much of the data does the model explain? The <code>gof</code> command answers that for each nested part of the model. It runs after <code>predict</code> and needs only the project name:</p>
+
+<pre class="prettyprint">
+> maradoner gof MyProject
+</pre>
+
+<pre>
+                           Fraction of variance explained (Total)
+┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Set   ┃ centering               ┃ + mean motif activity ┃ + group-specific motif activity ┃
+┃ Y =   ┃ mu_p 1_s^T + 1_p mu_s^T ┃ + B M X               ┃ + B U                           ┃
+┡━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ train │ 0.053025                │ 0.631743              │ 0.951265                        │
+└───────┴─────────────────────────┴───────────────────────┴─────────────────────────────────┘
+</pre>
+
+<p>The table is from the <a href="./quickstart.html#Example">Quickstart</a> example. Each column adds a term to the model of the previous one:</p>
+
+<ol>
+  <li>Promoter-wise and sample-wise means alone;</li>
+  <li>The same with the mean motif activities;</li>
+  <li>The same with the deviations of activities in each group, i.e. the full model.</li>
+</ol>
+
+<p>The second line of the header spells the terms out. There, <code>B M X</code> is the loading matrix times the mean activities, and it reduces to $B μ_m 1_s^T$ when the project has no covariates.</p>
+
+<p>If <code>gof</code> is run before <code>export</code>, the same statistics are exported into the <i>fov</i> folder: for the whole dataset, for each promoter and for each sample.</p>
+
+<p>The statistic and the way it is computed can be changed:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--stat-type &lt;str&gt;</code></td>
+      <td><code>fov</code> for the fraction of variance explained, <code>corr</code> for the Pearson correlation between the predicted and the observed expression</td>
+      <td>fov</td>
+    </tr>
+    <tr>
+      <td><code>--stat-mode &lt;str&gt;</code></td>
+      <td><code>total</code> accumulates the terms as described above. With <code>residual</code> the columns go the other way: the full model first, then the model against the data with the promoter and sample means subtracted, then the deviations alone against the data with the mean activities subtracted as well</td>
+      <td>total</td>
+    </tr>
+    <tr>
+      <td><code>--use-groups</code></td>
+      <td>The statistic is computed for the expression averaged within each group</td>
+      <td>Disabled</td>
+    </tr>
+    <tr>
+      <td><code>--no-weights</code></td>
+      <td>Disables the weighting of promoters. Applicable only to fits with <code>--promoter-variance</code></td>
+      <td><code>--weights</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="test">Testing set</h2>
+
+<p>The numbers above are computed on the same promoters the model was fitted to, and they are optimistic. For a fair estimate, some promoters are held out at the <code>fit</code> step and the statistics are computed for them separately. The whole sequence is:</p>
+
+<pre class="prettyprint">
+> maradoner fit MyProject --test-chromosomes 3 --test-chromosomes X
+> maradoner predict MyProject
+> maradoner estimate-promoter-mean MyProject
+> maradoner gof MyProject
+</pre>
+
+<p>Here, the promoters of chromosomes 3 and X take no part in the fit. Alternatively, a list of promoter names can be given with <code>--test-promoters-filename</code>. The third command is new, and we get to it in a moment. With 198 promoters of the Quickstart example held out (by a list of names, as synthetic promoters have no chromosomes), the <code>gof</code> table gets a second row:</p>
+
+<pre>
+┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Set   ┃ centering               ┃ + mean motif activity ┃ + group-specific motif activity ┃
+┃ Y =   ┃ mu_p 1_s^T + 1_p mu_s^T ┃ + B M X               ┃ + B U                           ┃
+┡━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ train │ 0.066498                │ 0.646975              │ 0.952379                        │
+│ test  │ 0.052690                │ 0.606242              │ 0.896829                        │
+└───────┴─────────────────────────┴───────────────────────┴─────────────────────────────────┘
+</pre>
+
+<p>The full model explains 90% of the variance of the promoters it has not seen, against 95% of those it has.</p>
+
+<div class="alert alert-info" role="alert">
+The low-expression filter of <code>create</code> has already looked at all promoters, the held-out ones included. If the testing set must not influence anything at all, the project should be created with <code>--filter-lowexp-w 1</code>.
+</div>
+
+<h3 id="promoter-mean">Why is estimate-promoter-mean needed?</h3>
+
+<p>Each promoter has a mean $μ_p$, and it is a parameter estimated by <code>fit</code>. A held-out promoter has none, and the model can't predict its expression without one. The <code>estimate-promoter-mean</code> command fills the gap. Without it, <code>gof</code> stops with an error asking for it. It has to be run again after each <code>predict</code>.</p>
+
+<p>The method is chosen with the <code>--mean-mode</code> option:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>null</code></td>
+      <td>(Default) The means of held-out promoters are set to zero.</td>
+    </tr>
+    <tr>
+      <td><code>gls</code></td>
+      <td>A generalized least squares estimate from the expression of the held-out promoters. It uses the data the model is then tested on, so the resulting statistics are prone to leakage.</td>
+    </tr>
+    <tr>
+      <td><code>knn</code></td>
+      <td>The mean is borrowed from the nearest promoters of the training set. The neighbours are searched by principal components of the loading matrix and of the predicted effects. Their numbers are set with <code>--pca-b</code> (64 by default) and <code>--pca-z</code> (3), and the number of neighbours with <code>--knn-n</code> (256).</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>A table of numeric promoter covariates (promoters in rows, covariates in columns) can be passed with the <code>--covariate</code> option. The means are then predicted with the help of a generalized additive model of the covariates. The <code>gls</code> mode ignores the option.</p>

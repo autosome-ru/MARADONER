@@ -1,0 +1,62 @@
+[
+{"file": "quickstart.html",
+ "title": "Quickstart",
+ "menu": "Quickstart",
+ "keywords": ["tutorial", "quickstart", "howto", "installation", "usage"]
+ },
+ {"file": "create.html",
+ "title": "Reading dataset",
+ "menu": "Reading dataset",
+ "keywords": ["create", "preprocess", "parse", "read", "expression", "loadings", "motif scores", "sample groups", "covariates"]
+ },
+{"file": "fit.html",
+"title": "Parameters estimation",
+"menu": "Parameters estimation",
+"keywords": ["fit", "optimization", "parameters", "reml", "likelihood", "variance", "clustering", "low-rank"]
+},
+{"file": "predict.html",
+ "title": "Motif activities",
+ "menu": "Motif activities",
+ "keywords": ["predict", "motif activity", "map", "posterior", "z-score"]
+},
+{"file": "gof.html",
+ "title": "Goodness of fit",
+ "menu": "Goodness of fit",
+ "keywords": ["gof", "fov", "fraction of variance explained", "test set", "held-out promoters"]
+},
+{"file": "export.html",
+ "title": "Exporting results",
+ "menu": "Results",
+ "keywords": ["export", "results", "tables", "tsv", "activities", "parameters"]
+},
+{"file": "test.html",
+ "title": "Statistical tests",
+ "menu": "Tests",
+ "keywords": ["anova", "contrast", "differential", "lrt", "wald", "test", "p-values", "fdr"]
+},
+{"file": "covariates.html",
+ "title": "Covariates",
+ "menu": "Covariates",
+ "keywords": ["covariates", "age", "sex", "batch", "effect", "design matrix", "confounder"]
+},
+{"file": "lowrank.html",
+ "title": "Hidden covariates",
+ "menu": "Hidden covariates",
+ "keywords": ["low-rank", "activity-lowrank", "latent factor", "hidden covariate", "batch", "confounder"]
+},
+{"file": "grn.html",
+ "title": "Gene regulatory network",
+ "menu": "Regulatory network",
+ "keywords": ["grn", "gene regulatory network", "promoter", "motif", "belief", "bayes"]
+},
+{"file": "other.html",
+ "title": "Other models",
+ "menu": "Other models",
+ "keywords": ["bayes_linreg", "single sample", "mara", "ismara", "select-motifs", "generate", "synthetic data"]
+},
+{"file": "clockworks.html",
+ "title": "How it works",
+ "menu": "How it works",
+ "keywords": ["model", "algorithm", "reml", "helmert", "orthogonal complement", "matrix normal", "math"]
+}
+]

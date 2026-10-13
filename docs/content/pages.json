@@ -1,0 +1,27 @@
+[
+{"name": "About",
+ "folder": "about",
+ "postfix": "",
+ "relpath": false
+ },
+ {"name": "Tutorial",
+ "folder": "tutorial",
+ "postfix": " |Tutorial",
+ "relpath": true
+ },
+ {"name": "F.A.Q.",
+  "folder": "faq",
+  "postfix": "",
+  "relpath": false
+ },
+ {"name": "Contact",
+  "folder": "contact",
+  "postfix": "",
+  "relpath": false
+ },
+  {"name": "Cite",
+  "folder": "cite",
+  "postfix": "",
+  "relpath": false
+ }
+]

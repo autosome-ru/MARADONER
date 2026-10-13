@@ -1,0 +1,181 @@
+<p>A covariate can be <a href="./covariates.html">passed to the model</a> only if it was written down. Often it was not: the age of a donor is unknown, the batches went unrecorded, the samples differ in the share of some cell type. The <code>--activity-lowrank</code> option of <code>fit</code> is made for such data. With it, {name} estimates hidden properties of samples along which the activities of many motifs change together. Below they are called factors. We have frequently used the option to reconstruct covariates missing from the annotation of samples.</p>
+
+<h2 id="factor">What is a factor?</h2>
+
+<p>A factor is a covariate with unknown values. An activity is decomposed the same way as with a covariate:</p>
+
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 150" role="img" aria-label="Activity equals mean plus effect times factor plus deviation.">
+<rect class="box" x="10" y="35" width="140" height="80"/>
+<text x="80" y="71" text-anchor="middle">Activity</text>
+<text class="sub" x="80" y="93" text-anchor="middle">motif, sample</text>
+<text x="168" y="81" text-anchor="middle">=</text>
+<rect class="box" x="186" y="35" width="110" height="80"/>
+<text x="241" y="71" text-anchor="middle">Mean</text>
+<text class="sub" x="241" y="93" text-anchor="middle">per motif</text>
+<text x="314" y="81" text-anchor="middle">+</text>
+<rect class="box" x="332" y="35" width="110" height="80"/>
+<text x="387" y="71" text-anchor="middle">Effect</text>
+<text class="sub" x="387" y="93" text-anchor="middle">random</text>
+<text x="460" y="81" text-anchor="middle">×</text>
+<rect class="box-a" x="478" y="35" width="110" height="80"/>
+<text x="533" y="71" text-anchor="middle">Factor</text>
+<text class="sub" x="533" y="93" text-anchor="middle">per sample</text>
+<text x="606" y="81" text-anchor="middle">+</text>
+<rect class="box" x="624" y="35" width="126" height="80"/>
+<text x="687" y="71" text-anchor="middle">Deviation</text>
+<text class="sub" x="687" y="93" text-anchor="middle">motif, group</text>
+</svg>
+</figure>
+
+<p>There are 2 differences. First, the values of a factor (the highlighted box, a number per sample) are estimated from the data. Second, the effects of a factor on motifs are random. No effect is estimated for a single motif. The effects are assumed to have the variance $τ$ of the motif, so a motif that varies much between groups is allowed to follow a factor as much.</p>
+
+<p>In the basic model, the deviations of activities in different samples are independent, and their covariance matrix between samples is the diagonal matrix $G$ of the multipliers $ν$. With $k$ factors the matrix becomes
+$$G + V V^T.$$
+Here, $V$ has a row per sample and a column per factor. The rank of $V V^T$ is $k$, a low one next to the number of samples, hence the name of the option.</p>
+
+<h2 id="look">How does a hidden covariate show itself?</h2>
+
+<p>Let's take the dataset of the <a href="./covariates.html#example">previous section</a>, where age has an effect on 400 motifs, and fit it without the table of covariates. The <i>activities/activity_raw.tsv</i> table of the exported folder holds the deviations predicted for single samples. For each pair of samples we compute the correlation of their deviations over the motifs:</p>
+
+<div class="figs n1">
+<figure><a href="../files/lowrank_corr.png"><img src="../files/lowrank_corr.png" alt="2 heatmaps of correlations between samples: with a red and blue pattern when age is ignored, and blank off the diagonal when age is a covariate"></a><figcaption>Correlations between samples, with the samples ordered by age. On the left age is ignored. On the right it is a covariate.</figcaption></figure>
+</div>
+
+<p>On the left, samples of a close age have similar deviations, and the youngest samples are opposite to the oldest. The basic model has no parameter for that: the deviations of different samples are independent in it. On the right the same data are fitted with age as a covariate, and nothing is left off the diagonal.</p>
+
+<p>With real data there is no known age to order the samples by. The factors are a way to find the order.</p>
+
+<h2 id="example">Example</h2>
+
+<p>First, we create a project from the same data with no covariates, and fit it with 1 factor:</p>
+
+<pre class="prettyprint">
+> maradoner create Hidden demo/expression.tsv demo/loadings.tsv --sample-groups demo/groups.json --loading-transform none
+> maradoner fit Hidden --activity-lowrank 1
+</pre>
+
+<p>Here, the value of the option is the number of factors. The output of <code>fit</code> has 3 new lines among the usual ones:</p>
+
+<pre>
+[activity-lowrank k=1] Sigma/G REML deviance -284531.204 -> -297730.330 (gain +13199.127)
+  activity covariance: diagonal G + rank-1 update (REML deviance -297730.33).
+  note: the low-rank corrections (--error-lowrank / --activity-lowrank) are not propagated into the motif means; these and their standard errors are computed under the model with diagonal covariances.
+</pre>
+
+<p>The first line compares the model with the factor to the model without it. The lower the deviance the better, and the gain is the improvement brought by the factor. The last line is a limitation: the mean activities and their standard errors are estimated as if there were no factor.</p>
+
+<p>The factors are stored in the file of the fit. At the moment <code>export</code> does not write them to a table, so we read them in Python:</p>
+
+<pre class="prettyprint">
+import dill
+import pandas as pd
+
+with open('Hidden.fit.raw', 'rb') as f:
+    fit = dill.load(f)
+with open('Hidden.init.raw', 'rb') as f:
+    samples = dill.load(f)['sample_names']
+V = fit.motif_variance.lowrank
+factors = pd.DataFrame(V, index=samples, columns=[f'factor_{i + 1}' for i in range(V.shape[1])])
+factors.to_csv('factors.tsv', sep='\t', index_label='sample')
+</pre>
+
+<p>Here, <code>V</code> is the matrix of factors with a row per sample, and the last line saves it to a table. The snippet is for projects with the default compression (<i>raw</i>). Now the factor can be compared to the age kept away from the model:</p>
+
+<div class="figs n1 half">
+<figure><a href="../files/lowrank_factor.png"><img src="../files/lowrank_factor.png" alt="The factor of each sample against the age of the sample: the dots lie on a descending line"></a><figcaption>A dot is a sample. The correlation is -0.999.</figcaption></figure>
+</div>
+
+<p>The age is reconstructed. The minus is no error: $V V^T$ is the same for $V$ and $-V$, so the sign of a factor is arbitrary. Neither is a factor measured in years. It orders the samples and gives the distances between them on a scale with no units.</p>
+
+<p>The motif variances gain as well. Their rank correlation with the true ones is 0.63 in the model without a factor and 0.97 with it. The latter is the same number as with the real age as a covariate.</p>
+
+<h2 id="covariate">From a factor to a covariate</h2>
+
+<p>A factor tells which samples are alike and tells nothing about single motifs. For the effects on motifs with tests, it can be passed back to the model as a covariate. The <i>factors.tsv</i> table written by the snippet above is a valid table of covariates:</p>
+
+<pre class="prettyprint">
+> maradoner create MyProject demo/expression.tsv demo/loadings.tsv --sample-groups demo/groups.json --loading-transform none --covariates factors.tsv
+> maradoner fit MyProject
+> maradoner predict MyProject
+> maradoner export MyProject results
+</pre>
+
+<p>The first rows of <i>results/params/covariates/factor_1.tsv</i> are</p>
+
+<pre>
+	effect	std	z	pvalue	fdr
+motif_1	-0.0421416874263382	0.04435869558577543	-0.9500208892493186	0.34210163851633757	0.44544484181814786
+motif_2	0.48314283445826767	0.016953925051881518	28.497402989560182	1.2615309979211495e-178	1.576913747401437e-176
+inactive_motif_3	-0.01775875711826007	0.01693309123269335	-1.0487604935342563	0.29428836441087447	0.39448842414326335
+</pre>
+
+<p>With the real age, the effect on <i>motif_2</i> was -0.48. Here it is 0.48, as the factor runs against the age. At an FDR of 0.05 the factor has an effect on 302 motifs, and 301 of them are among the 303 found with the real age.</p>
+
+<div class="alert alert-warning" role="alert">
+The data are used twice in this scheme: to find the factor and then to test its effects. In this example the tests did not suffer (none of the 100 motifs of zero activity is called). We have no proof that it is so in general.
+</div>
+
+<h2 id="rank">How many factors?</h2>
+
+<p>{name} has no formal test for the number of factors. The gain printed by <code>fit</code> is a hint. For comparison, we fitted the same data with 2 factors, and the dataset of the <a href="./quickstart.html#Example">Quickstart</a> with 1 factor. Nothing is hidden in the latter.</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Data</th>
+      <th scope="col">Factors</th>
+      <th scope="col">Gain</th>
+      <th scope="col">Time of fit, seconds</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Hidden age</td>
+      <td>0</td>
+      <td></td>
+      <td>7</td>
+    </tr>
+    <tr>
+      <td>Hidden age</td>
+      <td>1</td>
+      <td>13199</td>
+      <td>41</td>
+    </tr>
+    <tr>
+      <td>Hidden age</td>
+      <td>2</td>
+      <td>13290</td>
+      <td>69</td>
+    </tr>
+    <tr>
+      <td>Nothing hidden</td>
+      <td>1</td>
+      <td>97</td>
+      <td>20</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The second factor adds 91 to the gain of the first. That is what a factor gets from data with nothing to find, so 1 factor is enough here.</p>
+
+<p>A few more facts about the number of factors:</p>
+
+<ul>
+  <li>It has to be smaller than the number of samples minus the number of covariates, with the mean counted as a covariate;</li>
+  <li>If the factors do not improve the likelihood at all, <code>fit</code> says so and keeps the model without them;</li>
+  <li>With 2 factors or more, $V V^T$ does not change when the columns of $V$ are rotated. Single columns then mean little, and the factors are better looked at together, e.g. as coordinates of samples on a plane.</li>
+</ul>
+
+<h2 id="cost">What does it cost?</h2>
+
+<ul>
+  <li>Time. The table above has the numbers: a fit with 1 factor takes about 5 times longer here;</li>
+  <li>The mean activities and their standard errors do not account for the factors, as the note in the output of <code>fit</code> says;</li>
+  <li>The option needs motif variances. With <code>--no-motif-variance</code> it is ignored with a warning;</li>
+  <li>The optimization may stop at the limit of iterations, and <code>fit</code> then warns that the variances may be inaccurate. We got the warning on a dataset generated with <code>--cov-effect 1</code>, i.e. with a hidden covariate about 3 times stronger. The covariate was reconstructed all the same.</li>
+</ul>
+
+<h2 id="error">What about --error-lowrank?</h2>
+
+<p>It is the same idea applied to the noise: the covariance matrix of errors between samples turns from the diagonal $D$ into $D + W W^T$. The 2 options differ in where a hidden property of samples acts. If it changes the expression through motifs, it belongs to the activities. If it changes the expression of promoters regardless of their motifs, it belongs to the noise.</p>

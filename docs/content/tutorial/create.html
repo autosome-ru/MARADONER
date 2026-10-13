@@ -1,0 +1,210 @@
+<h2 id="create">Creating a project</h2>
+
+<p>The first necessary step of every {name} session is initiating a project by means of the <code>create</code> command. The command creates a standalone <i>*.init</i> file. The file is portable between machines and is enough to carry out all the other steps of a pipeline. That's also the only step where {name} is fed external data. In the simplest case, it is enough to run this command:</p>
+
+<pre class="prettyprint">
+> maradoner create MyProject expression.tsv loadings.tsv
+</pre>
+
+<p>Here, <code>MyProject</code> is a custom project name, and all the other steps refer to it. <code>expression.tsv</code> is a table of promoter expression and <code>loadings.tsv</code> is a matrix of motif loadings. Groups of samples and covariates are optional and are passed through options.</p>
+
+<p>The <code>create</code> command is talkative: it reports every promoter, sample and motif it had to drop, with the reason. Its warnings are worth reading before moving on.</p>
+
+<h2 id="format">Data formats</h2>
+
+<p>All tables are plain text files separated by tabs or commas. They can be gzipped.</p>
+
+<div class="alert alert-info" role="alert">
+All tables must have named rows and named columns: the first line holds the column names, and the first column holds the row names.
+</div>
+
+<h3>Promoter expression</h3>
+
+<p>A table of $p$ promoters by $s$ samples. Rows are promoters (or genes), columns are samples:</p>
+
+<pre>
+	sample_1	sample_2	sample_3	sample_4
+chr1:10203-10410	4.21	4.05	6.87	7.02
+chr1:95117-95301	0.00	0.13	0.00	0.07
+chr2:40018-40260	5.50	5.73	5.61	5.48
+</pre>
+
+<p>The values are expected in a log scale, e.g. log2(TPM + 1). When they look like raw counts, {name} prints a warning. Missing and infinite values are an error, as {name} does not impute expression.</p>
+
+<h3>Motif loadings</h3>
+
+<p>A table of $p$ promoters by $m$ motifs. A loading tells how strongly a motif is associated with a promoter. It comes from scanning promoter sequences with the motifs, e.g. the number of predicted binding sites or the score of the best one.</p>
+
+<pre>
+	TP53	SP1	GATA1
+chr1:10203-10410	3.12	11.80	0.00
+chr1:95117-95301	0.00	4.75	6.31
+chr2:40018-40260	7.94	9.02	1.15
+</pre>
+
+<p>Rows must use the same promoter names as the expression table. Promoters absent from one of the tables are dropped with a warning.</p>
+
+<p>Several loading matrices can be supplied at once, e.g. obtained with different motif collections:</p>
+
+<pre class="prettyprint">
+> maradoner create MyProject expression.tsv hocomoco.tsv jaspar.tsv -p hoc -p jas
+</pre>
+
+<p>Here, the <code>-p</code> (or <code>--loading-postfix</code>) option appends a postfix to the motif names of each matrix, so <i>TP53</i> of the first one becomes <i>TP53_hoc</i>. Motif names must be unique across the matrices, and postfixes are the way to make them so. Later, the <a href="./other.html#select"><code>select-motifs</code></a> command can pick the best variant of each motif.</p>
+
+<h3 id="groups">Sample groups</h3>
+
+<p>Samples that are replicates of the same condition form a group. A group has one activity per motif and one pair of variance parameters: the error variance and the multiplier of the activity variance. Groups are passed with the <code>--sample-groups</code> option as either a JSON dictionary</p>
+
+<pre class="prettyprint">
+{"control": ["sample_1", "sample_2"], "treated": ["sample_3", "sample_4"]}
+</pre>
+
+<p>or a text file with one group per line, the group name followed by the names of its samples:</p>
+
+<pre>
+control sample_1 sample_2
+treated sample_3 sample_4
+</pre>
+
+<p>A sample belongs to one group only. Samples of the expression table that are in no group are dropped with a warning. A sample listed in a group and absent from the expression table is an error, unless the <code>--sample-groups-subset</code> option is given.</p>
+
+<p>Without the option, every sample forms a separate group. That works when samples are many. When they are few, there is too little data for a variance per sample, and <code>fit</code> will say so.</p>
+
+<h3 id="covariates">Covariates</h3>
+
+<p>Properties of samples such as sex, age or batch are passed with the <code>--covariates</code> option. It takes a table with sample names in the first column and one column per covariate:</p>
+
+<pre>
+sample	sex	age	batch
+sample_1	F	34	batch_1
+sample_2	M	51	batch_1
+sample_3	F	47	batch_2
+sample_4	M	29	batch_2
+</pre>
+
+<p>The mean activity of a motif then becomes a linear function of the covariates, and <code>export</code> writes a table of effects for each of them. The rules for the table, an example and the meaning of the effects are in the <a href="./covariates.html">Covariates</a> section.</p>
+
+<h2 id="transform">Loading transformations</h2>
+
+<p>Raw scores of different motifs are on different scales. Before the loadings are stored in the project, each column of a loading matrix is transformed. The transformation is chosen with the <code>--loading-transform</code> (or <code>-t</code>) option:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>esf</code></td>
+      <td>(Default) A score is replaced with the negative logarithm of the empirical survival function, i.e. of the share of promoters with a greater score of the same motif. </td>
+    </tr>
+    <tr>
+      <td><code>ecdf</code></td>
+      <td>A score is replaced with the empirical CDF: the share of promoters with a score not greater than it.</td>
+    </tr>
+    <tr>
+      <td><code>scale</code></td>
+      <td>Each column is rescaled to the $[0, 1]$ range.</td>
+    </tr>
+    <tr>
+      <td><code>none</code></td>
+      <td>Loadings are taken as they are.</td>
+    </tr>
+    <tr>
+      <td><code>drist</code></td>
+      <td>{name} attempts to find an optimal monotone transformation of each column. This takes a while.</td>
+    </tr>
+    <tr>
+      <td><code>dristun</code></td>
+      <td>The same as <code>drist</code> with one transformation shared by all motifs.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>With <code>esf</code> and <code>ecdf</code>, a loading depends only on the rank of a promoter among the others. With several loading matrices, either one transformation is given for all of them, or the option is repeated once per matrix.</p>
+
+<div class="alert alert-warning" role="alert">
+A column with only 2 distinct values (e.g. a 0/1 table of motif hits) becomes constant after <code>esf</code> or <code>ecdf</code>, and {name} drops such motifs. For tables of that kind, <code>none</code> or <code>scale</code> is the choice.
+</div>
+
+<p>Motifs whose loadings are the same for all kept promoters carry no information and are dropped with a warning, whatever the transformation is.</p>
+
+<h2 id="filter">Filters</h2>
+
+<p>Promoters silent in all samples tell nothing about motif activities, and <code>create</code> removes them. To this end, a mixture of 2 distributions is fitted to the expression of promoters: one component for the silent promoters and one for the expressed. A promoter is dropped if its posterior probability of being silent exceeds a threshold. The related options are:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--filter-lowexp-w &lt;float&gt;</code></td>
+      <td>The threshold on the probability of being silent. The closer it is to 1, the more promoters are left in the dataset, and 1 disables the filter</td>
+      <td>0.9</td>
+    </tr>
+    <tr>
+      <td><code>--no-filter-max-mode</code></td>
+      <td>By default, the mixture is fitted to the maximal expression of a promoter over samples, so promoters active at least in some samples are kept. With this option, a Gaussian mixture is fitted to the average expression instead</td>
+      <td><code>--filter-max-mode</code></td>
+    </tr>
+    <tr>
+      <td><code>--no-filter-plot</code></td>
+      <td>Disables the plot of the expression with the fitted mixture, saved as <i>{ProjectName}.filter-plot.png</i></td>
+      <td><code>--filter-plot</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The plot is worth a look after each <code>create</code> run:</p>
+
+<div class="figs n1 half">
+<figure><a href="../files/filter_plot.png"><img src="../files/filter_plot.png" alt="A histogram of promoter expression with the fitted mixture"></a><figcaption>The dataset of the <a href="./quickstart.html#Example">Quickstart</a>. The blue part of the curve covers the dropped promoters.</figcaption></figure>
+</div>
+
+<p>This one is from synthetic data with no silent promoters, hence a single peak and a short blue tail. On real data we expect 2 peaks, with the left one painted blue.</p>
+
+<p>{name} skips the filter and says so when the mixture can't do the job: when there are fewer than 10 promoters, or when the fitted silent component holds more than 60% of them.</p>
+
+<h2 id="options">Other options</h2>
+
+<p>There are extra options that can be of potential interest:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--motif-filename &lt;path&gt;</code></td>
+      <td>Only motifs listed in this file are kept. Names are separated by whitespace and are matched after the postfixes have been appended</td>
+      <td>None</td>
+    </tr>
+    <tr>
+      <td><code>--motif-expression &lt;path&gt;</code></td>
+      <td>A table of motif expression in a log2 scale, one per loading matrix. It is stored in the project, and no estimator uses it at the moment</td>
+      <td>None</td>
+    </tr>
+    <tr>
+      <td><code>--n-jobs &lt;float&gt;</code></td>
+      <td>Number of threads for reading the tables. -1 stands for all threads, a fraction between 0 and 1 for that share of them</td>
+      <td>0.5</td>
+    </tr>
+    <tr>
+      <td><code>--compression &lt;str&gt;</code></td>
+      <td>All {name} project files can be compressed with <code>lzma</code>, <code>gzip</code> or <code>bz2</code> to reduce the volume they occupy on a disk. Each time {name} reads or writes such a file, it has to compress or decompress the data, and that takes time for huge datasets</td>
+      <td>raw</td>
+    </tr>
+  </tbody>
+</table>

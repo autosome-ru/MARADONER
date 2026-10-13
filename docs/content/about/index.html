@@ -1,0 +1,309 @@
+<h2 id="intro">Introduction</h2>
+
+<p>{name}, <b>M</b>otif <b>A</b>ctivity <b>R</b>esponse <b>A</b>nalysis <b>Done R</b>ight, is a command-line Python tool for estimating activities of transcription factor binding motifs from promoter-level expression data (e.g. RNA-Seq, CAGE-Seq, et cetera).</p>
+
+<p>{name} takes 2 tables. The first is the expression of promoters (or genes) across samples. The second is a matrix of motif loadings: a score of how well each motif matches the sequence of each promoter, as obtained with a motif scanner. Expression is modeled as a linear function of the loadings, and the coefficients of that function are the motif activities. A motif with a high activity in a group of samples is a candidate regulator there.</p>
+
+<div class="explore">
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 200" role="group" aria-label="Expression equals loadings times activities plus noise.">
+<g class="pick" data-part="expression" tabindex="0" role="button" aria-controls="part-expression" aria-expanded="false" aria-label="Expression">
+<rect class="box" x="20" y="30" width="150" height="140"/>
+<text x="95" y="96" text-anchor="middle">Expression</text>
+<text class="sub" x="95" y="118" text-anchor="middle">promoters × samples</text>
+</g>
+<text x="190" y="106" text-anchor="middle">=</text>
+<g class="pick" data-part="loadings" tabindex="0" role="button" aria-controls="part-loadings" aria-expanded="false" aria-label="Loadings">
+<rect class="box" x="210" y="30" width="130" height="140"/>
+<text x="275" y="96" text-anchor="middle">Loadings</text>
+<text class="sub" x="275" y="118" text-anchor="middle">promoters × motifs</text>
+</g>
+<text x="360" y="106" text-anchor="middle">×</text>
+<g class="pick" data-part="activities" tabindex="0" role="button" aria-controls="part-activities" aria-expanded="false" aria-label="Activities">
+<rect class="box-a" x="380" y="60" width="150" height="80"/>
+<text x="455" y="96" text-anchor="middle">Activities</text>
+<text class="sub" x="455" y="118" text-anchor="middle">motifs × samples</text>
+</g>
+<text x="550" y="106" text-anchor="middle">+</text>
+<g class="pick" data-part="noise" tabindex="0" role="button" aria-controls="part-noise" aria-expanded="false" aria-label="Noise">
+<rect class="box" x="570" y="30" width="150" height="140"/>
+<text x="645" y="96" text-anchor="middle">Noise</text>
+<text class="sub" x="645" y="118" text-anchor="middle">promoters × samples</text>
+</g>
+</svg>
+<figcaption class="hint">Click a block for details.</figcaption>
+</figure>
+<section class="part" id="part-expression">
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="A table of expression: 5 promoters in rows, 6 samples in columns, the samples split into 2 groups.">
+<text class="sub" x="78" y="69" text-anchor="end">promoter 1</text>
+<rect class="cell" x="88" y="54" width="30" height="20" fill-opacity="0.80"/>
+<rect class="cell" x="122" y="54" width="30" height="20" fill-opacity="0.85"/>
+<rect class="cell" x="156" y="54" width="30" height="20" fill-opacity="0.75"/>
+<rect class="cell" x="190" y="54" width="30" height="20" fill-opacity="0.30"/>
+<rect class="cell" x="224" y="54" width="30" height="20" fill-opacity="0.25"/>
+<rect class="cell" x="258" y="54" width="30" height="20" fill-opacity="0.35"/>
+<text class="sub" x="78" y="93" text-anchor="end">promoter 2</text>
+<rect class="cell" x="88" y="78" width="30" height="20" fill-opacity="0.50"/>
+<rect class="cell" x="122" y="78" width="30" height="20" fill-opacity="0.55"/>
+<rect class="cell" x="156" y="78" width="30" height="20" fill-opacity="0.50"/>
+<rect class="cell" x="190" y="78" width="30" height="20" fill-opacity="0.50"/>
+<rect class="cell" x="224" y="78" width="30" height="20" fill-opacity="0.45"/>
+<rect class="cell" x="258" y="78" width="30" height="20" fill-opacity="0.50"/>
+<text class="sub" x="78" y="117" text-anchor="end">promoter 3</text>
+<rect class="cell" x="88" y="102" width="30" height="20" fill-opacity="0.25"/>
+<rect class="cell" x="122" y="102" width="30" height="20" fill-opacity="0.30"/>
+<rect class="cell" x="156" y="102" width="30" height="20" fill-opacity="0.20"/>
+<rect class="cell" x="190" y="102" width="30" height="20" fill-opacity="0.75"/>
+<rect class="cell" x="224" y="102" width="30" height="20" fill-opacity="0.80"/>
+<rect class="cell" x="258" y="102" width="30" height="20" fill-opacity="0.70"/>
+<text class="sub" x="78" y="141" text-anchor="end">promoter 4</text>
+<rect class="cell" x="88" y="126" width="30" height="20" fill-opacity="0.12"/>
+<rect class="cell" x="122" y="126" width="30" height="20" fill-opacity="0.15"/>
+<rect class="cell" x="156" y="126" width="30" height="20" fill-opacity="0.10"/>
+<rect class="cell" x="190" y="126" width="30" height="20" fill-opacity="0.15"/>
+<rect class="cell" x="224" y="126" width="30" height="20" fill-opacity="0.12"/>
+<rect class="cell" x="258" y="126" width="30" height="20" fill-opacity="0.18"/>
+<text class="sub" x="78" y="165" text-anchor="end">promoter 5</text>
+<rect class="cell" x="88" y="150" width="30" height="20" fill-opacity="0.90"/>
+<rect class="cell" x="122" y="150" width="30" height="20" fill-opacity="0.85"/>
+<rect class="cell" x="156" y="150" width="30" height="20" fill-opacity="0.95"/>
+<rect class="cell" x="190" y="150" width="30" height="20" fill-opacity="0.90"/>
+<rect class="cell" x="224" y="150" width="30" height="20" fill-opacity="0.95"/>
+<rect class="cell" x="258" y="150" width="30" height="20" fill-opacity="0.85"/>
+<path class="arrow" d="M89 42 V36 H185 V42"/>
+<text class="sub" x="137" y="26" text-anchor="middle">group A</text>
+<path class="arrow" d="M191 42 V36 H287 V42"/>
+<text class="sub" x="239" y="26" text-anchor="middle">group B</text>
+<text class="sub" x="188" y="192" text-anchor="middle">6 samples</text>
+</svg>
+</figure>
+<div>
+<h3>Expression</h3>
+<p>A table of promoters (or genes) by samples in a log scale, e.g. log2(TPM + 1). It is the first of the 2 tables supplied by a user.</p>
+<p>Samples that are replicates of one condition form a group. A group shares its motif activities and its level of noise. The promoter-wise and the sample-wise means are of no interest, and {name} takes them out of the table before the rest is estimated.</p>
+<p class="more">More: <a href="./tutorial/create.html#format">Data formats</a>, <a href="./tutorial/clockworks.html#centering">Why not just center the data?</a></p>
+</div>
+</section>
+<section class="part" id="part-loadings">
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="A promoter sequence with 2 occurrences of motif 1 and 1 of motif 3, and the row of the loading table made of it: 2, 0, 1.">
+<text class="sub" x="160" y="24" text-anchor="middle">sequence of a promoter</text>
+<path class="arrow" d="M20 56 H300"/>
+<rect class="m1" x="48" y="46" width="44" height="20" rx="3"/>
+<rect class="m3" x="128" y="46" width="52" height="20" rx="3"/>
+<rect class="m1" x="222" y="46" width="44" height="20" rx="3"/>
+<defs><marker id="ld-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="head" d="M0 1 L10 5 L0 9 z"/></marker></defs>
+<path class="arrow" d="M160 78 V112" marker-end="url(#ld-head)"/>
+<rect class="box" x="40" y="118" width="76" height="34"/>
+<rect class="m1" x="40" y="118" width="6" height="34"/>
+<text x="78" y="141" text-anchor="middle">2</text>
+<text class="sub" x="78" y="172" text-anchor="middle">motif 1</text>
+<rect class="box" x="122" y="118" width="76" height="34"/>
+<text x="160" y="141" text-anchor="middle">0</text>
+<text class="sub" x="160" y="172" text-anchor="middle">motif 2</text>
+<rect class="box" x="204" y="118" width="76" height="34"/>
+<rect class="m3" x="204" y="118" width="6" height="34"/>
+<text x="242" y="141" text-anchor="middle">1</text>
+<text class="sub" x="242" y="172" text-anchor="middle">motif 3</text>
+<text class="sub" x="160" y="194" text-anchor="middle">its row of the table</text>
+</svg>
+</figure>
+<div>
+<h3>Loadings</h3>
+<p>A table of promoters by motifs, the second table supplied by a user. A loading tells how strongly a motif is associated with a promoter.</p>
+<p>It comes from scanning the sequence of each promoter with each motif: e.g. the number of predicted binding sites, as in the picture, or the score of the best one. By default, <code>create</code> brings the loadings of all motifs to one scale.</p>
+<p class="more">More: <a href="./tutorial/create.html#format">Data formats</a>, <a href="./tutorial/create.html#transform">Loading transformations</a></p>
+</div>
+</section>
+<section class="part" id="part-activities">
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="The activity of a motif in 3 groups drawn as deviations up and down from the mean of the motif.">
+<path class="arrow" d="M70 160 H300"/>
+<text class="sub" x="62" y="164" text-anchor="end">0</text>
+<path class="arrow-opt" d="M70 92 H300"/>
+<text class="sub" x="62" y="96" text-anchor="end">mean</text>
+<rect class="cell" x="96" y="44" width="40" height="48" fill-opacity="0.85"/>
+<text class="sub" x="116" y="182" text-anchor="middle">group A</text>
+<rect class="cell" x="166" y="92" width="40" height="40" fill-opacity="0.85"/>
+<text class="sub" x="186" y="182" text-anchor="middle">group B</text>
+<rect class="cell" x="236" y="76" width="40" height="16" fill-opacity="0.85"/>
+<text class="sub" x="256" y="182" text-anchor="middle">group C</text>
+<text class="sub" x="185" y="22" text-anchor="middle">activity of a motif</text>
+</svg>
+</figure>
+<div>
+<h3>Activities</h3>
+<p>A table of motifs by samples, and the thing {name} is run for. It is not observed and is estimated from the other 2 tables.</p>
+<p>The activity of a motif is a sum of a mean and a deviation of each group. The mean tells an activator from a repressor, the deviations tell the groups apart, and both come with tests. Properties of samples such as age can be added to the sum as covariates.</p>
+<p class="more">More: <a href="./tutorial/predict.html">Motif activities</a>, <a href="./tutorial/test.html">Tests</a>, <a href="./tutorial/covariates.html">Covariates</a></p>
+</div>
+</section>
+<section class="part" id="part-noise">
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="3 bell curves of different widths: the noise of 3 groups of samples.">
+<path class="arrow" d="M14 150 H306"/>
+<path class="curve" d="M30.0 149.4 L30.8 149.2 L31.6 149.0 L32.4 148.7 L33.2 148.4 L34.0 148.0 L34.8 147.5 L35.6 146.9 L36.4 146.2 L37.2 145.4 L38.0 144.4 L38.8 143.2 L39.6 141.9 L40.4 140.3 L41.2 138.5 L42.0 136.5 L42.8 134.2 L43.6 131.6 L44.4 128.7 L45.2 125.6 L46.0 122.2 L46.8 118.5 L47.6 114.5 L48.4 110.3 L49.2 105.9 L50.0 101.3 L50.8 96.6 L51.6 91.8 L52.4 86.9 L53.2 82.1 L54.0 77.4 L54.8 72.8 L55.6 68.5 L56.4 64.5 L57.2 60.9 L58.0 57.7 L58.8 55.0 L59.6 52.8 L60.4 51.3 L61.2 50.3 L62.0 50.0 L62.8 50.3 L63.6 51.3 L64.4 52.8 L65.2 55.0 L66.0 57.7 L66.8 60.9 L67.6 64.5 L68.4 68.5 L69.2 72.8 L70.0 77.4 L70.8 82.1 L71.6 86.9 L72.4 91.8 L73.2 96.6 L74.0 101.3 L74.8 105.9 L75.6 110.3 L76.4 114.5 L77.2 118.5 L78.0 122.2 L78.8 125.6 L79.6 128.7 L80.4 131.6 L81.2 134.2 L82.0 136.5 L82.8 138.5 L83.6 140.3 L84.4 141.9 L85.2 143.2 L86.0 144.4 L86.8 145.4 L87.6 146.2 L88.4 146.9 L89.2 147.5 L90.0 148.0 L90.8 148.4 L91.6 148.7 L92.4 149.0 L93.2 149.2 L94.0 149.4"/>
+<text class="sub" x="62" y="172" text-anchor="middle">group A</text>
+<path class="curve" d="M105.6 149.6 L107.0 149.5 L108.3 149.4 L109.7 149.3 L111.0 149.1 L112.4 148.8 L113.8 148.5 L115.1 148.2 L116.5 147.8 L117.8 147.3 L119.2 146.7 L120.6 146.0 L121.9 145.2 L123.3 144.3 L124.6 143.2 L126.0 142.0 L127.4 140.7 L128.7 139.2 L130.1 137.5 L131.4 135.7 L132.8 133.6 L134.2 131.5 L135.5 129.1 L136.9 126.7 L138.2 124.1 L139.6 121.4 L141.0 118.6 L142.3 115.7 L143.7 112.9 L145.0 110.1 L146.4 107.3 L147.8 104.6 L149.1 102.1 L150.5 99.7 L151.8 97.6 L153.2 95.7 L154.6 94.1 L155.9 92.8 L157.3 91.9 L158.6 91.4 L160.0 91.2 L161.4 91.4 L162.7 91.9 L164.1 92.8 L165.4 94.1 L166.8 95.7 L168.2 97.6 L169.5 99.7 L170.9 102.1 L172.2 104.6 L173.6 107.3 L175.0 110.1 L176.3 112.9 L177.7 115.7 L179.0 118.6 L180.4 121.4 L181.8 124.1 L183.1 126.7 L184.5 129.1 L185.8 131.5 L187.2 133.6 L188.6 135.7 L189.9 137.5 L191.3 139.2 L192.6 140.7 L194.0 142.0 L195.4 143.2 L196.7 144.3 L198.1 145.2 L199.4 146.0 L200.8 146.7 L202.2 147.3 L203.5 147.8 L204.9 148.2 L206.2 148.5 L207.6 148.8 L209.0 149.1 L210.3 149.3 L211.7 149.4 L213.0 149.5 L214.4 149.6"/>
+<text class="sub" x="160" y="172" text-anchor="middle">group B</text>
+<path class="curve" d="M216.4 149.5 L217.4 149.4 L218.5 149.2 L219.5 149.0 L220.6 148.8 L221.6 148.5 L222.6 148.1 L223.7 147.6 L224.7 147.1 L225.8 146.4 L226.8 145.7 L227.8 144.8 L228.9 143.7 L229.9 142.5 L231.0 141.2 L232.0 139.6 L233.0 137.8 L234.1 135.8 L235.1 133.7 L236.2 131.2 L237.2 128.6 L238.2 125.8 L239.3 122.7 L240.3 119.5 L241.4 116.1 L242.4 112.6 L243.4 108.9 L244.5 105.2 L245.5 101.5 L246.6 97.8 L247.6 94.1 L248.6 90.6 L249.7 87.3 L250.7 84.2 L251.8 81.4 L252.8 79.0 L253.8 76.9 L254.9 75.3 L255.9 74.1 L257.0 73.3 L258.0 73.1 L259.0 73.3 L260.1 74.1 L261.1 75.3 L262.2 76.9 L263.2 79.0 L264.2 81.4 L265.3 84.2 L266.3 87.3 L267.4 90.6 L268.4 94.1 L269.4 97.8 L270.5 101.5 L271.5 105.2 L272.6 108.9 L273.6 112.6 L274.6 116.1 L275.7 119.5 L276.7 122.7 L277.8 125.8 L278.8 128.6 L279.8 131.2 L280.9 133.7 L281.9 135.8 L283.0 137.8 L284.0 139.6 L285.0 141.2 L286.1 142.5 L287.1 143.7 L288.2 144.8 L289.2 145.7 L290.2 146.4 L291.3 147.1 L292.3 147.6 L293.4 148.1 L294.4 148.5 L295.4 148.8 L296.5 149.0 L297.5 149.2 L298.6 149.4 L299.6 149.5"/>
+<text class="sub" x="258" y="172" text-anchor="middle">group C</text>
+<text class="sub" x="160" y="22" text-anchor="middle">a variance of noise per group</text>
+</svg>
+</figure>
+<div>
+<h3>Noise</h3>
+<p>The part of expression that the motifs leave unexplained. Each group of samples has a variance of noise.</p>
+<p>These variances are estimated first, with restricted maximum likelihood, and everything else (variances of motifs, activities, tests) is built on them. An error made here spreads to all the results. That is why most of the effort behind {name} went into this step.</p>
+<p class="more">More: <a href="./tutorial/fit.html">Parameters estimation</a>, <a href="#doesitwork">Does it work?</a></p>
+</div>
+</section>
+</div>
+
+<p>Expression and loadings are supplied by a user, and the highlighted table is estimated. This is the model of MARA [<a href="#paper_1">1</a>] and ISMARA [<a href="#paper_2">2</a>]. {name} keeps the model and replaces the way its parameters are estimated.</p>
+
+<p>Key features:</p>
+
+<ul>
+<li>
+	A statistical model with
+	<ul>
+		<li>
+		unbiased estimates of variances, also when samples are few;
+		</li>
+		<li>
+		a variance for each motif and a noise level for each group of samples;
+		</li>
+		<li>
+		mean motif activities, telling activators from repressors;
+		</li>
+	</ul>
+</li>
+
+<li>
+	Statistical tests for motifs: ANOVA, contrasts between groups of samples, sign of the mean activity;
+
+</li>
+
+<li>
+	Replicates, sample covariates and held-out promoters;
+
+</li>
+
+<li>
+	Polished command-line interface for step-by-step analysis;
+
+</li>
+<li>
+	Results as plain tables with a generated description of every column.
+
+</li>
+</ul>
+
+<p>A quick introduction to motif activity analysis with {name} is given in the <a href='./tutorial/quickstart.html'>Quickstart</a> section of the tutorial.</p>
+
+<h2 id="features">{name} Features</h2>
+
+<dl class="feat">
+  <dt>Unbiased variance estimates</dt>
+  <dd>Variance parameters are estimated with restricted maximum likelihood (REML) after the mean parameters are projected out of the data. Mean parameters are then estimated with generalized least squares.
+</dd>
+  <dt>Motif-specific variances</dt>
+  <dd>Each motif has a variance of its activity across samples. A motif of constant activity gets a variance close to zero, and there is a test for that.
+  </dd>
+  <dt>Mean activities</dt>
+  <dd>The mean activity of each motif is a parameter of the model with a standard error. Its sign tells whether the motif activates or represses transcription on average.
+  </dd>
+  <dt>Groups of samples</dt>
+  <dd>Replicates of one condition form a group. A group has one activity per motif, one error variance and one multiplier of the activity variance.
+  </dd>
+  <dt>Statistical tests</dt>
+  <dd>{name} tests whether the activity of a motif varies at all, whether it differs between chosen groups and whether a linear combination of groups (say, treated minus control) differs from zero.
+  </dd>
+  <dt>Covariates</dt>
+  <dd>Sex, age, batch and other properties of samples can <a href="./tutorial/covariates.html">enter the model</a>. Each covariate gets an effect on each motif with a test, e.g. the change of a motif activity with age. Covariates that were not recorded can be <a href="./tutorial/lowrank.html">reconstructed</a> from the data.
+  </dd>
+  <dt>Held-out promoters</dt>
+  <dd>Promoters of chosen chromosomes can be held out of the fit, and the fraction of explained variance is then reported for them separately.
+  </dd>
+  <dt>Gene regulatory network</dt>
+  <dd>For each promoter, motif and group {name} computes a posterior probability that the motif contributes to the expression of the promoter.
+  </dd>
+  <dt>Single-sample data</dt>
+  <dd>Data without replication across samples are covered by a separate Bayesian regression model.
+  </dd>
+  <dt>It is fast</dt>
+  <dd>No step of the algorithm is cubic in the number of promoters or samples. A project of 2000 promoters, 500 motifs and 57 samples is fitted in 5 seconds on one CPU thread.
+  </dd>
+  <dt>Classic MARA</dt>
+  <dd>For the old school or the suspicious, {name} also includes a reimplementation of the classic MARA and ISMARA models.
+  </dd>
+ </dl>
+
+<h2 id="why">Why "done right"?</h2>
+
+<p>Classic MARA makes 4 simplifications, and {name} removes each of them.</p>
+
+<dl class="feat">
+  <dt>Centering</dt>
+  <dd>MARA subtracts row and column averages from the expression table and then treats the result as ordinary data. The subtraction is a multiplication by a matrix of incomplete rank, and the noise of the centered table has a singular covariance matrix. With that ignored, variance estimates are biased, and the bias grows as samples get fewer. {name} multiplies the data by an orthogonal complement of the vector of ones (a relative of the Helmert matrix). The means vanish likewise, and the noise stays independent.
+  </dd>
+  <dt>Least squares</dt>
+  <dd>Centering amounts to estimating the means with ordinary least squares. That estimator is unbiased and loses efficiency, as it ignores the weights implied by the variances. {name} estimates the means with generalized least squares once the variances are known.
+  </dd>
+  <dt>Zero mean activity</dt>
+  <dd>MARA assumes that the mean activity of every motif is zero. The reported activities are then deviations from an unknown mean, and an activator cannot be told from a repressor. In {name} the mean activity is a parameter.
+  </dd>
+  <dt>One variance for all motifs</dt>
+  <dd>In MARA the activities of all motifs share one prior variance. In {name} the variance is estimated per motif, with a multiplier per group of samples.
+  </dd>
+</dl>
+
+<p>The derivations are in the paper [<a href="#paper_3">3</a>], and <a href='./tutorial/clockworks.html'>How it works</a> gives a summary without proofs.</p>
+
+<h2 id="doesitwork">Does it work?</h2>
+
+<p>We have tested {name} on synthetic data generated from the model with known parameters: 39 configurations of the generator, each with 20 random seeds, 780 datasets in total [<a href="#paper_3">3</a>]. The configurations differ in the number of promoters (1000 to 20000), the number of samples (2 to 128), the share of variance explained by motifs, the share of inactive motifs and the spread of motif and promoter variances. The figures are in the paper.</p>
+
+<p>The generator and the MARA baseline are parts of the package, so a comparison takes a few commands. Below is the mean absolute percentage error of the error variance estimates on datasets of 5000 promoters, 100 motifs and 4 groups. Each row is one dataset, and MARA was run with the default settings of the <code>mara fit</code> command.</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Samples per group</th>
+      <th scope="col">{name}</th>
+      <th scope="col">MARA</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>2</td>
+      <td>1.8%</td>
+      <td>12.1%</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>0.3%</td>
+      <td>5.9%</td>
+    </tr>
+    <tr>
+      <td>16</td>
+      <td>0.4%</td>
+      <td>1.4%</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The gap closes as samples are added: the bias of the MARA estimates matters when samples are few. MARA estimates a variance per sample, and the table averages them within a group.</p>
+
+<h2 id="references">References</h2>
+
+<ol class="refs">
+<li id="paper_1">FANTOM Consortium (2009). The transcriptional network that controls growth arrest and differentiation in a human myeloid leukemia cell line. Nature Genetics, 41(5), 553-562.
+<br>DOI: <a href="https://doi.org/10.1038/ng.375">10.1038/ng.375</a></li>
+<li id="paper_2">Balwierz, P. J., Pachkov, M., Arnold, P., Gruber, A. J., Zavolan, M., &amp; van Nimwegen, E. (2014). ISMARA: automated modeling of genomic signals as a democracy of regulatory motifs. Genome Research, 24(5), 869-884.
+<br>DOI: <a href="https://doi.org/10.1101/gr.169508.113">10.1101/gr.169508.113</a></li>
+<li id="paper_3">Meshcheryakov, G., &amp; Buyan, A. I. (2026). MARADONER: Motif Activity Response Analysis Done Right. arXiv preprint.
+<br>DOI: <a href="https://doi.org/10.48550/arXiv.2602.03343">10.48550/arXiv.2602.03343</a></li>
+</ol>

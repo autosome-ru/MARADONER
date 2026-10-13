@@ -1,0 +1,174 @@
+<p>This section covers what stands apart from the main workflow: a model for a single sample, the classic MARA, a choice between motif collections and the generator of synthetic data. All of them start from a project made with <a href="./create.html"><code>create</code></a>, the generator excepted.</p>
+
+<h2 id="single">Single-sample data</h2>
+
+<p>{name} reads activities off the variation of expression across samples. With a single sample there is nothing to vary, and <code>fit</code> stops with an error. For such data there is the <code>bayes_linreg</code> command. It fits a different model, where the replication comes from the promoters:
+$$y = μ 1_p + B u + e,\: e \,~\, N(0, σ^2 I_p),\: u \,~\, N(0, Σ).$$
+Here, $y$ is the expression of one sample, $μ$ is a scalar mean, $σ^2$ is a scalar error variance and $Σ$ is a diagonal matrix of motif variances. The variances are estimated with REML, and the activities are the posterior mean of $u$. Some of the motif variances shrink to exactly zero on the way, and the motifs with a non-zero variance are the relevant ones (the approach is known as automatic relevance determination).</p>
+
+<p>Unlike the usual chain of commands, this one goes straight from a project to the result files:</p>
+
+<pre class="prettyprint">
+> maradoner bayes_linreg MyProject results
+</pre>
+
+<p>If the project has several samples, each one is fitted independently. The folder gets 2 tables:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">File</th>
+      <th scope="col">Content</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><i>motifs.tsv</i></td>
+      <td>A row per motif per sample: <b>activity</b>, its posterior standard deviation <b>std</b>, the z-score <b>z</b>, <b>p_value</b>, <b>fdr_bh</b>, the variance of the motif and the fraction of variance lost when the motif alone is removed (<b>fov</b>)</td>
+    </tr>
+    <tr>
+      <td><i>samples.tsv</i></td>
+      <td>A row per sample: the mean, the error variance, the fraction of variance explained, the number of motifs with a non-zero variance and the number of significant ones</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="alert alert-warning" role="alert">
+The <b>std</b> column is the posterior standard deviation given the estimated variances. It is too small as an error bar of a non-zero activity. Whether an activity differs from zero is told by <b>z</b>, <b>p_value</b> and <b>fdr_bh</b>.
+</div>
+
+<p>The <code>--alpha</code> option sets the FDR level for the count of significant motifs (0.05 by default), and <code>--promoters</code> adds a table of the fitted expression.</p>
+
+<h2 id="mara">Classic MARA</h2>
+
+<p>The classic model is available under the <code>mara</code> command. It has 4 subcommands of the familiar names, and they work with the same project:</p>
+
+<pre class="prettyprint">
+> maradoner mara fit MyProject
+> maradoner mara predict MyProject
+> maradoner mara gof MyProject
+> maradoner mara export MyProject results_mara
+</pre>
+
+<p>The files of the 2 models do not interfere, so both can be fitted to one project and compared. It is a reimplementation made as a baseline for the tests of {name}.</p>
+
+<p>The options of <code>mara fit</code> specific to the classic model are:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--tau-mode &lt;str&gt;</code></td>
+      <td>The model: <code>mara</code> or <code>ismara</code></td>
+      <td>mara</td>
+    </tr>
+    <tr>
+      <td><code>--tau-estimation &lt;str&gt;</code></td>
+      <td>The variance of motif activities is either <code>fixed</code> or estimated with maximum likelihood (<code>mle</code>)</td>
+      <td>fixed</td>
+    </tr>
+    <tr>
+      <td><code>--tau-fix &lt;float&gt;</code></td>
+      <td>The value of the variance when it is fixed</td>
+      <td>0.1</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The exported folder has activities per sample (<i>activities_raw.tsv</i>), their z-scores (<i>activities.tsv</i> and <i>z_scores.tsv</i>) and the variances per sample (<i>params.tsv</i>).</p>
+
+<h2 id="select">Choosing between motif collections</h2>
+
+<p>The same transcription factor may have a motif in several collections, and the loadings obtained with them differ. When a project is created from <a href="./create.html#format">several loading matrices</a> with postfixes, the <code>select-motifs</code> command picks the best variant of each motif:</p>
+
+<pre class="prettyprint">
+> maradoner create Both expression.tsv hocomoco.tsv jaspar.tsv -p hoc -p jas
+> maradoner fit Both
+> maradoner predict Both
+> maradoner select-motifs Both best_motifs.txt
+> maradoner create MyProject expression.tsv hocomoco.tsv jaspar.tsv -p hoc -p jas --motif-filename best_motifs.txt
+</pre>
+
+<p>Here, the first 3 commands fit a model with all variants at once. The fourth one writes the names of the winners, one per line and with the postfixes, to <i>best_motifs.txt</i>. The last one creates the final project with the winners alone.</p>
+
+<p>The variants of a motif are compared by a score on the z-scale. It combines the z-score of the mean activity of a variant with the z-scores of its deviations in the groups, and the variant of the highest score wins.</p>
+
+<p>A model with all variants at once has many nearly collinear motifs, and <code>fit</code> may warn about a singular Fisher information. That's fine for the purpose of selection, as the standard errors of the variances take no part in the score.</p>
+
+<h2 id="generate">Synthetic data</h2>
+
+<p>The <code>generate</code> command draws a dataset from the model with random parameters and saves both the data and the parameters:</p>
+
+<pre class="prettyprint">
+> maradoner generate folder_name
+</pre>
+
+<p>The folder gets the input files for <code>create</code> (<i>expression.tsv</i>, <i>loadings.tsv</i>, <i>groups.json</i>) and the truth: <i>activities.tsv</i>, <i>motif_means.tsv</i>, <i>Sigma.tsv</i> with the motif variances, <i>sigma.tsv</i> and <i>nu.tsv</i> with the variances of groups, <i>promoter_means.tsv</i> and <i>sample_means.tsv</i>. The loadings are uniform random numbers, so a project is better created from them with <code>--loading-transform none</code>.</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--p &lt;int&gt;</code></td>
+      <td>Number of promoters</td>
+      <td>2000</td>
+    </tr>
+    <tr>
+      <td><code>--m &lt;int&gt;</code></td>
+      <td>Number of motifs</td>
+      <td>500</td>
+    </tr>
+    <tr>
+      <td><code>--g &lt;int&gt;</code></td>
+      <td>Number of groups</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td><code>--min-samples &lt;int&gt;</code>, <code>--max-samples &lt;int&gt;</code></td>
+      <td>The size of each group is drawn between these 2 numbers</td>
+      <td>5, 6</td>
+    </tr>
+    <tr>
+      <td><code>--non-significant-motifs-fraction &lt;float&gt;</code></td>
+      <td>The share of motifs with an activity of zero. Their names start with <i>inactive_</i></td>
+      <td>0.2</td>
+    </tr>
+    <tr>
+      <td><code>--sigma-rel &lt;float&gt;</code></td>
+      <td>The ratio of $ν$ to $σ$. The higher it is, the more variance the motifs explain</td>
+      <td>0.1</td>
+    </tr>
+    <tr>
+      <td><code>--no-means</code></td>
+      <td>Promoter-wise and sample-wise means are set to zero</td>
+      <td><code>--means</code></td>
+    </tr>
+    <tr>
+      <td><code>--n-covariates &lt;int&gt;</code></td>
+      <td>Number of sample covariates. A <i>covariates.tsv</i> file is written, and the true effects go to <i>M_gt.tsv</i></td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td><code>--error-lowrank &lt;int&gt;</code>, <code>--activity-lowrank &lt;int&gt;</code></td>
+      <td>Ranks of the <a href="./lowrank.html">low-rank corrections</a> injected into the covariance of the noise and of the activities</td>
+      <td>0, 0</td>
+    </tr>
+    <tr>
+      <td><code>--seed &lt;int&gt;</code></td>
+      <td>Random seed</td>
+      <td>1</td>
+    </tr>
+  </tbody>
+</table>

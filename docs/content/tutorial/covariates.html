@@ -1,0 +1,194 @@
+<p>A covariate is a property of a sample known before the analysis: age, sex, batch, dose, time. If a table of covariates is given to <code>create</code>, the mean activity of each motif becomes a linear function of them. Two things come out of it. The influence of a covariate is no longer taken for random variation between samples. And each covariate gets an effect on each motif, with a standard error and a test. With age as a covariate, for instance, the results tell how the activity of every motif changes with age.</p>
+
+<h2 id="model">What does a covariate change in the model?</h2>
+
+<p>Without covariates, the activity of a motif in a sample is a sum of 2 parts: a mean shared by all samples and a deviation of the group of the sample. A covariate adds a third part:</p>
+
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 150" role="img" aria-label="Activity equals mean plus effect times covariate plus deviation.">
+<rect class="box" x="10" y="35" width="140" height="80"/>
+<text x="80" y="71" text-anchor="middle">Activity</text>
+<text class="sub" x="80" y="93" text-anchor="middle">motif, sample</text>
+<text x="168" y="81" text-anchor="middle">=</text>
+<rect class="box-a" x="186" y="35" width="110" height="80"/>
+<text x="241" y="71" text-anchor="middle">Mean</text>
+<text class="sub" x="241" y="93" text-anchor="middle">per motif</text>
+<text x="314" y="81" text-anchor="middle">+</text>
+<rect class="box-a" x="332" y="35" width="110" height="80"/>
+<text x="387" y="71" text-anchor="middle">Effect</text>
+<text class="sub" x="387" y="93" text-anchor="middle">per motif</text>
+<text x="460" y="81" text-anchor="middle">×</text>
+<rect class="box" x="478" y="35" width="110" height="80"/>
+<text x="533" y="71" text-anchor="middle">Covariate</text>
+<text class="sub" x="533" y="93" text-anchor="middle">per sample</text>
+<text x="606" y="81" text-anchor="middle">+</text>
+<rect class="box" x="624" y="35" width="126" height="80"/>
+<text x="687" y="71" text-anchor="middle">Deviation</text>
+<text class="sub" x="687" y="93" text-anchor="middle">motif, group</text>
+</svg>
+</figure>
+
+<p>The 2 highlighted parts are parameters of the model. They are estimated together with generalized least squares at the <i>motif means</i> stage of <code>fit</code>, and each estimate has a standard error. The covariate is given by a user. The deviation is random and is predicted later by <code>predict</code>, the same way as in a model without covariates.</p>
+
+<p>In the notation of the <a href="./clockworks.html">How it works</a> section, the mean of the activity matrix $U$ turns from $μ_m 1_s^T$ into $M X$. Here, $X$ is a matrix with a row of ones and a row per covariate, and $M$ has a column of means and a column of effects per covariate.</p>
+
+<h2 id="table">The table of covariates</h2>
+
+<p>The table goes to <code>create</code> with the <code>--covariates</code> option. Its first column holds sample names, and each of the other columns is a covariate:</p>
+
+<pre>
+sample	age	sex	batch
+sample_1	34	F	batch_1
+sample_2	51	M	batch_1
+sample_3	47	F	batch_2
+sample_4	29	M	batch_2
+</pre>
+
+<p>A column is treated according to what is in it:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Column</th>
+      <th scope="col">What is done</th>
+      <th scope="col">Meaning of the effect</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Numeric: all values are numbers</td>
+      <td>The values are z-scored: the mean is subtracted, and the result is divided by the standard deviation</td>
+      <td>The change of activity per one standard deviation of the covariate</td>
+    </tr>
+    <tr>
+      <td>Categorical: the values are text</td>
+      <td>The first level in the alphabetical order becomes a reference. Each of the other levels gets a covariate of zeros and ones, named after the column and the level, e.g. <i>sex_M</i></td>
+      <td>The difference of activity between the level and the reference level</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>All covariates are centered, so the mean of a motif stays what it was: its activity averaged over the samples of the project.</p>
+
+<p>A few rules apply to the table:</p>
+
+<ul>
+  <li>Every sample of the project has a row;</li>
+  <li>An empty cell is imputed with a warning: the column mean for a numeric covariate, the most frequent level for a categorical one;</li>
+  <li>A column of numbers is numeric even if the numbers are labels. Categories are better written as text: <i>batch_1</i> in place of <i>1</i>;</li>
+  <li>A column mixing numbers and text is an error;</li>
+  <li>A covariate constant over the samples is dropped with a warning;</li>
+  <li>Covariates that are linear combinations of each other are an error.</li>
+</ul>
+
+<p>Each covariate takes one degree of freedom from the samples. When too few are left for the variances of the groups, {name} warns about a singular Fisher information and names the cause. The way out is fewer covariates or larger groups.</p>
+
+<h2 id="example">Example</h2>
+
+<p>The <a href="./other.html#generate">generator</a> of synthetic data can add covariates. Let's generate a dataset with one:</p>
+
+<pre class="prettyprint">
+> maradoner generate demo --n-covariates 1 --cov-effect 0.3
+</pre>
+
+<p>Here, <code>--cov-effect</code> is the scale of the true effects. The <i>demo</i> folder gets a <i>covariates.tsv</i> table with a covariate named <i>cov_1</i>, and the true effects are saved to <i>M_gt.tsv</i>. For a livelier example we made a table by hand out of it. The values of <i>cov_1</i> became an age in years (45 + 12 × <i>cov_1</i>, rounded), and a <i>batch</i> column was filled at random. The result is <i>demo/samples.tsv</i>:</p>
+
+<pre>
+sample	age	batch
+col_1	34	batch_2
+col_2	22	batch_2
+col_3	40	batch_2
+col_4	50	batch_2
+</pre>
+
+<p>So age has a true effect on the 400 active motifs of the dataset, and batch has no effect at all. First, we create a project:</p>
+
+<pre class="prettyprint">
+> maradoner create MyProject demo/expression.tsv demo/loadings.tsv --sample-groups demo/groups.json --loading-transform none --covariates demo/samples.tsv
+</pre>
+
+<pre>
+Number of promoters: 1937, number of motifs: 500, number of samples: 57, number of groups: 10
+Number of covariates (excl. intercept): 2 (age, batch_batch_2)
+</pre>
+
+<p>The second line lists the covariates as they enter the model. The <i>batch</i> column has 2 levels, <i>batch_1</i> is the reference, and one covariate named <i>batch_batch_2</i> is made of the other. Next come the usual commands:</p>
+
+<pre class="prettyprint">
+> maradoner fit MyProject
+> maradoner predict MyProject
+> maradoner export MyProject results
+</pre>
+
+<p>Nothing in them is specific to covariates. The effects are in the <i>results/params/covariates</i> folder, one table per covariate: <i>age.tsv</i>, <i>batch_batch_2.tsv</i> and <i>intercept.tsv</i>. The first rows of <i>age.tsv</i> are</p>
+
+<pre>
+	effect	std	z	pvalue	fdr
+motif_1	0.0395202674957732	0.045215572852554	0.8740410659983692	0.3820958901609635	0.4848932616255882
+motif_2	-0.4832156891288582	0.0170929751054766	-28.26984103978677	8.11882851314425e-176	1.3531380855240416e-173
+inactive_motif_3	0.017395894409502	0.0170719704147254	1.018974025077812	0.3082152982240479	0.4101852749342314
+</pre>
+
+<p>Here, <b>effect</b> is the estimate, <b>std</b> is its standard error, <b>z</b> is their ratio, <b>pvalue</b> is two-sided and <b>fdr</b> is that of Benjamini and Hochberg over the motifs. The standard deviation of age in this dataset is 12 years. Hence, the activity of <i>motif_2</i> goes down by 0.48 with each 12 years of age.</p>
+
+<p>At an FDR of 0.05, age has an effect on 303 motifs. All of them are among the 400 with a true effect, and the sign is right for each. Batch has an effect on no motif. That's fine: the batches were assigned at random.</p>
+
+<div class="figs n1 half">
+<figure><a href="../files/cov_effects.png"><img src="../files/cov_effects.png" alt="Estimated effects of age against the true ones"></a><figcaption>The estimated effect of age against the true one for each of the 500 motifs. The correlation is 0.99.</figcaption></figure>
+</div>
+
+<p>An effect is a slope of a line. For 2 motifs of a moderate effect it looks as follows:</p>
+
+<div class="figs n1">
+<figure><a href="../files/cov_age.png"><img src="../files/cov_age.png" alt="True activities of 2 motifs in each sample against the age of the sample, with the fitted lines"></a><figcaption>A dot is a sample. Its height is the true activity of the motif in the sample, known for synthetic data. The line is drawn from the estimates: the mean of the motif plus its effect of age.</figcaption></figure>
+</div>
+
+<p>The scatter around a line is the deviation of the model. In this example the deviations are comparable to the effect of age in size, and the effect is still found.</p>
+
+<h2 id="ignored">What if a covariate is left out?</h2>
+
+<p>We fitted the same data once more, this time without the table. Age does not vanish from the data. Its influence goes to the only random part there is, the deviations:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col"></th>
+      <th scope="col">With the table</th>
+      <th scope="col">Without it</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Fraction of variance explained by mean activities</td>
+      <td>0.701</td>
+      <td>0.602</td>
+    </tr>
+    <tr>
+      <td>Fraction of variance explained by the whole model</td>
+      <td>0.953</td>
+      <td>0.954</td>
+    </tr>
+    <tr>
+      <td>Rank correlation between the estimated and the true motif variances</td>
+      <td>0.97</td>
+      <td>0.63</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The model as a whole fits equally well, so <a href="./gof.html"><code>gof</code></a> does not give the omission away. The motif variances are what suffers. They take in the effect of age and no longer tell how much a motif varies between the groups.</p>
+
+<p>A covariate that matters is better passed to the model. When it was not recorded at all, it can sometimes be recovered from the data. That is the subject of the <a href="./lowrank.html">next section</a>.</p>
+
+<h2 id="reading">What else is affected?</h2>
+
+<ul>
+  <li>The <i>intercept.tsv</i> table holds the mean activities, the same as <i>params/motif_means.tsv</i>, with a two-sided test against zero;</li>
+  <li>The standard errors are computed for all covariates jointly, so a correlation between 2 covariates widens the errors of both;</li>
+  <li>The tables of the <i>activities</i> folder hold the deviations, i.e. what is left of an activity once the mean and the covariates are taken away. A difference between groups that follows a covariate goes to the effect of the covariate. It is then absent from the activities and from the <a href="./test.html#contrast">contrasts</a>;</li>
+  <li>The expression exported with the <code>--log-counts</code> option of <a href="./export.html#options"><code>export</code></a> includes the covariates. The tables of the <code>--loadings-product</code> option use the mean activity alone.</li>
+</ul>
+
+<div class="alert alert-info" role="alert">
+The <code>--covariate</code> option of <code>estimate-promoter-mean</code> is a different thing. It takes properties of promoters and is covered in the <a href="./gof.html#promoter-mean">Goodness of fit</a> section.
+</div>

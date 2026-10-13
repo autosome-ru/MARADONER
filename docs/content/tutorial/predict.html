@@ -1,0 +1,127 @@
+<h2 id="predict">Predicting activities</h2>
+
+<p>After the parameters are estimated, motif activities are obtained with the <code>predict</code> command:</p>
+
+<pre class="prettyprint">
+> maradoner predict MyProject
+</pre>
+
+<p>In {name}, the activity of a motif in a group of samples is a sum of 2 terms: the mean activity of the motif and a deviation from it in that group. The mean is a parameter and was estimated by <code>fit</code>. The deviations are what <code>predict</code> computes, and everywhere in the exported tables "activity" stands for the deviation.</p>
+
+<p>Why "predict" and why not "estimate"? In the model the deviations are random variables, and a random variable is predicted. The prediction is the maximum-a-posteriori one, i.e. the most probable value of the deviations given the data and the parameters. For a group of $n$ samples with an error variance $σ$ and a multiplier $ν$ it is
+$$u = {n}/{σ} Z B^T \ov Y,\: Z = ({1}/{ν} Σ^{-1} + {n}/{σ} B^T B)^{-1}.$$
+Here, $\ov Y$ is the average expression of the group with all the means subtracted, and $Σ$ is a diagonal matrix of the motif variances $τ$. The matrix $Z$ is the posterior covariance of the deviations, and the square roots of its diagonal are exported as their standard deviations.</p>
+
+<p>Informally, this is a ridge regression with a separate penalty for each motif. The smaller the variance of a motif is against the noise of the group, the stronger its activity is pulled to the mean.</p>
+
+<h2 id="filter">Motifs of low variance</h2>
+
+<p>A motif whose variance $τ$ was estimated as zero has a deviation of exactly zero in every group, and there is nothing to predict. By default, <code>predict</code> leaves out the motifs with a variance several orders of magnitude below the median one:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--filter-order &lt;int&gt;</code></td>
+      <td>A motif variance is considered low if it is this many orders of magnitude smaller than the median motif variance</td>
+      <td>5</td>
+    </tr>
+    <tr>
+      <td><code>--no-filter-motifs</code></td>
+      <td>Deviations are predicted for all motifs</td>
+      <td><code>--filter-motifs</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The motifs left out are absent from the tables of activities and from the tests built on them. They keep their mean activity and the test of its sign. After <code>export</code>, they are listed in <i>params/filtered_motif_variances.tsv</i>.</p>
+
+<h2 id="cv">Tuning with cross-validation</h2>
+
+<p>The ratio of $ν$ to $σ$ plays the role of a signal-to-noise ratio of a group. The higher it is, the less the activities are shrunk, and in the limit the prediction turns into an ordinary least squares solution with the risk of overfitting. The ratio can be treated as a hyperparameter and tuned by cross-validation:</p>
+
+<pre class="prettyprint">
+> maradoner predict MyProject --tau-search
+</pre>
+
+<p>Here, {name} tries several multipliers of the activity variance for each group. For each multiplier, activities are predicted from a part of the promoters and are used to predict the expression of the remaining ones, and the multiplier of the smallest error wins. The paper expects a slight improvement of the activities from this step.</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--tau-left &lt;float&gt;</code></td>
+      <td>The smallest multiplier to try</td>
+      <td>0.1</td>
+    </tr>
+    <tr>
+      <td><code>--tau-right &lt;float&gt;</code></td>
+      <td>The largest multiplier to try. A value above 1 allows for an underestimated variance</td>
+      <td>1.0</td>
+    </tr>
+    <tr>
+      <td><code>--tau-num &lt;int&gt;</code></td>
+      <td>Number of multipliers, evenly spaced between the 2 bounds</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td><code>--cv-splits &lt;int&gt;</code></td>
+      <td>Number of parts the promoters are split into</td>
+      <td>5</td>
+    </tr>
+    <tr>
+      <td><code>--cv-repeats &lt;int&gt;</code></td>
+      <td>Number of times the split is repeated</td>
+      <td>3</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="tables">Tables of activities</h2>
+
+<p>The activities are written by the <code>export</code> command into the <i>activities</i> folder:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">File</th>
+      <th scope="col">Content</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><i>activity_group_raw.tsv</i></td>
+      <td>The predicted deviation of each motif in each group</td>
+    </tr>
+    <tr>
+      <td><i>activity_group_raw_std.tsv</i></td>
+      <td>Posterior standard deviations of the above</td>
+    </tr>
+    <tr>
+      <td><i>activity.tsv</i></td>
+      <td>The first table divided by the second one, i.e. signed z-scores</td>
+    </tr>
+    <tr>
+      <td><i>z_score.tsv</i></td>
+      <td>Absolute values of the z-scores and an <b>overall</b> column: the root mean square of the z-scores of a motif over groups</td>
+    </tr>
+    <tr>
+      <td><i>activity_raw.tsv</i></td>
+      <td>The deviation predicted from each sample alone, with no standard deviations</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The z-scores are the numbers to start with. The <b>overall</b> column ranks motifs by how much their activity changes across groups in total, and the columns of <i>activity.tsv</i> tell in what groups a motif is more or less active than on average.</p>

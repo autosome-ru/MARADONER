@@ -149,6 +149,8 @@ maradoner fit --help
 # and so on for each command
 ```
 
+There's also a project doumentation available at [maradoner.georgy.top](https://maradoner.georgy.top).
+
 # Cite
 For the time being, you can cite [our technical arXiv paper](https://doi.org/10.48550/arXiv.2602.03343) that explains MARADONER's inner clockworks in a great detail:
 

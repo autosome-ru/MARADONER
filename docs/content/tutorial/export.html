@@ -1,0 +1,156 @@
+<h2 id="export">Exporting tables</h2>
+
+<p>The project files of {name} are not meant to be read by other software. The <code>export</code> command turns them into plain tables:</p>
+
+<pre class="prettyprint">
+> maradoner export MyProject results
+</pre>
+
+<p>Here, <code>results</code> is the output folder. All tables in it are tab-separated, and the first column holds row names. The command runs after <code>predict</code>.</p>
+
+<p>Besides the tables, the folder gets a <i>README.md</i> file. It describes every file found in the folder and every column of it, with respect to the options the tables were made with. The other commands writing into the same folder (<code>contrast</code>, <code>anova</code>, <code>grn</code> and so on) add their files to it. This page of the tutorial is therefore a guide to the folder, and the generated file is the reference.</p>
+
+<h2 id="layout">What is in the folder?</h2>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Folder</th>
+      <th scope="col">Content</th>
+      <th scope="col">Details</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><i>activities</i></td>
+      <td>Deviations of motif activities from their means in each group, their standard deviations and z-scores</td>
+      <td><a href="./predict.html#tables">Motif activities</a></td>
+    </tr>
+    <tr>
+      <td><i>params</i></td>
+      <td>Parameter estimates with standard errors</td>
+      <td>Below</td>
+    </tr>
+    <tr>
+      <td><i>tests</i></td>
+      <td>Tests for each motif</td>
+      <td><a href="./test.html">Tests</a></td>
+    </tr>
+    <tr>
+      <td><i>fov</i></td>
+      <td>Goodness-of-fit statistics, present if <code>gof</code> was run before the export</td>
+      <td><a href="./gof.html">Goodness of fit</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Motifs appear in the tables of activities and in most of the tests only if <code>predict</code> <a href="./predict.html#filter">kept</a> them.</p>
+
+<h2 id="params">Parameter estimates</h2>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">File</th>
+      <th scope="col">Rows</th>
+      <th scope="col">Content</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><i>motif_means.tsv</i></td>
+      <td>Motifs</td>
+      <td>The mean activity of each motif (<b>mean</b>) and its standard error (<b>std</b>)</td>
+    </tr>
+    <tr>
+      <td><i>motif_variances.tsv</i></td>
+      <td>Motifs</td>
+      <td>The variance of activity deviations per motif (<b>tau</b>) and its standard error (<b>std</b>)</td>
+    </tr>
+    <tr>
+      <td><i>filtered_motif_variances.tsv</i></td>
+      <td>Motifs</td>
+      <td>The motifs left out by <code>predict</code> for a negligible variance</td>
+    </tr>
+    <tr>
+      <td><i>group_variances.tsv</i></td>
+      <td>Groups</td>
+      <td>The error variance (<b>sigma</b>) and the multiplier of activity variances (<b>nu</b>) with their standard errors</td>
+    </tr>
+    <tr>
+      <td><i>promoter_means.tsv</i></td>
+      <td>Promoters</td>
+      <td>Promoter-wise means</td>
+    </tr>
+    <tr>
+      <td><i>sample_means.tsv</i></td>
+      <td>Samples</td>
+      <td>Sample-wise means</td>
+    </tr>
+    <tr>
+      <td><i>covariates/intercept.tsv</i></td>
+      <td>Motifs</td>
+      <td>The mean activity once more, with a two-sided test against zero: <b>effect</b>, <b>std</b>, <b>z</b>, <b>pvalue</b>, <b>fdr</b></td>
+    </tr>
+    <tr>
+      <td><i>covariates/{covariate}.tsv</i></td>
+      <td>Motifs</td>
+      <td>For a project with <a href="./covariates.html">covariates</a>: the change of motif activity per unit of the covariate, with the same columns</td>
+    </tr>
+    <tr>
+      <td><i>correlations/</i></td>
+      <td></td>
+      <td>Correlations between the estimates of a kind, e.g. between the mean activities of different motifs</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The variance of the activity of motif $k$ in group $g$ is the product $τ_k ν_g$. A product does not change if one factor is multiplied and the other is divided by the same number, so the scale of <b>nu</b> is arbitrary. {name} settles it by fixing the <b>nu</b> of one group. The standard error of that <b>nu</b> is left empty.</p>
+
+<h2 id="options">Optional tables</h2>
+
+<p>Some tables are large and are written on request only:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--log-counts</code></td>
+      <td>The expression predicted by the full model is written to the <i>log_counts</i> folder: one column per group, or one per sample with <code>--no-log-counts-grouped</code></td>
+    </tr>
+    <tr>
+      <td><code>--loadings-product</code></td>
+      <td>For each group, a table of promoters by motifs is written to the <i>loadings-product</i> folder: the loading times the activity (the mean plus the deviation), i.e. the contribution of a motif to the expression of a promoter. The tables are in the HDF format, and <code>--no-lp-hdf</code> switches to plain text. With <code>--no-lp-intercepts</code> the mean activity is left out</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>A few more options change the content of the regular tables:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--weighted-zscore</code></td>
+      <td>The <b>overall</b> column of <i>z_score.tsv</i> becomes the absolute z-score of the mean of the group activities weighted by inverse variances</td>
+    </tr>
+    <tr>
+      <td><code>--zero-margin &lt;float&gt;</code></td>
+      <td>Turns the <b>zero</b> column of the <a href="./test.html#sign">sign test</a> into an equivalence test</td>
+    </tr>
+    <tr>
+      <td><code>--anova-mode &lt;str&gt;</code></td>
+      <td>Chooses the tail of the <a href="./test.html#anova">ANOVA</a> statistic</td>
+    </tr>
+  </tbody>
+</table>

@@ -1,0 +1,188 @@
+<h2 id="fit">Fitting model to data</h2>
+
+<p>The parameters of the model are estimated with the <code>fit</code> command. Briefly, if we denote the expression table as $Y$ and the loading matrix as $B$, {name} models the expression as
+$$Y = μ_p 1_s^T + 1_p μ_s^T + B U + E.$$
+Here, $μ_p$ and $μ_s$ are promoter-wise and sample-wise means, $U$ is a matrix of motif activities and $E$ is noise. The activities are random. For motif $k$ in a sample of group $g$,
+$$U_{k} \,~\, N(μ_{m,k},\: τ_k ν_g),\: E \,~\, N(0,\: σ_g).$$
+So each motif has a mean activity $μ_m$ and a variance $τ$, and each group of samples has an error variance $σ$ and a multiplier of activity variances $ν$. These are the parameters to be estimated. The activities are dealt with later by the <a href="./predict.html"><code>predict</code></a> command.</p>
+
+<p>The command requires only the project name:</p>
+
+<pre class="prettyprint">
+> maradoner fit MyProject
+</pre>
+
+<p>After a successful <code>fit</code> run, a <i>*.fit</i> file should appear in the current working directory. Files of the later steps left from a previous fit of the same project are removed.</p>
+
+<p>The parameters are estimated one kind after another, and each stage reports itself as it starts:</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Stage</th>
+      <th scope="col">Parameters</th>
+      <th scope="col">Method</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Error variances</td>
+      <td>$σ$ of each group</td>
+      <td>Restricted maximum likelihood (REML) on the part of the data orthogonal to the loadings</td>
+    </tr>
+    <tr>
+      <td>Promoter-wise means</td>
+      <td>$μ_p$</td>
+      <td>Maximum likelihood, the solution of the minimal norm</td>
+    </tr>
+    <tr>
+      <td>Variances of motif activities</td>
+      <td>$τ$ of each motif, $ν$ of each group</td>
+      <td>REML on the data with all means projected out</td>
+    </tr>
+    <tr>
+      <td>Motif means</td>
+      <td>$μ_m$</td>
+      <td>Generalized least squares</td>
+    </tr>
+    <tr>
+      <td>Sample means</td>
+      <td>$μ_s$</td>
+      <td>Generalized least squares</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The reasoning behind this order is explained in the <a href="./clockworks.html">How it works</a> section. The output of a run is discussed in the <a href="./quickstart.html#Example">Quickstart</a>.</p>
+
+<h2 id="warnings">Warnings</h2>
+
+<p>The <code>fit</code> command checks whether the data are enough to estimate what was asked for. The warnings below are the most common ones.</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Warning</th>
+      <th scope="col">Meaning</th>
+      <th scope="col">Remedy</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>The error variances of the sample groups are not identifiable</td>
+      <td>There are more groups than the samples can support. That happens when every sample forms a separate group and samples are few</td>
+      <td>Fewer and larger groups (<code>--sample-groups</code> of <code>create</code>), or more samples</td>
+    </tr>
+    <tr>
+      <td>Variances of motif activities were estimated as zero</td>
+      <td>The data carry little signal about most motifs. With the default settings, <code>predict</code> leaves such motifs out</td>
+      <td>Fewer motifs, <a href="#clustering">clustering</a> or <code>--no-motif-variance</code></td>
+    </tr>
+    <tr>
+      <td>The Fisher information for (tau, nu) is singular</td>
+      <td>Some variances can't be told apart. A common cause is collinear motifs, i.e. a loading matrix of a rank lower than the number of motifs. Standard errors of the variances and the tests built on them are unreliable</td>
+      <td>Removing duplicated motifs, or <a href="#clustering">clustering</a></td>
+    </tr>
+    <tr>
+      <td>The variance of motif activities of a sample group was estimated as zero</td>
+      <td>The activities of the group are shrunk to the motif means, and its tests are uninformative. The group may be too small or too noisy</td>
+      <td>Merging the group with a similar one</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="variance">Variance structure</h2>
+
+<p>By default, each motif has a variance and each group has an error variance and a multiplier. The options below change that.</p>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--no-motif-variance</code></td>
+      <td>One variance for all motifs. This makes the model closer to the classic (IS)MARA and might be beneficial when the data is small</td>
+      <td><code>--motif-variance</code></td>
+    </tr>
+    <tr>
+      <td><code>--error-lowrank &lt;int&gt;</code></td>
+      <td>Rank $k$ of a low-rank correction to the covariance of the noise across samples: it becomes $D + W W^T$ with $W$ of $s$ rows and $k$ columns. Captures correlated structure of samples missed by the diagonal $D$, e.g. a batch or an unmodeled covariate. Must be smaller than the number of samples minus 1</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td><code>--activity-lowrank &lt;int&gt;</code></td>
+      <td>Rank $k$ of a low-rank correction to the covariance of the activities across samples: it becomes $G + V V^T$, with $G$ being a diagonal matrix of $ν$. Captures hidden factors of samples along which motif activities change together, as explained in the <a href="./lowrank.html">Hidden covariates</a> section. Requires motif variances</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td><code>--promoter-variance</code></td>
+      <td>(Experimental) Promoters are reweighted by a heuristic estimate of their individual error variances</td>
+      <td>Disabled</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="alert alert-warning" role="alert">
+The paper describes a REML estimator of promoter variances. The <code>--promoter-variance</code> option does a different thing at the moment, namely a mixture-based reweighting of promoters. The weights define no likelihood, so the likelihood-ratio test of the <a href="./test.html#anova">ANOVA</a> is replaced with a Wald test for such fits.
+</div>
+
+<p>The low-rank corrections enter the estimation of variances only. The motif means and their standard errors are still computed under the model with diagonal covariances, and {name} prints a note about it.</p>
+
+<h2 id="clustering">Clustering</h2>
+
+<p>Motifs with similar loadings are hard to tell apart, and with more motifs than promoters the model can't be estimated at all. In those cases the motifs can be replaced with clusters:</p>
+
+<pre class="prettyprint">
+> maradoner fit MyProject --clustering KMeans --num-clusters 100
+</pre>
+
+<p>Here, <code>KMeans</code> puts each motif into exactly one cluster. The alternative is <code>NMF</code>, a non-negative matrix factorization: a motif may then belong to several clusters, and the loadings must be non-negative. The number of clusters is 200 by default.</p>
+
+<p>All the later commands then work with clusters in place of motifs, and the clusters are named <i>cluster_1</i>, <i>cluster_2</i> and so on. At the moment, the composition of clusters is not among the exported tables.</p>
+
+<h2 id="test">Held-out promoters</h2>
+
+<p>A part of promoters can be kept out of the fit as a testing set, either by chromosome or by name:</p>
+
+<pre class="prettyprint">
+> maradoner fit MyProject --test-chromosomes 3 --test-chromosomes X
+> maradoner fit MyProject --test-promoters-filename names.txt
+</pre>
+
+<p>The first form needs promoter names that contain a chromosome, e.g. <i>chr3:1000-2000</i>. The second one takes a text file with one promoter name per line. What to do with the testing set next is explained in the <a href="./gof.html#test">Goodness of fit</a> section.</p>
+
+<h2 id="options">Other options</h2>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--gpu</code></td>
+      <td>Use a GPU, if available, for most of the computations</td>
+      <td>Disabled</td>
+    </tr>
+    <tr>
+      <td><code>--gpu-decomposition</code></td>
+      <td>Use a GPU, if available, for the SVD of the loading matrix</td>
+      <td>Disabled</td>
+    </tr>
+    <tr>
+      <td><code>--no-x64</code></td>
+      <td>Disables double precision algebra</td>
+      <td><code>--x64</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The number of CPU threads is a global option of {name} and is discussed in the <a href="../faq.html#slow">F.A.Q.</a></p>
