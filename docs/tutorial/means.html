@@ -1,12 +1,83 @@
-<!doctype html><html lang=en xmlns:m=http://www.w3.org/1998/Math/MathML> <head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1"><meta name=description content="Regularization of motif means"><meta name=keywords content="motif means, motif-mean-prior, prior, shrinkage, ridge, regularization, held-out promoters"><meta name=author content="Georgy Meshcheryakov"><link rel="shortcut icon" href=../files/favicon.ico><title>Regularization of motif means |Tutorial</title><link rel=stylesheet href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap"><link rel=stylesheet href=../css/jqmath-0.4.3.min.css><link rel=stylesheet href=../css/mathfont.css><link rel=stylesheet href=../css/maradoner.css><script src=../js/jqmath-vanilla.min.js></script></head> <body> <header class=top> <div class=top-in> <a class=brand href=../index.html><img src=../files/doner.png alt width=543 height=375><span>MARADONER</span></a> <nav class=tabs aria-label=Site> <a href=../index.html>About</a> <a href=../tutorial/quickstart.html aria-current=page>Tutorial</a> <a href=../faq.html>F.A.Q.</a> <a href=../contact.html>Contact</a> <a href=../cite.html>Cite</a> </nav> </div> </header> <div class="wrap has-pages has-toc"> <nav class=pages aria-label=Tutorial> <a href=quickstart.html>Quickstart</a> <a href=create.html>Reading dataset</a> <a href=fit.html>Parameters estimation</a> <a href=predict.html>Motif activities</a> <a href=gof.html>Goodness of fit</a> <a href=export.html>Results</a> <a href=test.html>Tests</a> <a href=covariates.html>Covariates</a> <a href=lowrank.html>Hidden covariates</a> <a href=families.html>Motif families</a> <a class=active href=means.html aria-current=page>Motif means</a> <a href=grn.html>Regulatory network</a> <a href=other.html>Other models</a> <a href=clockworks.html>How it works</a> </nav> <main> <h1>Regularization of motif means</h1> <p>The mean activity $μ_m$ of a motif is estimated by generalized least squares. With many motifs, or with many similar ones, these estimates fit the levels of the training promoters too closely and predict the levels of other promoters poorly. The <code class=nw>--motif-mean-prior</code> option of <code class=nw>fit</code> shrinks them with a prior. The deviations of activities, the variances and their tests stay as they are.</p> <h2 id=why>Why do the means need it?</h2> <p>The model has the promoter mean $μ_p$ and the motif part $B μ_m$ of the level of a promoter, and only their sum is identified. <b>MARADONER</b> takes the promoter means orthogonal to the loadings, so the mean activities are a regression of the promoter levels on the loadings. A level has a part explained by the motifs and a baseline of the promoter, and the regression picks up some of the baselines as well. The more motifs there are for the number of promoters, the larger that share. For any other promoter it is noise.</p> <p>A prior pulls the means towards a common value, and the data decide how strongly: $$μ_m ∼ N(μ_0 1_m, P).$$ Here, $μ_0$ is a common mean of all motifs, $1_m$ is a vector of ones, and $P$ is a covariance matrix with a few variances. The variances and $μ_0$ are estimated by REML, and $μ_m$ is replaced by its posterior mean.</p> <h2 id=example>Example</h2> <p>The effect shows when the motifs are many. Let's generate a dataset with 1500 motifs for its 2000 promoters and create a project from it:</p> <pre class=prettyprint>
+<!doctype html>
+<html lang="en" xmlns:m="http://www.w3.org/1998/Math/MathML">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Regularization of motif means">
+    <meta name="keywords" content="motif means, motif-mean-prior, prior, shrinkage, ridge, regularization, held-out promoters">
+    <meta name="author" content="Georgy Meshcheryakov">
+    <link rel="shortcut icon" href="../files/favicon.ico">
+    <title>Regularization of motif means |Tutorial</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="../css/jqmath-0.4.3.min.css">
+    <link rel="stylesheet" href="../css/mathfont.css">
+    <link rel="stylesheet" href="../css/maradoner.css">
+    <script src="../js/jqmath-vanilla.min.js"></script>
+  </head>
+  <body>
+
+<header class="top">
+<div class="top-in">
+<a class="brand" href="../index.html"><img src="../files/doner.png" alt="" width="543" height="375"><span>MARADONER</span></a>
+<nav class="tabs" aria-label="Site">
+<a href="../index.html">About</a>
+<a href="../tutorial/quickstart.html" aria-current="page">Tutorial</a>
+<a href="../faq.html">F.A.Q.</a>
+<a href="../contact.html">Contact</a>
+<a href="../cite.html">Cite</a>
+</nav>
+</div>
+</header>
+
+
+<div class="wrap has-pages has-toc">
+<nav class="pages" aria-label="Tutorial">
+<a href="quickstart.html">Quickstart</a>
+<a href="create.html">Reading dataset</a>
+<a href="fit.html">Parameters estimation</a>
+<a href="predict.html">Motif activities</a>
+<a href="gof.html">Goodness of fit</a>
+<a href="export.html">Results</a>
+<a href="test.html">Tests</a>
+<a href="covariates.html">Covariates</a>
+<a href="lowrank.html">Hidden covariates</a>
+<a href="families.html">Motif families</a>
+<a class="active" href="means.html" aria-current="page">Motif means</a>
+<a href="grn.html">Regulatory network</a>
+<a href="other.html">Other models</a>
+<a href="clockworks.html">How it works</a>
+</nav>
+<main>
+<h1>Regularization of motif means</h1>
+<p>The mean activity $μ_m$ of a motif is estimated by generalized least squares. With many motifs, or with many similar ones, these estimates fit the levels of the training promoters too closely and predict the levels of other promoters poorly. The <code class="nw">--motif-mean-prior</code> option of <code class="nw">fit</code> shrinks them with a prior. The deviations of activities, the variances and their tests stay as they are.</p>
+
+<h2 id="why">Why do the means need it?</h2>
+
+<p>The model has the promoter mean $μ_p$ and the motif part $B μ_m$ of the level of a promoter, and only their sum is identified. <b>MARADONER</b> takes the promoter means orthogonal to the loadings, so the mean activities are a regression of the promoter levels on the loadings. A level has a part explained by the motifs and a baseline of the promoter, and the regression picks up some of the baselines as well. The more motifs there are for the number of promoters, the larger that share. For any other promoter it is noise.</p>
+
+<p>A prior pulls the means towards a common value, and the data decide how strongly:
+$$μ_m ∼ N(μ_0 1_m, P).$$
+Here, $μ_0$ is a common mean of all motifs, $1_m$ is a vector of ones, and $P$ is a covariance matrix with a few variances. The variances and $μ_0$ are estimated by REML, and $μ_m$ is replaced by its posterior mean.</p>
+
+<h2 id="example">Example</h2>
+
+<p>The effect shows when the motifs are many. Let's generate a dataset with 1500 motifs for its 2000 promoters and create a project from it:</p>
+
+<pre class="prettyprint">
 > maradoner generate demo --m 1500
 > maradoner create Wide demo/expression.tsv demo/loadings.tsv --sample-groups demo/groups.json --loading-transform none
-</pre> <p>The prior is about the prediction for other promoters, so we hold 400 promoters out, picked at random and listed in <i>test_promoters.txt</i>. First, the fit without a prior:</p> <pre class=prettyprint>
+</pre>
+
+<p>The prior is about the prediction for other promoters, so we hold 400 promoters out, picked at random and listed in <i>test_promoters.txt</i>. First, the fit without a prior:</p>
+
+<pre class="prettyprint">
 > maradoner fit Wide --test-promoters-filename test_promoters.txt
 > maradoner predict Wide
 > maradoner estimate-promoter-mean Wide
 > maradoner gof Wide
-</pre> <pre>
+</pre>
+
+<pre>
 ┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ Set   ┃ centering               ┃ + mean motif activity ┃ + group-specific motif activity ┃
 ┃ Y =   ┃ mu_p 1_s^T + 1_p mu_s^T ┃ + B M X               ┃ + B U                           ┃
@@ -14,11 +85,23 @@
 │ train │ 0.058409                │ 0.730318              │ 0.988766                        │
 │ test  │ 0.055645                │ 0.654376              │ 0.874084                        │
 └───────┴─────────────────────────┴───────────────────────┴─────────────────────────────────┘
-</pre> <p>The full model explains 99% of the variance of the training promoters and 87% of the held-out ones. Then the same with a prior:</p> <pre class=prettyprint>
+</pre>
+
+<p>The full model explains 99% of the variance of the training promoters and 87% of the held-out ones. Then the same with a prior:</p>
+
+<pre class="prettyprint">
 > maradoner fit Wide --test-promoters-filename test_promoters.txt --motif-mean-prior covariance
-</pre> <p>The output of <code class=nw>fit</code> gets a line about the prior:</p> <pre>
+</pre>
+
+<p>The output of <code class="nw">fit</code> gets a line about the prior:</p>
+
+<pre>
   prior on the motif means (covariance): kappa_s^2 = 0.0881, kappa^2 = 0.498, mu_0 = 0.00235; the norm of the means is 32.8 (GLS: 36.7).
-</pre> <p>Here, <b>kappa_s^2</b> and <b>kappa^2</b> are the variances of the prior, and <b>mu_0</b> is the common mean. The norm of the vector of mean activities went down from 36.7 to 32.8. After <code class=nw>predict</code>, <code class=nw>estimate-promoter-mean</code> and <code class=nw>gof</code> as above, the table is</p> <pre>
+</pre>
+
+<p>Here, <b>kappa_s^2</b> and <b>kappa^2</b> are the variances of the prior, and <b>mu_0</b> is the common mean. The norm of the vector of mean activities went down from 36.7 to 32.8. After <code class="nw">predict</code>, <code class="nw">estimate-promoter-mean</code> and <code class="nw">gof</code> as above, the table is</p>
+
+<pre>
 ┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ Set   ┃ centering               ┃ + mean motif activity ┃ + group-specific motif activity ┃
 ┃ Y =   ┃ mu_p 1_s^T + 1_p mu_s^T ┃ + B M X               ┃ + B U                           ┃
@@ -26,4 +109,76 @@
 │ train │ 0.073475                │ 0.730318              │ 0.988766                        │
 │ test  │ 0.055645                │ 0.703074              │ 0.922272                        │
 └───────┴─────────────────────────┴───────────────────────┴─────────────────────────────────┘
-</pre> <p>The FOV of the held-out promoters rose from 0.874 to 0.922, and from 0.654 to 0.703 for the mean activities alone. The last 2 columns of the training row did not change. The promoter means take back what the prior took from $B μ_m$, so the sum $μ_p + B μ_m$ of a training promoter stays the same, and only the first column moves. The means are closer to the true ones as well: their root mean squared error is 0.320 without the prior and 0.221 with it.</p> <p>For the dataset of the <a href=./quickstart.html#Example>Quickstart</a>, with 500 independent motifs, the prior changes little: the FOV of 392 held-out promoters goes from 0.58895 to 0.58907 for the mean activities. That is fine, as the data pin down the means well there. On a muscle atlas of 36,120 CAGE promoters with 4 chromosomes held out, the covariance prior raised the FOV of the held-out promoters from 0.186 to 0.213.</p> <h2 id=kinds>Which prior?</h2> <p>The option takes one of the values below. The variances of $P$ are named as in the output of <code class=nw>fit</code>.</p> <div class=tbl><table> <thead> <tr> <th scope=col>Name</th> <th scope=col>$P$</th> <th scope=col>Description</th> </tr> </thead> <tbody> <tr> <td data-th=Name><code class=nw>none</code></td> <td data-th=$P$></td> <td data-th=Description>(Default) No prior: the estimates of generalized least squares</td> </tr> <tr> <td data-th=Name><code class=nw>ridge</code></td> <td data-th=$P$>$κ^2 I$</td> <td data-th=Description>All motifs are shrunk towards $μ_0$ alike. This is the ridge regression with a free common mean</td> </tr> <tr> <td data-th=Name><code class=nw>families</code></td> <td data-th=$P$>$κ_f^2 F F^T + κ^2 I$</td> <td data-th=Description>On top of the ridge, the means of the motifs of a family share a part, with one variance $κ_f^2$ for all families. Needs <a href=./families.html><code class=nw>--motif-families</code></a></td> </tr> <tr> <td data-th=Name><code class=nw>covariance</code></td> <td data-th=$P$>$κ_s^2 S + κ^2 I$</td> <td data-th=Description>On top of the ridge, a multiple of the fitted covariance $S$ between motif activities: $Σ$ in the basic model, and with the families and factors when they are given. A motif whose activity varies much is allowed a mean further from $μ_0$, and correlated motifs get correlated means</td> </tr> </tbody> </table></div> <p>In the example above, the ridge prior raised the FOV of the held-out promoters to 0.920 and the covariance prior to 0.922. On the muscle atlas the covariance prior did best as well. The family prior came out the same as the ridge there: its $κ_f^2$ was estimated close to zero.</p> <h2 id=tables>What changes in the results?</h2> <ul> <li>The <b>mean</b> column of <i>params/motif_means.tsv</i> and of <i>params/covariates/intercept.tsv</i> holds the posterior means. The <b>std</b> column is the standard deviation of their prediction error, with the uncertainty of $μ_0$ included;</li> <li>The <a href=./test.html#sign>test of the sign</a> of a motif uses the new means and standard errors;</li> <li>The promoter means change, and $μ_p + B μ_m$ of a training promoter does not;</li> <li>Only the mean activities are changed. With <a href=./covariates.html>covariates</a>, their effects on motifs stay as they are;</li> <li>The deviations of activities, the variances and their tests do not change. They are computed from the expression minus $μ_p + B M X$, and that stays the same.</li> </ul> <p>The prior takes about a second on the examples above and 24 seconds with 4785 columns of loadings.</p> </main> <details class=toc open> <summary>On this page</summary> <nav> <a href=#why>Why do the means need it?</a> <a href=#example>Example</a> <a href=#kinds>Which prior?</a> <a href=#tables>What changes in the results?</a> </nav> </details> </div> <script src=../js/prettify.js></script> <script src=../js/maradoner.js></script> </body> </html> 
+</pre>
+
+<p>The FOV of the held-out promoters rose from 0.874 to 0.922, and from 0.654 to 0.703 for the mean activities alone. The last 2 columns of the training row did not change. The promoter means take back what the prior took from $B μ_m$, so the sum $μ_p + B μ_m$ of a training promoter stays the same, and only the first column moves. The means are closer to the true ones as well: their root mean squared error is 0.320 without the prior and 0.221 with it.</p>
+
+<p>For the dataset of the <a href="./quickstart.html#Example">Quickstart</a>, with 500 independent motifs, the prior changes little: the FOV of 392 held-out promoters goes from 0.58895 to 0.58907 for the mean activities. That is fine, as the data pin down the means well there. On a muscle atlas of 36,120 CAGE promoters with 4 chromosomes held out, the covariance prior raised the FOV of the held-out promoters from 0.186 to 0.213.</p>
+
+<h2 id="kinds">Which prior?</h2>
+
+<p>The option takes one of the values below. The variances of $P$ are named as in the output of <code class="nw">fit</code>.</p>
+
+<div class="tbl"><table>
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">$P$</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td data-th="Name"><code class="nw">none</code></td>
+      <td data-th="$P$"></td>
+      <td data-th="Description">(Default) No prior: the estimates of generalized least squares</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">ridge</code></td>
+      <td data-th="$P$">$κ^2 I$</td>
+      <td data-th="Description">All motifs are shrunk towards $μ_0$ alike. This is the ridge regression with a free common mean</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">families</code></td>
+      <td data-th="$P$">$κ_f^2 F F^T + κ^2 I$</td>
+      <td data-th="Description">On top of the ridge, the means of the motifs of a family share a part, with one variance $κ_f^2$ for all families. Needs <a href="./families.html"><code class="nw">--motif-families</code></a></td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">covariance</code></td>
+      <td data-th="$P$">$κ_s^2 S + κ^2 I$</td>
+      <td data-th="Description">On top of the ridge, a multiple of the fitted covariance $S$ between motif activities: $Σ$ in the basic model, and with the families and factors when they are given. A motif whose activity varies much is allowed a mean further from $μ_0$, and correlated motifs get correlated means</td>
+    </tr>
+  </tbody>
+</table></div>
+
+<p>In the example above, the ridge prior raised the FOV of the held-out promoters to 0.920 and the covariance prior to 0.922. On the muscle atlas the covariance prior did best as well. The family prior came out the same as the ridge there: its $κ_f^2$ was estimated close to zero.</p>
+
+<h2 id="tables">What changes in the results?</h2>
+
+<ul>
+  <li>The <b>mean</b> column of <i>params/motif_means.tsv</i> and of <i>params/covariates/intercept.tsv</i> holds the posterior means. The <b>std</b> column is the standard deviation of their prediction error, with the uncertainty of $μ_0$ included;</li>
+  <li>The <a href="./test.html#sign">test of the sign</a> of a motif uses the new means and standard errors;</li>
+  <li>The promoter means change, and $μ_p + B μ_m$ of a training promoter does not;</li>
+  <li>Only the mean activities are changed. With <a href="./covariates.html">covariates</a>, their effects on motifs stay as they are;</li>
+  <li>The deviations of activities, the variances and their tests do not change. They are computed from the expression minus $μ_p + B M X$, and that stays the same.</li>
+</ul>
+
+<p>The prior takes about a second on the examples above and 24 seconds with 4785 columns of loadings.</p>
+
+</main>
+<details class="toc" open>
+<summary>On this page</summary>
+<nav>
+<a href="#why">Why do the means need it?</a>
+<a href="#example">Example</a>
+<a href="#kinds">Which prior?</a>
+<a href="#tables">What changes in the results?</a>
+</nav>
+</details>
+</div>
+
+
+<script src="../js/prettify.js"></script>
+<script src="../js/maradoner.js"></script>
+</body>
+</html>

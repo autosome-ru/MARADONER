@@ -1,6 +1,63 @@
-<!doctype html><html lang=en xmlns:m=http://www.w3.org/1998/Math/MathML> <head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1"><meta name=description content="Goodness of fit"><meta name=keywords content="gof, fov, fraction of variance explained, test set, held-out promoters"><meta name=author content="Georgy Meshcheryakov"><link rel="shortcut icon" href=../files/favicon.ico><title>Goodness of fit |Tutorial</title><link rel=stylesheet href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap"><link rel=stylesheet href=../css/jqmath-0.4.3.min.css><link rel=stylesheet href=../css/mathfont.css><link rel=stylesheet href=../css/maradoner.css><script src=../js/jqmath-vanilla.min.js></script></head> <body> <header class=top> <div class=top-in> <a class=brand href=../index.html><img src=../files/doner.png alt width=543 height=375><span>MARADONER</span></a> <nav class=tabs aria-label=Site> <a href=../index.html>About</a> <a href=../tutorial/quickstart.html aria-current=page>Tutorial</a> <a href=../faq.html>F.A.Q.</a> <a href=../contact.html>Contact</a> <a href=../cite.html>Cite</a> </nav> </div> </header> <div class="wrap has-pages has-toc"> <nav class=pages aria-label=Tutorial> <a href=quickstart.html>Quickstart</a> <a href=create.html>Reading dataset</a> <a href=fit.html>Parameters estimation</a> <a href=predict.html>Motif activities</a> <a class=active href=gof.html aria-current=page>Goodness of fit</a> <a href=export.html>Results</a> <a href=test.html>Tests</a> <a href=covariates.html>Covariates</a> <a href=lowrank.html>Hidden covariates</a> <a href=families.html>Motif families</a> <a href=means.html>Motif means</a> <a href=grn.html>Regulatory network</a> <a href=other.html>Other models</a> <a href=clockworks.html>How it works</a> </nav> <main> <h1>Goodness of fit</h1> <h2 id=gof>Fraction of variance explained</h2> <p>How much of the data does the model explain? The <code class=nw>gof</code> command answers that for each nested part of the model. It runs after <code class=nw>predict</code> and needs only the project name:</p> <pre class=prettyprint>
+<!doctype html>
+<html lang="en" xmlns:m="http://www.w3.org/1998/Math/MathML">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Goodness of fit">
+    <meta name="keywords" content="gof, fov, fraction of variance explained, test set, held-out promoters">
+    <meta name="author" content="Georgy Meshcheryakov">
+    <link rel="shortcut icon" href="../files/favicon.ico">
+    <title>Goodness of fit |Tutorial</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="../css/jqmath-0.4.3.min.css">
+    <link rel="stylesheet" href="../css/mathfont.css">
+    <link rel="stylesheet" href="../css/maradoner.css">
+    <script src="../js/jqmath-vanilla.min.js"></script>
+  </head>
+  <body>
+
+<header class="top">
+<div class="top-in">
+<a class="brand" href="../index.html"><img src="../files/doner.png" alt="" width="543" height="375"><span>MARADONER</span></a>
+<nav class="tabs" aria-label="Site">
+<a href="../index.html">About</a>
+<a href="../tutorial/quickstart.html" aria-current="page">Tutorial</a>
+<a href="../faq.html">F.A.Q.</a>
+<a href="../contact.html">Contact</a>
+<a href="../cite.html">Cite</a>
+</nav>
+</div>
+</header>
+
+
+<div class="wrap has-pages has-toc">
+<nav class="pages" aria-label="Tutorial">
+<a href="quickstart.html">Quickstart</a>
+<a href="create.html">Reading dataset</a>
+<a href="fit.html">Parameters estimation</a>
+<a href="predict.html">Motif activities</a>
+<a class="active" href="gof.html" aria-current="page">Goodness of fit</a>
+<a href="export.html">Results</a>
+<a href="test.html">Tests</a>
+<a href="covariates.html">Covariates</a>
+<a href="lowrank.html">Hidden covariates</a>
+<a href="families.html">Motif families</a>
+<a href="means.html">Motif means</a>
+<a href="grn.html">Regulatory network</a>
+<a href="other.html">Other models</a>
+<a href="clockworks.html">How it works</a>
+</nav>
+<main>
+<h1>Goodness of fit</h1>
+<h2 id="gof">Fraction of variance explained</h2>
+
+<p>How much of the data does the model explain? The <code class="nw">gof</code> command answers that for each nested part of the model. It runs after <code class="nw">predict</code> and needs only the project name:</p>
+
+<pre class="prettyprint">
 > maradoner gof MyProject
-</pre> <pre>
+</pre>
+
+<pre>
                            Fraction of variance explained (Total)
 ┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ Set   ┃ centering               ┃ + mean motif activity ┃ + group-specific motif activity ┃
@@ -8,12 +65,68 @@
 ┡━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
 │ train │ 0.053025                │ 0.631743              │ 0.951265                        │
 └───────┴─────────────────────────┴───────────────────────┴─────────────────────────────────┘
-</pre> <p>The table is from the <a href=./quickstart.html#Example>Quickstart</a> example. Each column adds a term to the model of the previous one:</p> <ol> <li>Promoter-wise and sample-wise means alone;</li> <li>The same with the mean motif activities;</li> <li>The same with the deviations of activities in each group, i.e. the full model.</li> </ol> <p>The second line of the header spells the terms out. There, <code class=nw>B M X</code> is the loading matrix times the mean activities, and it reduces to $B μ_m 1_s^T$ when the project has no covariates.</p> <p>If <code class=nw>gof</code> is run before <code class=nw>export</code>, the same statistics are exported into the <i>fov</i> folder: for the whole dataset, for each promoter and for each sample.</p> <p>The statistic and the way it is computed can be changed:</p> <div class=tbl><table> <thead> <tr> <th scope=col>Name</th> <th scope=col>Description</th> <th scope=col>Default value</th> </tr> </thead> <tbody> <tr> <td data-th=Name><code class=nw>--stat-type &lt;str&gt;</code></td> <td data-th=Description><code class=nw>fov</code> for the fraction of variance explained, <code class=nw>corr</code> for the Pearson correlation between the predicted and the observed expression</td> <td data-th="Default value">fov</td> </tr> <tr> <td data-th=Name><code class=nw>--stat-mode &lt;str&gt;</code></td> <td data-th=Description><code class=nw>total</code> accumulates the terms as described above. With <code class=nw>residual</code> the columns go the other way: the full model first, then the model against the data with the promoter and sample means subtracted, then the deviations alone against the data with the mean activities subtracted as well</td> <td data-th="Default value">total</td> </tr> <tr> <td data-th=Name><code class=nw>--use-groups</code></td> <td data-th=Description>The statistic is computed for the expression averaged within each group</td> <td data-th="Default value">Disabled</td> </tr> <tr> <td data-th=Name><code class=nw>--no-weights</code></td> <td data-th=Description>Disables the weighting of promoters. Applicable only to fits with <code class=nw>--promoter-variance</code></td> <td data-th="Default value"><code class=nw>--weights</code></td> </tr> </tbody> </table></div> <h2 id=test>Testing set</h2> <p>The numbers above are computed on the same promoters the model was fitted to, and they are optimistic. For a fair estimate, some promoters are held out at the <code class=nw>fit</code> step and the statistics are computed for them separately. The whole sequence is:</p> <pre class=prettyprint>
+</pre>
+
+<p>The table is from the <a href="./quickstart.html#Example">Quickstart</a> example. Each column adds a term to the model of the previous one:</p>
+
+<ol>
+  <li>Promoter-wise and sample-wise means alone;</li>
+  <li>The same with the mean motif activities;</li>
+  <li>The same with the deviations of activities in each group, i.e. the full model.</li>
+</ol>
+
+<p>The second line of the header spells the terms out. There, <code class="nw">B M X</code> is the loading matrix times the mean activities, and it reduces to $B μ_m 1_s^T$ when the project has no covariates.</p>
+
+<p>If <code class="nw">gof</code> is run before <code class="nw">export</code>, the same statistics are exported into the <i>fov</i> folder: for the whole dataset, for each promoter and for each sample.</p>
+
+<p>The statistic and the way it is computed can be changed:</p>
+
+<div class="tbl"><table>
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+      <th scope="col">Default value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td data-th="Name"><code class="nw">--stat-type &lt;str&gt;</code></td>
+      <td data-th="Description"><code class="nw">fov</code> for the fraction of variance explained, <code class="nw">corr</code> for the Pearson correlation between the predicted and the observed expression</td>
+      <td data-th="Default value">fov</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">--stat-mode &lt;str&gt;</code></td>
+      <td data-th="Description"><code class="nw">total</code> accumulates the terms as described above. With <code class="nw">residual</code> the columns go the other way: the full model first, then the model against the data with the promoter and sample means subtracted, then the deviations alone against the data with the mean activities subtracted as well</td>
+      <td data-th="Default value">total</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">--use-groups</code></td>
+      <td data-th="Description">The statistic is computed for the expression averaged within each group</td>
+      <td data-th="Default value">Disabled</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">--no-weights</code></td>
+      <td data-th="Description">Disables the weighting of promoters. Applicable only to fits with <code class="nw">--promoter-variance</code></td>
+      <td data-th="Default value"><code class="nw">--weights</code></td>
+    </tr>
+  </tbody>
+</table></div>
+
+<h2 id="test">Testing set</h2>
+
+<p>The numbers above are computed on the same promoters the model was fitted to, and they are optimistic. For a fair estimate, some promoters are held out at the <code class="nw">fit</code> step and the statistics are computed for them separately. The whole sequence is:</p>
+
+<pre class="prettyprint">
 > maradoner fit MyProject --test-chromosomes 3 --test-chromosomes X
 > maradoner predict MyProject
 > maradoner estimate-promoter-mean MyProject
 > maradoner gof MyProject
-</pre> <p>Here, the promoters of chromosomes 3 and X take no part in the fit. Alternatively, a list of promoter names can be given with <code class=nw>--test-promoters-filename</code>. The third command is new, and we get to it in a moment. With 198 promoters of the Quickstart example held out (by a list of names, as synthetic promoters have no chromosomes), the <code class=nw>gof</code> table gets a second row:</p> <pre>
+</pre>
+
+<p>Here, the promoters of chromosomes 3 and X take no part in the fit. Alternatively, a list of promoter names can be given with <code class="nw">--test-promoters-filename</code>. The third command is new, and we get to it in a moment. With 198 promoters of the Quickstart example held out (by a list of names, as synthetic promoters have no chromosomes), the <code class="nw">gof</code> table gets a second row:</p>
+
+<pre>
 ┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ Set   ┃ centering               ┃ + mean motif activity ┃ + group-specific motif activity ┃
 ┃ Y =   ┃ mu_p 1_s^T + 1_p mu_s^T ┃ + B M X               ┃ + B U                           ┃
@@ -21,8 +134,96 @@
 │ train │ 0.066498                │ 0.646975              │ 0.952379                        │
 │ test  │ 0.052690                │ 0.606242              │ 0.896829                        │
 └───────┴─────────────────────────┴───────────────────────┴─────────────────────────────────┘
-</pre> <p>The full model explains 90% of the variance of the promoters it has not seen, against 95% of those it has.</p> <div class="alert alert-info" role=alert> The low-expression filter of <code class=nw>create</code> has already looked at all promoters, the held-out ones included. If the testing set must not influence anything at all, the project should be created with <code class=nw>--filter-lowexp-w 1</code>. </div> <h3 id=promoter-mean>Why is estimate-promoter-mean needed?</h3> <p>Each promoter has a mean $μ_p$, and it is a parameter estimated by <code class=nw>fit</code>. A held-out promoter has none, and the model can't predict its expression without one. The <code class=nw>estimate-promoter-mean</code> command fills the gap. Without it, <code class=nw>gof</code> stops with an error asking for it. It has to be run again after each <code class=nw>predict</code>.</p> <p>The method is chosen with the <code class=nw>--mean-mode</code> option:</p> <div class=tbl><table> <thead> <tr> <th scope=col>Name</th> <th scope=col>Description</th> </tr> </thead> <tbody> <tr> <td data-th=Name><code class=nw>null</code></td> <td data-th=Description>(Default) The means of held-out promoters are set to zero.</td> </tr> <tr> <td data-th=Name><code class=nw>gls</code></td> <td data-th=Description>A generalized least squares estimate from the expression of the held-out promoters. It uses the data the model is then tested on, so the resulting statistics are prone to leakage.</td> </tr> <tr> <td data-th=Name><code class=nw>knn</code></td> <td data-th=Description>The mean is borrowed from the nearest promoters of the training set. The neighbours are searched by principal components of the loading matrix and of the predicted effects. Their numbers are set with <code class=nw>--pca-b</code> (64 by default) and <code class=nw>--pca-z</code> (3), and the number of neighbours with <code class=nw>--knn-n</code> (256).</td> </tr> </tbody> </table></div> <p>A table of numeric promoter covariates (promoters in rows, covariates in columns) can be passed with the <code class=nw>--covariate</code> option. The means are then predicted with the help of a generalized additive model of the covariates. The <code class=nw>gls</code> mode ignores the option.</p> <p>A model of the covariates is trained on the fitted means of the training promoters, so it describes the part of a promoter level that the motifs leave unexplained. The <code class=nw>--covariate-model</code> option chooses it:</p> <div class=tbl><table> <thead> <tr> <th scope=col>Name</th> <th scope=col>Description</th> </tr> </thead> <tbody> <tr> <td data-th=Name><code class=nw>gam</code></td> <td data-th=Description>(Default) A spline per covariate. It suits a few covariates, such as GC content and CpG ratio.</td> </tr> <tr> <td data-th=Name><code class=nw>ridge</code></td> <td data-th=Description>Ridge regression, with the penalty chosen by cross-validation.</td> </tr> <tr> <td data-th=Name><code class=nw>boosting</code></td> <td data-th=Description>Gradient boosting of trees.</td> </tr> <tr> <td data-th=Name><code class=nw>ensemble</code></td> <td data-th=Description>The average of <code class=nw>ridge</code> and <code class=nw>boosting</code>.</td> </tr> </tbody> </table></div> <p>The last 3 take tables of thousands of columns. Such a table is made from promoter sequences by the <code class=nw>sequence-features</code> command: the counts of all k-mers, the GC content and the CpG ratio in bins of positions around the TSS. The sequences go in a FASTA file, in the orientation of the promoter and with the TSS at the same position, for example windows from 1000 bp upstream to 500 bp downstream cut by <code class=nw>bedtools getfasta -s -name+</code>:</p> <pre class=prettyprint>
+</pre>
+
+<p>The full model explains 90% of the variance of the promoters it has not seen, against 95% of those it has.</p>
+
+<div class="alert alert-info" role="alert">
+The low-expression filter of <code class="nw">create</code> has already looked at all promoters, the held-out ones included. If the testing set must not influence anything at all, the project should be created with <code class="nw">--filter-lowexp-w 1</code>.
+</div>
+
+<h3 id="promoter-mean">Why is estimate-promoter-mean needed?</h3>
+
+<p>Each promoter has a mean $μ_p$, and it is a parameter estimated by <code class="nw">fit</code>. A held-out promoter has none, and the model can't predict its expression without one. The <code class="nw">estimate-promoter-mean</code> command fills the gap. Without it, <code class="nw">gof</code> stops with an error asking for it. It has to be run again after each <code class="nw">predict</code>.</p>
+
+<p>The method is chosen with the <code class="nw">--mean-mode</code> option:</p>
+
+<div class="tbl"><table>
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td data-th="Name"><code class="nw">null</code></td>
+      <td data-th="Description">(Default) The means of held-out promoters are set to zero.</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">gls</code></td>
+      <td data-th="Description">A generalized least squares estimate from the expression of the held-out promoters. It uses the data the model is then tested on, so the resulting statistics are prone to leakage.</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">knn</code></td>
+      <td data-th="Description">The mean is borrowed from the nearest promoters of the training set. The neighbours are searched by principal components of the loading matrix and of the predicted effects. Their numbers are set with <code class="nw">--pca-b</code> (64 by default) and <code class="nw">--pca-z</code> (3), and the number of neighbours with <code class="nw">--knn-n</code> (256).</td>
+    </tr>
+  </tbody>
+</table></div>
+
+<p>A table of numeric promoter covariates (promoters in rows, covariates in columns) can be passed with the <code class="nw">--covariate</code> option. The means are then predicted with the help of a generalized additive model of the covariates. The <code class="nw">gls</code> mode ignores the option.</p>
+
+<p>A model of the covariates is trained on the fitted means of the training promoters, so it describes the part of a promoter level that the motifs leave unexplained. The <code class="nw">--covariate-model</code> option chooses it:</p>
+
+<div class="tbl"><table>
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td data-th="Name"><code class="nw">gam</code></td>
+      <td data-th="Description">(Default) A spline per covariate. It suits a few covariates, such as GC content and CpG ratio.</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">ridge</code></td>
+      <td data-th="Description">Ridge regression, with the penalty chosen by cross-validation.</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">boosting</code></td>
+      <td data-th="Description">Gradient boosting of trees.</td>
+    </tr>
+    <tr>
+      <td data-th="Name"><code class="nw">ensemble</code></td>
+      <td data-th="Description">The average of <code class="nw">ridge</code> and <code class="nw">boosting</code>.</td>
+    </tr>
+  </tbody>
+</table></div>
+
+<p>The last 3 take tables of thousands of columns. Such a table is made from promoter sequences by the <code class="nw">sequence-features</code> command: the counts of all k-mers, the GC content and the CpG ratio in bins of positions around the TSS. The sequences go in a FASTA file, in the orientation of the promoter and with the TSS at the same position, for example windows from 1000 bp upstream to 500 bp downstream cut by <code class="nw">bedtools getfasta -s -name+</code>:</p>
+
+<pre class="prettyprint">
 > maradoner sequence-features promoters.fa seqfeatures.tsv --tss 1000 --bins -1000,-500,-250,-50,50,250,500 --k 5
 > maradoner estimate-promoter-mean MyProject --covariate seqfeatures.tsv --covariate-model ensemble
 > maradoner gof MyProject
-</pre> <p>On a muscle atlas of 36,120 CAGE promoters with 4 chromosomes held out, these features raised the FOV of the held-out promoters from 0.21 to 0.33. The gain is in the promoter levels: the motif activities and their tests stay as they are.</p> </main> <details class=toc open> <summary>On this page</summary> <nav> <a href=#gof>Fraction of variance explained</a> <a href=#test>Testing set</a> </nav> </details> </div> <script src=../js/prettify.js></script> <script src=../js/maradoner.js></script> </body> </html> 
+</pre>
+
+<p>On a muscle atlas of 36,120 CAGE promoters with 4 chromosomes held out, these features raised the FOV of the held-out promoters from 0.21 to 0.33. The gain is in the promoter levels: the motif activities and their tests stay as they are.</p>
+
+</main>
+<details class="toc" open>
+<summary>On this page</summary>
+<nav>
+<a href="#gof">Fraction of variance explained</a>
+<a href="#test">Testing set</a>
+</nav>
+</details>
+</div>
+
+
+<script src="../js/prettify.js"></script>
+<script src="../js/maradoner.js"></script>
+</body>
+</html>

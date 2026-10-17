@@ -1,44 +1,233 @@
-<!doctype html><html lang=en xmlns:m=http://www.w3.org/1998/Math/MathML> <head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1"><meta name=description content="Motif families"><meta name=keywords content="motif families, motif-families, motif-lowrank, covariance between motifs, omega, family variance"><meta name=author content="Georgy Meshcheryakov"><link rel="shortcut icon" href=../files/favicon.ico><title>Motif families |Tutorial</title><link rel=stylesheet href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap"><link rel=stylesheet href=../css/jqmath-0.4.3.min.css><link rel=stylesheet href=../css/mathfont.css><link rel=stylesheet href=../css/maradoner.css><script src=../js/jqmath-vanilla.min.js></script></head> <body> <header class=top> <div class=top-in> <a class=brand href=../index.html><img src=../files/doner.png alt width=543 height=375><span>MARADONER</span></a> <nav class=tabs aria-label=Site> <a href=../index.html>About</a> <a href=../tutorial/quickstart.html aria-current=page>Tutorial</a> <a href=../faq.html>F.A.Q.</a> <a href=../contact.html>Contact</a> <a href=../cite.html>Cite</a> </nav> </div> </header> <div class="wrap has-pages has-toc"> <nav class=pages aria-label=Tutorial> <a href=quickstart.html>Quickstart</a> <a href=create.html>Reading dataset</a> <a href=fit.html>Parameters estimation</a> <a href=predict.html>Motif activities</a> <a href=gof.html>Goodness of fit</a> <a href=export.html>Results</a> <a href=test.html>Tests</a> <a href=covariates.html>Covariates</a> <a href=lowrank.html>Hidden covariates</a> <a class=active href=families.html aria-current=page>Motif families</a> <a href=means.html>Motif means</a> <a href=grn.html>Regulatory network</a> <a href=other.html>Other models</a> <a href=clockworks.html>How it works</a> </nav> <main> <h1>Motif families</h1> <p>In the basic model, the activities of different motifs are independent. Real motifs often are not: the motifs of one transcription factor, the motifs of factors of one structural class, or the occupancies of one motif in several windows around the TSS tend to change together. The <code class=nw>--motif-families</code> option of <code class=nw>fit</code> tells <b>MARADONER</b> which motifs form a family, and the activities of the motifs of a family then get a common part. The <code class=nw>--motif-lowrank</code> option adds a covariance between the families. The mean activities are left to the <a href=./means.html>next section</a>.</p> <h2 id=family>What is a family?</h2> <p>A family is a set of motifs. The deviation of the activity of a motif from its mean becomes a sum of 2 parts:</p> <figure class=diagram> <svg xmlns=http://www.w3.org/2000/svg viewbox="0 0 560 150" role=img aria-label="Deviation equals individual part plus family part."> <rect class=box x=10 y=35 width=150 height=80 /> <text x=85 y=71 text-anchor=middle>Deviation</text> <text class=sub x=85 y=93 text-anchor=middle>motif, group</text> <text x=180 y=81 text-anchor=middle>=</text> <rect class=box x=200 y=35 width=170 height=80 /> <text x=285 y=71 text-anchor=middle>Individual part</text> <text class=sub x=285 y=93 text-anchor=middle>variance τ</text> <text x=390 y=81 text-anchor=middle>+</text> <rect class=box-a x=410 y=35 width=140 height=80 /> <text x=480 y=71 text-anchor=middle>Family part</text> <text class=sub x=480 y=93 text-anchor=middle>variance ω</text> </svg> </figure> <p>The individual part has the variance $τ$ of the motif, as in the basic model. The family part (the highlighted box) is the same for all motifs of the family in a group, and its variance $ω$ is one per family. The covariance matrix between motifs turns from the diagonal $Σ$ of the $τ$ into $$Σ + F Ω F^T.$$ Here, $F$ has a row per motif and a column per family, with a one where the motif belongs to the family and zeros elsewhere, and $Ω$ is the diagonal matrix of the $ω$. As before, the whole matrix is multiplied by the $ν$ of a group.</p> <p>A motif may belong to several families, and it then gets the family part of each. A motif of no family has the individual part only. A family of one motif has no $ω$, as its family part could not be told apart from the individual part of the motif.</p> <h2 id=file>The file of families</h2> <p>The file is a JSON dictionary or a text file:</p> <ul> <li>A JSON dictionary maps a family to its motifs, as in <code>{"family_1": ["motif_39", "motif_195"]}</code>, or a motif to its family, as in <code class=nw>{"motif_39": "family_1"}</code>;</li> <li>A text file has a family per line, the name of the family followed by the names of its motifs;</li> <li>Alternatively, a text file has a motif per line, followed by the name of its family. <b>MARADONER</b> recognizes this layout by the first column holding names of motifs.</li> </ul> <p>In a text file the names are separated by spaces or tabs. Motifs absent from the project are ignored, families left without motifs are dropped, and families with the same motifs are merged into one.</p> <h2 id=example>Example</h2> <p>The <a href=./other.html#generate>generator</a> of synthetic data can split the active motifs into families. First, we generate a dataset with 40 families and create a project from it:</p> <pre class=prettyprint>
+<!doctype html>
+<html lang="en" xmlns:m="http://www.w3.org/1998/Math/MathML">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Motif families">
+    <meta name="keywords" content="motif families, motif-families, motif-lowrank, covariance between motifs, omega, family variance">
+    <meta name="author" content="Georgy Meshcheryakov">
+    <link rel="shortcut icon" href="../files/favicon.ico">
+    <title>Motif families |Tutorial</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="../css/jqmath-0.4.3.min.css">
+    <link rel="stylesheet" href="../css/mathfont.css">
+    <link rel="stylesheet" href="../css/maradoner.css">
+    <script src="../js/jqmath-vanilla.min.js"></script>
+  </head>
+  <body>
+
+<header class="top">
+<div class="top-in">
+<a class="brand" href="../index.html"><img src="../files/doner.png" alt="" width="543" height="375"><span>MARADONER</span></a>
+<nav class="tabs" aria-label="Site">
+<a href="../index.html">About</a>
+<a href="../tutorial/quickstart.html" aria-current="page">Tutorial</a>
+<a href="../faq.html">F.A.Q.</a>
+<a href="../contact.html">Contact</a>
+<a href="../cite.html">Cite</a>
+</nav>
+</div>
+</header>
+
+
+<div class="wrap has-pages has-toc">
+<nav class="pages" aria-label="Tutorial">
+<a href="quickstart.html">Quickstart</a>
+<a href="create.html">Reading dataset</a>
+<a href="fit.html">Parameters estimation</a>
+<a href="predict.html">Motif activities</a>
+<a href="gof.html">Goodness of fit</a>
+<a href="export.html">Results</a>
+<a href="test.html">Tests</a>
+<a href="covariates.html">Covariates</a>
+<a href="lowrank.html">Hidden covariates</a>
+<a class="active" href="families.html" aria-current="page">Motif families</a>
+<a href="means.html">Motif means</a>
+<a href="grn.html">Regulatory network</a>
+<a href="other.html">Other models</a>
+<a href="clockworks.html">How it works</a>
+</nav>
+<main>
+<h1>Motif families</h1>
+<p>In the basic model, the activities of different motifs are independent. Real motifs often are not: the motifs of one transcription factor, the motifs of factors of one structural class, or the occupancies of one motif in several windows around the TSS tend to change together. The <code class="nw">--motif-families</code> option of <code class="nw">fit</code> tells <b>MARADONER</b> which motifs form a family, and the activities of the motifs of a family then get a common part. The <code class="nw">--motif-lowrank</code> option adds a covariance between the families. The mean activities are left to the <a href="./means.html">next section</a>.</p>
+
+<h2 id="family">What is a family?</h2>
+
+<p>A family is a set of motifs. The deviation of the activity of a motif from its mean becomes a sum of 2 parts:</p>
+
+<figure class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 150" role="img" aria-label="Deviation equals individual part plus family part.">
+<rect class="box" x="10" y="35" width="150" height="80"/>
+<text x="85" y="71" text-anchor="middle">Deviation</text>
+<text class="sub" x="85" y="93" text-anchor="middle">motif, group</text>
+<text x="180" y="81" text-anchor="middle">=</text>
+<rect class="box" x="200" y="35" width="170" height="80"/>
+<text x="285" y="71" text-anchor="middle">Individual part</text>
+<text class="sub" x="285" y="93" text-anchor="middle">variance τ</text>
+<text x="390" y="81" text-anchor="middle">+</text>
+<rect class="box-a" x="410" y="35" width="140" height="80"/>
+<text x="480" y="71" text-anchor="middle">Family part</text>
+<text class="sub" x="480" y="93" text-anchor="middle">variance ω</text>
+</svg>
+</figure>
+
+<p>The individual part has the variance $τ$ of the motif, as in the basic model. The family part (the highlighted box) is the same for all motifs of the family in a group, and its variance $ω$ is one per family. The covariance matrix between motifs turns from the diagonal $Σ$ of the $τ$ into
+$$Σ + F Ω F^T.$$
+Here, $F$ has a row per motif and a column per family, with a one where the motif belongs to the family and zeros elsewhere, and $Ω$ is the diagonal matrix of the $ω$. As before, the whole matrix is multiplied by the $ν$ of a group.</p>
+
+<p>A motif may belong to several families, and it then gets the family part of each. A motif of no family has the individual part only. A family of one motif has no $ω$, as its family part could not be told apart from the individual part of the motif.</p>
+
+<h2 id="file">The file of families</h2>
+
+<p>The file is a JSON dictionary or a text file:</p>
+
+<ul>
+  <li>A JSON dictionary maps a family to its motifs, as in <code>{"family_1": ["motif_39", "motif_195"]}</code>, or a motif to its family, as in <code class="nw">{"motif_39": "family_1"}</code>;</li>
+  <li>A text file has a family per line, the name of the family followed by the names of its motifs;</li>
+  <li>Alternatively, a text file has a motif per line, followed by the name of its family. <b>MARADONER</b> recognizes this layout by the first column holding names of motifs.</li>
+</ul>
+
+<p>In a text file the names are separated by spaces or tabs. Motifs absent from the project are ignored, families left without motifs are dropped, and families with the same motifs are merged into one.</p>
+
+<h2 id="example">Example</h2>
+
+<p>The <a href="./other.html#generate">generator</a> of synthetic data can split the active motifs into families. First, we generate a dataset with 40 families and create a project from it:</p>
+
+<pre class="prettyprint">
 > maradoner generate demo --families 40
 > maradoner create Families demo/expression.tsv demo/loadings.tsv --sample-groups demo/groups.json --loading-transform none
-</pre> <p>Here, the 400 active motifs of the dataset are split at random into 40 families. The <i>demo</i> folder gets the file <i>families.txt</i> with a family per line, and the true variances of the families go to <i>family_variances_gt.tsv</i>. The first lines of <i>families.txt</i> are</p> <pre>
+</pre>
+
+<p>Here, the 400 active motifs of the dataset are split at random into 40 families. The <i>demo</i> folder gets the file <i>families.txt</i> with a family per line, and the true variances of the families go to <i>family_variances_gt.tsv</i>. The first lines of <i>families.txt</i> are</p>
+
+<pre>
 family_1 motif_39 motif_195 motif_240 motif_262 motif_315 motif_327 motif_352 motif_394 motif_406 motif_486 motif_500
 family_2 motif_59 motif_84 motif_106 motif_117 motif_142 motif_172 motif_191 motif_217 motif_244 motif_253 motif_258 motif_276 motif_317 motif_382 motif_413 motif_415 motif_417 motif_481
 family_3 motif_99 motif_112 motif_144 motif_187 motif_212 motif_274 motif_345
-</pre> <p>Then we fit the model with the families:</p> <pre class=prettyprint>
+</pre>
+
+<p>Then we fit the model with the families:</p>
+
+<pre class="prettyprint">
 > maradoner fit Families --motif-families demo/families.txt
-</pre> <p>The output starts with a line about the file:</p> <pre>
+</pre>
+
+<p>The output starts with a line about the file:</p>
+
+<pre>
   Motif families: 40 families (40 of them with more than one motif) cover 400 of 500 motifs.
-</pre> <p>After the usual block of the variances of motif activities come these lines:</p> <pre>
+</pre>
+
+<p>After the usual block of the variances of motif activities come these lines:</p>
+
+<pre>
 [motif covariance] Fisher scoring: 9 steps, 10 evaluations, deviance -203233.532 -> -208842.885
 [motif covariance] 9 iterations, 10 evaluations of the deviance (converged=True)
 [motif covariance] Sigma/G REML deviance -197070.653 -> -208842.885 (gain +11772.232)
 Smallest eigenvalue of the Fisher information of the variances (scaled to a unit diagonal): 0.04685838893530208
   covariance between motifs: diagonal Sigma + 40 of 40 family variances above zero (REML deviance -208842.89).
-</pre> <p>The model with independent motifs is fitted first, and its estimates are the start of the model with families. The first 2 lines count the steps of that second optimization. The third one compares the 2 models: the 40 variances of the families lowered the deviance by 11772. The last line says that every family has a variance above zero.</p> <p>Next, the usual commands:</p> <pre class=prettyprint>
+</pre>
+
+<p>The model with independent motifs is fitted first, and its estimates are the start of the model with families. The first 2 lines count the steps of that second optimization. The third one compares the 2 models: the 40 variances of the families lowered the deviance by 11772. The last line says that every family has a variance above zero.</p>
+
+<p>Next, the usual commands:</p>
+
+<pre class="prettyprint">
 > maradoner predict Families
 > maradoner export Families families_results
-</pre> <p>The <i>families_results/params/family_variances.tsv</i> table has a row per family with the variance $ω$, its standard error and the number of motifs:</p> <pre>
+</pre>
+
+<p>The <i>families_results/params/family_variances.tsv</i> table has a row per family with the variance $ω$, its standard error and the number of motifs:</p>
+
+<pre>
 family	omega	std	motifs
 family_1	4.7053241495732685	0.9641532210699656	11
 family_2	2.9355039950081205	0.6000799042236812	18
 family_3	3.9489480420127903	0.8334671103365756	7
-</pre> <p>The true $ω$ of <i>family_1</i> is 0.62, and the estimate is 4.71. That is fine: the <a href=./clockworks.html#scale>scale of the variances</a> is set by the $ν$ of one group, and the generator uses a different one. Relative to the mean $τ$ of the motifs, the estimated $ω$ are 1.13 on average and the true ones 1.28, with a correlation of 0.77 between them.</p> <p>The <i>tests/asymptotics_based/family_anova.tsv</i> table tests $ω = 0$ for each family with a likelihood ratio:</p> <pre>
+</pre>
+
+<p>The true $ω$ of <i>family_1</i> is 0.62, and the estimate is 4.71. That is fine: the <a href="./clockworks.html#scale">scale of the variances</a> is set by the $ν$ of one group, and the generator uses a different one. Relative to the mean $τ$ of the motifs, the estimated $ω$ are 1.13 on average and the true ones 1.28, with a correlation of 0.77 between them.</p>
+
+<p>The <i>tests/asymptotics_based/family_anova.tsv</i> table tests $ω = 0$ for each family with a likelihood ratio:</p>
+
+<pre>
 family	stat	p-value	FDR
 family_1	326.9672978884076	2.1993433993055434e-73	5.498358498263858e-73
 family_2	433.00425499467195	1.802965587492313e-96	8.013180388854724e-96
 family_3	192.52328841334426	4.472396497332097e-44	5.770834190105931e-44
-</pre> <p>Under the hypothesis, the $τ$ of the motifs of the family take over $ω$. The variance of each motif stays, and only the covariance within the family goes. All 40 families have p-values below $3 × 10^{-7}$.</p> <p>With families in the model, the $τ$ of a motif is the variance of its individual part. Hence the test of $τ = 0$ in <a href=./test.html#anova><i>anova.tsv</i></a> asks whether a motif varies beyond its family. It finds 348 motifs at an FDR of 0.05, against 407 in the fit without families.</p> <p>Do the families help to predict activities? In this example they do. Without families, the deviations predicted for single samples have a squared error of 10.6% of the variance of the true deviations, and with them 8.4%. A motif borrows strength from the other motifs of its family. The <i>params/activity_correlations.tsv</i> table has the correlations between the activities of motifs implied by the fitted covariance.</p> <h2 id=lowrank>Covariance between families</h2> <p>Families may change together as well. With the <code class=nw>--motif-lowrank</code> option, $Ω$ becomes $$Ω + L L^T.$$ Here, $L$ has a row per family and a column per factor. As with the <a href=./lowrank.html>hidden covariates</a>, the number of factors $k$ is small next to the number of families, hence the name of the option. A factor is a direction along which families move together, some of them up and others down.</p> <p>The generator can add such a covariance. Let's generate a dataset with 1 factor and fit it with the families and 1 factor:</p> <pre class=prettyprint>
+</pre>
+
+<p>Under the hypothesis, the $τ$ of the motifs of the family take over $ω$. The variance of each motif stays, and only the covariance within the family goes. All 40 families have p-values below $3 × 10^{-7}$.</p>
+
+<p>With families in the model, the $τ$ of a motif is the variance of its individual part. Hence the test of $τ = 0$ in <a href="./test.html#anova"><i>anova.tsv</i></a> asks whether a motif varies beyond its family. It finds 348 motifs at an FDR of 0.05, against 407 in the fit without families.</p>
+
+<p>Do the families help to predict activities? In this example they do. Without families, the deviations predicted for single samples have a squared error of 10.6% of the variance of the true deviations, and with them 8.4%. A motif borrows strength from the other motifs of its family. The <i>params/activity_correlations.tsv</i> table has the correlations between the activities of motifs implied by the fitted covariance.</p>
+
+<h2 id="lowrank">Covariance between families</h2>
+
+<p>Families may change together as well. With the <code class="nw">--motif-lowrank</code> option, $Ω$ becomes
+$$Ω + L L^T.$$
+Here, $L$ has a row per family and a column per factor. As with the <a href="./lowrank.html">hidden covariates</a>, the number of factors $k$ is small next to the number of families, hence the name of the option. A factor is a direction along which families move together, some of them up and others down.</p>
+
+<p>The generator can add such a covariance. Let's generate a dataset with 1 factor and fit it with the families and 1 factor:</p>
+
+<pre class="prettyprint">
 > maradoner generate demo --families 40 --motif-lowrank 1
 > maradoner create Covariance demo/expression.tsv demo/loadings.tsv --sample-groups demo/groups.json --loading-transform none
 > maradoner fit Covariance --motif-families demo/families.txt --motif-lowrank 1
-</pre> <p>The true factor is saved to <i>demo/L_motif_gt.tsv</i>. The output of <code class=nw>fit</code> has these lines:</p> <pre>
+</pre>
+
+<p>The true factor is saved to <i>demo/L_motif_gt.tsv</i>. The output of <code class="nw">fit</code> has these lines:</p>
+
+<pre>
 [motif covariance] 185 iterations, 202 evaluations of the deviance (converged=True)
 [motif covariance] Sigma/G REML deviance -332921.551 -> -351422.338 (gain +18500.787)
 Smallest eigenvalue of the Fisher information of the variances (scaled to a unit diagonal): 0.04786614868192972
   covariance between motifs: diagonal Sigma + 40 of 40 family variances above zero + rank-1 covariance between families (REML deviance -351422.34).
-</pre> <p>Here, the gain is counted from the model with independent motifs. The families alone reach a deviance of -350592.269 on these data, so the factor adds 830. The model with a factor is fitted by L-BFGS-B, as Fisher scoring covers the variances only, and it takes more iterations.</p> <p>The <i>params/family_factors.tsv</i> table of the exported folder has a row per family and a column per factor:</p> <pre>
+</pre>
+
+<p>Here, the gain is counted from the model with independent motifs. The families alone reach a deviance of -350592.269 on these data, so the factor adds 830. The model with a factor is fitted by L-BFGS-B, as Fisher scoring covers the variances only, and it takes more iterations.</p>
+
+<p>The <i>params/family_factors.tsv</i> table of the exported folder has a row per family and a column per factor:</p>
+
+<pre>
 family	factor_1
 family_1	3.805307134695904
 family_2	-1.755312326802828
-</pre> <p>The factor has a correlation of -0.986 with the true one. The minus is no error: $L L^T$ is the same for $L$ and $-L$, so the sign of a factor is arbitrary. The <i>params/family_correlations.tsv</i> table has the correlations between families implied by $Ω + L L^T$. In this example the factor leaves the predicted activities as accurate as they are with the families alone, with a squared error of 5.3% in both fits.</p> <p>How many factors? The <code class=nw>select-rank</code> command does not cover <code class=nw>--motif-lowrank</code>, and it says so. The number is judged from the gains. A factor adds a parameter per family, and it lowers the deviance even when there is nothing to find. On the data of the previous example, with no covariance between families, a factor gained 69. A gain many times larger, as 830 above, speaks for the factor. We have no calibrated test for it.</p> <h3 id=motifs>Without families</h3> <p>With <code class=nw>--motif-lowrank</code> and no file of families, each motif forms a family of one, and the covariance between motifs becomes $Σ + L L^T$ with a row of $L$ per motif. The factors go to <i>params/motif_factors.tsv</i>. A factor then has a parameter per motif. On the data of the first example, a factor without the file of families lowered the deviance by 1150, against 11772 for the 40 families.</p> <h2 id=cost>What does it cost?</h2> <ul> <li>Time. On the data of the first example, <code class=nw>fit</code> takes 2.6 seconds without families, 3.4 with them and 7.6 with a factor and no families. On the data of the second example it takes 3.6 seconds with the families and 6.6 with the families and a factor;</li> <li>On real data. A muscle atlas had 1595 motifs, each with occupancies in 3 windows around the TSS (4785 columns of the loading matrix), and 27,007 training promoters. With a family per motif made of its 3 windows, <code class=nw>fit</code> took 18.6 minutes against 10.6 without families, on 8 threads. The families lowered the deviance by 9069 and left the FOV of held-out promoters where it was (0.268 against 0.269 without them). Families that fit the data well do not have to improve prediction;</li> <li>The options need motif variances. With <code class=nw>--no-motif-variance</code> they are ignored with a warning;</li> <li>They cannot be combined with <code class=nw>--clustering</code>, as the latter replaces motifs by clusters.</li> </ul> </main> <details class=toc open> <summary>On this page</summary> <nav> <a href=#family>What is a family?</a> <a href=#file>The file of families</a> <a href=#example>Example</a> <a href=#lowrank>Covariance between families</a> <a href=#cost>What does it cost?</a> </nav> </details> </div> <script src=../js/prettify.js></script> <script src=../js/maradoner.js></script> </body> </html> 
+</pre>
+
+<p>The factor has a correlation of -0.986 with the true one. The minus is no error: $L L^T$ is the same for $L$ and $-L$, so the sign of a factor is arbitrary. The <i>params/family_correlations.tsv</i> table has the correlations between families implied by $Ω + L L^T$. In this example the factor leaves the predicted activities as accurate as they are with the families alone, with a squared error of 5.3% in both fits.</p>
+
+<p>How many factors? The <code class="nw">select-rank</code> command does not cover <code class="nw">--motif-lowrank</code>, and it says so. The number is judged from the gains. A factor adds a parameter per family, and it lowers the deviance even when there is nothing to find. On the data of the previous example, with no covariance between families, a factor gained 69. A gain many times larger, as 830 above, speaks for the factor. We have no calibrated test for it.</p>
+
+<h3 id="motifs">Without families</h3>
+
+<p>With <code class="nw">--motif-lowrank</code> and no file of families, each motif forms a family of one, and the covariance between motifs becomes $Σ + L L^T$ with a row of $L$ per motif. The factors go to <i>params/motif_factors.tsv</i>. A factor then has a parameter per motif. On the data of the first example, a factor without the file of families lowered the deviance by 1150, against 11772 for the 40 families.</p>
+
+<h2 id="cost">What does it cost?</h2>
+
+<ul>
+  <li>Time. On the data of the first example, <code class="nw">fit</code> takes 2.6 seconds without families, 3.4 with them and 7.6 with a factor and no families. On the data of the second example it takes 3.6 seconds with the families and 6.6 with the families and a factor;</li>
+  <li>On real data. A muscle atlas had 1595 motifs, each with occupancies in 3 windows around the TSS (4785 columns of the loading matrix), and 27,007 training promoters. With a family per motif made of its 3 windows, <code class="nw">fit</code> took 18.6 minutes against 10.6 without families, on 8 threads. The families lowered the deviance by 9069 and left the FOV of held-out promoters where it was (0.268 against 0.269 without them). Families that fit the data well do not have to improve prediction;</li>
+  <li>The options need motif variances. With <code class="nw">--no-motif-variance</code> they are ignored with a warning;</li>
+  <li>They cannot be combined with <code class="nw">--clustering</code>, as the latter replaces motifs by clusters.</li>
+</ul>
+
+</main>
+<details class="toc" open>
+<summary>On this page</summary>
+<nav>
+<a href="#family">What is a family?</a>
+<a href="#file">The file of families</a>
+<a href="#example">Example</a>
+<a href="#lowrank">Covariance between families</a>
+<a href="#cost">What does it cost?</a>
+</nav>
+</details>
+</div>
+
+
+<script src="../js/prettify.js"></script>
+<script src="../js/maradoner.js"></script>
+</body>
+</html>
