@@ -40,7 +40,31 @@ def _limit_threads(argv: list):
         os.environ[var] = str(n)
     return n
 
+def _limit_xla_threads(n: int):
+    """XLA does not read the variables above: it sizes its thread pool by the number of CPUs
+    the process may run on when its backend starts. The backend is started with n CPUs
+    allowed, and every thread is then allowed all of them again, so that the n threads of
+    the pool run on any core."""
+    if not hasattr(os, 'sched_setaffinity') or not os.path.isdir('/proc/self/task'):
+        return
+    allowed = os.sched_getaffinity(0)
+    if n >= len(allowed):
+        return
+    os.sched_setaffinity(0, sorted(allowed)[:n])
+    try:
+        import jax
+        jax.devices()
+    finally:
+        for tid in os.listdir('/proc/self/task'):
+            try:
+                os.sched_setaffinity(int(tid), allowed)
+            except OSError:
+                pass
+
 _thread_limit = _limit_threads(sys.argv[1:])
+# Only a limit asked for with --threads or MARADONER_THREADS applies to XLA as well.
+if _thread_limit is not None and _requested_threads(sys.argv[1:]) is not None:
+    _limit_xla_threads(_thread_limit)
 
 from . import check_packages
 check_packages()
@@ -59,7 +83,7 @@ from rich.table import Table
 from .create import create_project
 from pathlib import Path
 from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode
-from .promoter_mean_test import FOVMeanMode, estimate_promoter_mean
+from .promoter_mean_test import FOVMeanMode, CovariateModel, estimate_promoter_mean
 from .grn import grn
 from .synthetic_data import generate_dataset
 from time import time
@@ -94,6 +118,12 @@ class Compression(str, Enum):
     gzip = 'gzip'
     bz2 = 'bz2'
     raw = 'raw'
+
+class MotifMeanPrior(str, Enum):
+    none = 'none'
+    ridge = 'ridge'
+    families = 'families'
+    covariance = 'covariance'
 
 class LoadingTransform(str, Enum):
     none = 'none'
@@ -326,6 +356,21 @@ def _fit(name: str = Argument(..., help='Project name.'),
                                          'estimated jointly with [cyan]Sigma[/cyan] and [cyan]nu[/cyan]. Captures latent sample-factors along '
                                          'which motif activities co-vary. [dark_orange]0[/dark_orange] (default) disables it. Requires per-motif variances; '
                                          'must be smaller than the number of samples minus the number of covariates (intercept included).'),
+          motif_families: Path = Option(None, '--motif-families', help='Families of motifs with co-varying activities: the covariance '
+                                        'between motifs becomes [cyan]Sigma + F Omega F^T[/cyan], with a variance per family in '
+                                        '[cyan]Omega[/cyan]. A JSON dictionary [blue]{"family": ["motif", ...]}[/blue], or a text file with '
+                                        'a family per line ([blue]family motif motif ...[/blue]) or a motif per line ([blue]motif family[/blue]).'),
+          motif_lowrank: int = Option(0, '--motif-lowrank', min=0, help='Rank [dark_orange]k[/dark_orange] of a covariance between motif '
+                                      'families: [cyan]Omega[/cyan] becomes [cyan]Omega + L L^T[/cyan]. Without [purple]--motif-families[/purple] '
+                                      'the covariance between motifs is [cyan]Sigma + L L^T[/cyan].'),
+          motif_mean_prior: MotifMeanPrior = Option(MotifMeanPrior.none, '--motif-mean-prior',
+                                      help='Prior on the mean activities of the motifs, with its variances estimated by REML: '
+                                      '[dark_orange]ridge[/dark_orange] (a variance shared by all motifs), '
+                                      '[dark_orange]families[/dark_orange] (a variance per family on top of it, needs '
+                                      '[purple]--motif-families[/purple]) or [dark_orange]covariance[/dark_orange] (a multiple of the '
+                                      'fitted covariance between motif activities on top of it). Without a prior, the means of many '
+                                      'similar motifs fit the levels of the training promoters and predict those of other promoters '
+                                      'poorly.'),
           gpu: bool = Option(False, help='Use GPU if available for most of computations.'),
           gpu_decomposition: bool = Option(False, help='Use GPU if available for the SVD decomposition of the loading matrix.'),
           x64: bool = Option(True, help='Use high precision algebra.')):
@@ -342,6 +387,8 @@ def _fit(name: str = Argument(..., help='Project name.'),
             test_promoters_filename=test_promoters_filename,
             error_lowrank=error_lowrank,
             activity_lowrank=activity_lowrank,
+            motif_families=motif_families, motif_lowrank=motif_lowrank,
+            motif_mean_prior=motif_mean_prior.value,
             gpu_decomposition=gpu_decomposition, x64=x64)
     _done(t0)
 
@@ -492,7 +539,12 @@ def _estimate_promoter_mean(name: str = Argument(..., help='Project name.'),
                             pca_b: int = Option(64, help='Number of PC of the loading matrix to use if [dark_orange]mean-mode=knn[/dark_orange] (-1 uses all).'),
                             pca_z: int = Option(3, help='Number of PC of the total effect matrix to use if [dark_orange]mean-mode=knn[/dark_orange] (-1 uses all).'),
                             covariate: Path = Option(None, help='A path to a tsv file containing covariates. If present, will enhance mean predictions using GAMs '
-                                                                                '(ignored if [dark_orange]mean-mode=gls[/dark_orange]).')):
+                                                                                '(ignored if [dark_orange]mean-mode=gls[/dark_orange]).'),
+                            covariate_model: CovariateModel = Option(CovariateModel.gam, help='How the promoter means are learned from the covariates: '
+                                                                                '[dark_orange]gam[/dark_orange] fits a spline per covariate (for a few covariates); '
+                                                                                '[dark_orange]ridge[/dark_orange], [dark_orange]boosting[/dark_orange] (gradient boosting) and '
+                                                                                '[dark_orange]ensemble[/dark_orange] (the average of the two) take large tables, '
+                                                                                'such as the output of [cyan]sequence-features[/cyan].')):
     """
     Estimate promoter-specific means of the held-out (testing) promoters for the given project.
     """
@@ -504,7 +556,31 @@ def _estimate_promoter_mean(name: str = Argument(..., help='Project name.'),
                                     knn_n=knn_n,
                                     pca_b=pca_b,
                                     pca_z=pca_z,
-                                    covariate=covariate)
+                                    covariate=covariate,
+                                    covariate_model=covariate_model.value)
+    _done(t0)
+
+@app.command('sequence-features', help='Count k-mers, GC and CpG in bins around the TSS: a promoter covariate table for '
+                                       '[cyan]estimate-promoter-mean --covariate[/cyan].')
+def _sequence_features(fasta: Path = Argument(..., help='FASTA of promoter sequences in the orientation of the promoter, all with the TSS '
+                                                        'at the same position (e.g. [cyan]bedtools getfasta -s -name+[/cyan] of windows '
+                                                        'from 1000 bp upstream to 500 bp downstream). The promoter name is the part of the record name before "::".'),
+                       output: Path = Argument(..., help='Output tsv file, one row per promoter.'),
+                       tss: int = Option(1000, help='0-based position of the TSS in every sequence.'),
+                       bins: str = Option('-1000,-500,-250,-50,50,250,500', help='Comma-separated bin edges, in bp relative to the TSS.'),
+                       k: int = Option(5, help='Length of the k-mers.')):
+    """
+    Build sequence features of promoters: k-mer counts, GC content and CpG o/e per bin.
+    """
+    from .seqfeatures import make_sequence_features
+    t0 = time()
+    try:
+        edges = [int(x) for x in str(bins).split(',') if x.strip()]
+    except ValueError:
+        raise InputError(f'--bins must be comma-separated whole numbers, but "{bins}" was given.')
+    with spinner('Counting k-mers...'):
+        table = make_sequence_features(str(fasta), str(output), tss=tss, bins=edges, k=k)
+    rprint(f'{table.shape[0]} promoters, {table.shape[1]} features.')
     _done(t0)
 
 @app.command('predict', help='Estimate deviations of motif activities from their means.')
@@ -553,6 +629,12 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
                 activity_lowrank: int = Option(0, '--activity-lowrank', help='Inject a rank-[dark_orange]k[/dark_orange] correction V V^T into the '
                                                'activity covariance G (correlated motif activities across samples). Ground-truth V -> V_act_gt.tsv.'),
                 activity_lowrank_scale: float = Option(1.0, help='Per-column scale of the injected activity factor V, relative to mean sqrt(nu).'),
+                families: int = Option(0, '--families', help='Number of motif families, among which the active motifs are split at random '
+                                       '(families.txt, family_variances_gt.tsv).'),
+                family_scale: float = Option(1.0, help='Variances omega of the families relative to the mean tau.'),
+                motif_lowrank: int = Option(0, '--motif-lowrank', help='Inject a rank-[dark_orange]k[/dark_orange] covariance L L^T between the '
+                                            'families, or between the motifs without --families (L_motif_gt.tsv).'),
+                motif_lowrank_scale: float = Option(1.0, help='Entries of L relative to the square root of the mean tau.'),
                 seed: int = Option(1, help='Random seed.')
             ):
     t0 = time()
@@ -564,6 +646,8 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
                          n_covariates=n_covariates, cov_effect=cov_effect,
                          error_lowrank=error_lowrank, error_lowrank_scale=error_lowrank_scale,
                          activity_lowrank=activity_lowrank, activity_lowrank_scale=activity_lowrank_scale,
+                         families=families, family_scale=family_scale,
+                         motif_lowrank=motif_lowrank, motif_lowrank_scale=motif_lowrank_scale,
                          seed=seed)
     _done(t0)
 

@@ -171,6 +171,9 @@ class ProjectData:
     # Terms of the covariate design, see create.build_covariates. None for projects made
     # by versions that did not store them.
     covariate_terms: list = None
+    # (mode, column indices) of loading transforms fitted by fit on the training promoters
+    # (drist, dristun). None if the loadings are stored already transformed.
+    deferred_transforms: list = None
 
 
 def apply_clustering(data: ProjectData, fit) -> ProjectData:
@@ -246,6 +249,7 @@ def read_init(project_name: str) -> ProjectData:
         X=X,
         covariate_names=covariate_names,
         covariate_terms=covariate_terms,
+        deferred_transforms=init.get('deferred_transforms', None),
         fmt=fmt
         )
     return r

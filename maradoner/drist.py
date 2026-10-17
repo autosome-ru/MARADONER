@@ -167,12 +167,12 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
             if self.share_function:
                 # Global PAVA
                 Targets_flat = Targets.ravel(order='F')
+                # The loss of column j is K_jj |f_j - target_j|^2, so the shared fit weights column j by K_jj.
+                w_flat = np.repeat(K_diag, p)
                 if pava_w is not None:
-                    w_flat = np.tile(pava_w, m)
-                    w_sorted = w_flat[self.sort_idx_]
-                else:
-                    w_sorted = None
-                
+                    w_flat = w_flat * np.tile(pava_w, m)
+                w_sorted = w_flat[self.sort_idx_]
+
                 t_sorted = Targets_flat[self.sort_idx_]
                 f_flat_new = isotonic_regression(t_sorted, sample_weight=w_sorted, increasing=True)
                 f_flat_restored = f_flat_new[self.inv_sort_idx_]
@@ -264,10 +264,9 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
         if self.share_function:
             Targets_flat = Targets.ravel(order='F')
             X_flat = X.ravel(order='F')
+            w_flat = np.repeat(np.maximum(K_diag, 1e-12), p)
             if pava_w is not None:
-                w_flat = np.tile(pava_w, m)
-            else:
-                w_flat = None
+                w_flat = w_flat * np.tile(pava_w, m)
             self.transformer_ = IsotonicRegression(increasing=True, out_of_bounds='clip')
             self.transformer_.fit(X_flat, Targets_flat, sample_weight=w_flat)
             x_trans = self.transformer_.transform(X_flat)
@@ -357,7 +356,8 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
                 Targets = (Z - Pred_Z) / K_diag[None, :] + f_X
                 
                 Targets_flat = Targets.ravel(order='F')
-                w_flat = np.tile(pava_w, m)[self.sort_idx_] if pava_w is not None else None
+                w_flat = np.repeat(K_diag, p) * (np.tile(pava_w, m) if pava_w is not None else 1.0)
+                w_flat = w_flat[self.sort_idx_]
                 t_sorted = Targets_flat[self.sort_idx_]
                 
                 f_flat = isotonic_regression(t_sorted, sample_weight=w_flat, increasing=True)
@@ -417,16 +417,39 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
             
         return self
 
+    def _save_transformers_jacobi(self, X, y, f_X, U, beta0, pava_w):
+        """One isotonic map of all the scores to the fitted values f_X (the shared function of _fit_cd)."""
+        w_flat = np.tile(pava_w, X.shape[1]) if pava_w is not None else None
+        self.transformer_ = IsotonicRegression(increasing=True, out_of_bounds='clip')
+        self.transformer_.fit(X.ravel(order='F'), np.asarray(f_X).ravel(order='F'), sample_weight=w_flat)
+        x_trans = self.transformer_.transform(X.ravel(order='F'))
+        self.f_mean_ = np.mean(x_trans)
+        self.f_std_ = np.std(x_trans) if np.std(x_trans) > 1e-8 else 1.0
+
+    def _save_transformers_cd(self, X, y, f_X, U, beta0, pava_w, Y_pred):
+        """One isotonic map per column of the scores to the fitted values f_X (_fit_cd)."""
+        m = X.shape[1]
+        self.transformers_ = []
+        self.f_means_ = np.zeros(m)
+        self.f_stds_ = np.zeros(m)
+        for j in range(m):
+            iso = IsotonicRegression(increasing=True, out_of_bounds='clip')
+            iso.fit(X[:, j], f_X[:, j], sample_weight=pava_w)
+            self.transformers_.append(iso)
+            x_trans = iso.transform(X[:, j])
+            self.f_means_[j] = np.mean(x_trans)
+            self.f_stds_[j] = np.std(x_trans) if np.std(x_trans) > 1e-8 else 1.0
+
     def transform(self, X):
         check_is_fitted(self, 'fitted_')
         X = check_array(X)
         X_trans = np.zeros_like(X)
         
         if self.share_function:
-            X_flat = X.ravel(order='F') if X.flags['F_CONTIGUOUS'] else X.flatten()
+            # Flattened and reshaped in the same order, whatever the memory layout of X.
+            X_flat = X.ravel(order='F')
             f_flat = self.transformer_.transform(X_flat)
-            X_trans = f_flat.reshape(X.shape)
-            if not X.flags['F_CONTIGUOUS']: X_trans = np.asfortranarray(X_trans)
+            X_trans = f_flat.reshape(X.shape, order='F')
             X_trans = (X_trans - self.f_mean_) / self.f_std_
         else:
             for j in range(X.shape[1]):
@@ -437,3 +460,34 @@ class DRIST(BaseEstimator, RegressorMixin, TransformerMixin):
     def predict(self, X):
         f_X = self.transform(X)
         return f_X @ self.coef_ + self.intercept_
+
+class LoadingDRIST:
+    """DRIST of some columns of the loading matrix (create --loading-transform drist|dristun),
+    fitted by fit on the training promoters, so that held-out promoters take no part in it.
+
+    parts is a list of (mode, column indices). As in create.drist_it, the targets are the
+    expression values centred within each promoter, and each transformed column is shifted
+    to start at zero (at its minimum over the training promoters). transform maps a full
+    loading matrix of the project and leaves the other columns as they are."""
+    def __init__(self, parts, max_iter=1000, verbose=False):
+        self.parts = [(str(mode), np.asarray(cols, dtype=int)) for mode, cols in parts]
+        self.max_iter = max_iter
+        self.verbose = verbose
+
+    def fit(self, B, Y):
+        B = np.asarray(B, dtype=float)
+        Y = np.asarray(Y, dtype=float)
+        Y = Y - Y.mean(axis=1, keepdims=True)
+        self.models_, self.shifts_ = list(), list()
+        for mode, cols in self.parts:
+            model = DRIST(max_iter=self.max_iter, verbose=self.verbose,
+                          share_function=mode.endswith('un')).fit(B[:, cols], Y)
+            self.models_.append(model)
+            self.shifts_.append(model.transform(B[:, cols]).min(axis=0))
+        return self
+
+    def transform(self, B):
+        B = np.array(B, dtype=float)
+        for (mode, cols), model, shift in zip(self.parts, self.models_, self.shifts_):
+            B[:, cols] = model.transform(B[:, cols]) - shift
+        return B

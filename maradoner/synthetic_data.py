@@ -27,13 +27,18 @@ class GeneratedData:
     X: np.ndarray = None       # (c, n) covariate design (first row = intercept ones)
     W_err: np.ndarray = None   # (s, k) ground-truth low-rank error factor, or None
     V_act: np.ndarray = None   # (s, k) ground-truth low-rank activity factor, or None
+    F: np.ndarray = None       # (m, f) motif families, or None
+    omega: np.ndarray = None   # (f,) variances of the families, or None
+    L_motif: np.ndarray = None # (f, k) covariance factor between families (motifs if F is None)
 
 
 def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int,
                       sigma_rel: float = 1e-1, non_signficant_motifs_fraction: float = 0.20,
                       means: bool = True, n_covariates: int = 0, cov_effect: float = 1.0,
                       error_lowrank: int = 0, error_lowrank_scale: float = 1.0,
-                      activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0):
+                      activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0,
+                      families: int = 0, family_scale: float = 1.0,
+                      motif_lowrank: int = 0, motif_lowrank_scale: float = 1.0):
     """Covariate-aware synthetic data generator for the model
 
         Y = 1_p mu_s^T + mu_p 1_s^T + B U + E,
@@ -48,6 +53,12 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     column-covariance, i.e. correlated noise shared across samples (think batch/technical
     effects). W is scaled by error_lowrank_scale * mean(sqrt(D)) per column and projected
     off 1_s (the identifiable part). The ground-truth W is returned for evaluation.
+
+    families > 0 splits the active motifs at random among that many families, and the
+    covariance between motifs becomes Sigma + F (diag(omega) + L L^T) F^T, with omega of the
+    order family_scale * mean(tau) and L (families x motif_lowrank) of the order
+    motif_lowrank_scale * sqrt(mean(tau)). Without families, motif_lowrank > 0 gives
+    Sigma + L L^T with L (m x motif_lowrank) zero for the inactive motifs.
     """
     for name, value in (('promoters (--p)', p), ('motifs (--m)', m), ('groups (--g)', g)):
         if value < 1:
@@ -64,7 +75,9 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     for name, value in (('--n-covariates', n_covariates), ('--error-lowrank', error_lowrank),
                         ('--activity-lowrank', activity_lowrank),
                         ('--error-lowrank-scale', error_lowrank_scale),
-                        ('--activity-lowrank-scale', activity_lowrank_scale)):
+                        ('--activity-lowrank-scale', activity_lowrank_scale),
+                        ('--families', families), ('--family-scale', family_scale),
+                        ('--motif-lowrank', motif_lowrank), ('--motif-lowrank-scale', motif_lowrank_scale)):
         if value < 0:
             raise InputError(f'{name} cannot be negative, but {value:g} was given.')
     group_sizes = [np.random.randint(min_samples, max_samples + 1) for _ in range(g)]
@@ -101,6 +114,31 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     U_mult[~significant] = 0.0
     Sigma = U_mult ** 2
 
+    # Families of the active motifs and the covariance between motifs S.
+    F = omega = L_motif = None
+    S_motif = None
+    if families or motif_lowrank:
+        if motif_lowrank and motif_lowrank >= (families or m):
+            raise InputError('--motif-lowrank must be smaller than the number of families (of motifs '
+                             'without --families).')
+        mean_tau = Sigma[significant].mean() if significant.any() else 1.0
+        n_fam = int(families) if families else m
+        Psi = np.zeros((n_fam, n_fam))
+        if families:
+            active = np.where(significant)[0]
+            F = np.zeros((m, n_fam))
+            F[active, np.random.randint(0, n_fam, size=len(active))] = 1.0
+            omega = (np.random.rand(n_fam) + 0.5) * family_scale * mean_tau
+            Psi += np.diag(omega)
+        if motif_lowrank:
+            L_motif = st.norm.rvs(size=(n_fam, int(motif_lowrank))) * motif_lowrank_scale * mean_tau ** 0.5
+            if not families:
+                L_motif[~significant] = 0.0
+            Psi += L_motif @ L_motif.T
+        S_motif = np.diag(Sigma) + (Psi if F is None else F @ Psi @ F.T)
+        w, v = np.linalg.eigh(S_motif)
+        S_half = (v * np.sqrt(np.clip(w, 0.0, None))) @ v.T
+
     # Intercept (average) motif activities mu_m and covariate-effect columns -> M.
     c = 1 + max(0, int(n_covariates))
     M = np.zeros((m, c), dtype=float)
@@ -132,9 +170,11 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
         G_full = np.diag(nu_n) + V_act @ V_act.T
         wv, Qv = np.linalg.eigh(G_full)
         G_half = (Qv * np.sqrt(np.clip(wv, 0, None))) @ Qv.T
-        U0 = np.sqrt(Sigma).reshape(-1, 1) * (Nz @ G_half)
-    else:
+        U0 = np.sqrt(Sigma).reshape(-1, 1) * (Nz @ G_half) if S_motif is None else S_half @ (Nz @ G_half)
+    elif S_motif is None:
         U0 = (np.sqrt(Sigma).reshape(-1, 1) * Nz) * np.sqrt(nu_n).reshape(1, -1)
+    else:
+        U0 = (S_half @ Nz) * np.sqrt(nu_n).reshape(1, -1)
     U = M @ X + U0
     U[~significant, :] = 0.0
 
@@ -154,7 +194,7 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     return GeneratedData(Y=Y, B=B, U=U, Sigma=Sigma, sigmas=D_group, nu=nu_group,
                          mean_p=mean_p.reshape(-1, 1), mean_s=mean_s, mean_m=M[:, 0],
                          significant_motifs=significant, group_inds=group_inds, M=M, X=X,
-                         W_err=W_err, V_act=V_act)
+                         W_err=W_err, V_act=V_act, F=F, omega=omega, L_motif=L_motif)
 
 def generate_data(p: int, m: int, g: int, min_samples: int, max_samples: int,
                   sigma_rel=1e-1, non_signficant_motifs_fraction=0.25,
@@ -263,7 +303,9 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
                      motif_cor: float = 0, seed: int = 1,
                      n_covariates: int = 0, cov_effect: float = 1.0,
                      error_lowrank: int = 0, error_lowrank_scale: float = 1.0,
-                     activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0):
+                     activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0,
+                     families: int = 0, family_scale: float = 1.0,
+                     motif_lowrank: int = 0, motif_lowrank_scale: float = 1.0):
     random.seed(seed)
     if not 0 <= seed < 2 ** 32:
         raise InputError(f'--seed must lie between 0 and {2 ** 32 - 1}, but {seed} was given.')
@@ -277,7 +319,9 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
                             n_covariates=n_covariates, cov_effect=cov_effect,
                             error_lowrank=error_lowrank, error_lowrank_scale=error_lowrank_scale,
                             activity_lowrank=activity_lowrank,
-                            activity_lowrank_scale=activity_lowrank_scale)
+                            activity_lowrank_scale=activity_lowrank_scale,
+                            families=families, family_scale=family_scale,
+                            motif_lowrank=motif_lowrank, motif_lowrank_scale=motif_lowrank_scale)
     inds = res.group_inds
     Ys = res.Y; B = res.B; Us = res.U; std_g = res.sigmas; Sigma = res.Sigma
     insignificant_inds = ~res.significant_motifs
@@ -341,6 +385,22 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
         pd.DataFrame(res.V_act, index=sample_names,
                      columns=[f'actfac_{i+1}' for i in range(res.V_act.shape[1])]).to_csv(
             os.path.join(folder, 'V_act_gt.tsv'), sep='\t')
+
+    # Motif families (a valid file for fit --motif-families) and the ground truth of the
+    # covariance between motifs.
+    if res.F is not None:
+        fam_names = [f'family_{j + 1}' for j in range(res.F.shape[1])]
+        lines = [' '.join([fam] + [motifs[i] for i in np.where(res.F[:, j])[0]])
+                 for j, fam in enumerate(fam_names) if res.F[:, j].any()]
+        with open(os.path.join(folder, 'families.txt'), 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        pd.DataFrame({'omega': res.omega, 'motifs': res.F.sum(axis=0).astype(int)}, index=fam_names).to_csv(
+            os.path.join(folder, 'family_variances_gt.tsv'), sep='\t')
+    if res.L_motif is not None:
+        rows = [f'family_{j + 1}' for j in range(len(res.L_motif))] if res.F is not None else motifs
+        pd.DataFrame(res.L_motif, index=rows,
+                     columns=[f'factor_{i + 1}' for i in range(res.L_motif.shape[1])]).to_csv(
+            os.path.join(folder, 'L_motif_gt.tsv'), sep='\t')
 
     with open(os.path.join(folder, 'groups.json'), 'w') as f:
         json.dump(groups, f)

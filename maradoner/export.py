@@ -6,6 +6,7 @@ from .utils import read_init, openers, ProjectData, subs_zeros
 from .utils import InputError, warn, load_stage, apply_clustering
 from .fit import FOVResult, ActivitiesPrediction, FitResult, split_data, transform_data, motif_mean_matrix, align_fit_to_promoters
 from .fit import variance_dof, _error_lowrank_W, _activity_lowrank_V
+from .lowrank_sigma import motif_covariance
 from .grn import grn, safe_filenames, covariate_filenames, filtered_motifs, held_out_inds, load_fit, load_predict
 from .export_readme import write_readme, register_file
 from scipy.stats import norm, chi2, multivariate_normal, Covariance
@@ -423,7 +424,12 @@ def motif_mean_covariance(motif_mean, motif_names=None, covariate_names=None, ve
     var = np.clip(np.diag(cov_full), 0.0, None).reshape(c, m).T
     cov = cov_full[:m, :m]
     baseline_cov = getattr(motif_mean, 'baseline_cov', None)
-    if baseline_cov is None:
+    posterior_cov = getattr(motif_mean, 'posterior_cov', None)
+    if posterior_cov is not None:
+        # fit --motif-mean-prior: the error of the posterior means of the intercept column
+        cov = np.asarray(posterior_cov, dtype=np.float64)
+        var[:, 0] = np.clip(np.diag(cov), 0.0, None)
+    elif baseline_cov is None:
         warn('This fit was made by a MARADONER version that did not account for the uncertainty of '
              'the promoter baselines in the standard errors of the motif means: these standard '
              'errors are too small and the tests based on them are too optimistic. Re-run '
@@ -597,6 +603,14 @@ def export_results(project_name: str, output_folder: str,
         excluded_motif_group = int(excluded_motif_group)
     variance_names = [f'tau of {n}' for n in motif_names] + \
                      [f'nu of {g}' for i, g in enumerate(group_names) if i != excluded_motif_group]
+    n_nu = len(group_names) - (excluded_motif_group is not None)
+    # The variances of motif families ("fit --motif-families") follow nu in the information.
+    family_variance = getattr(fit.motif_variance, 'family_variance', None)
+    family_names = getattr(fit.motif_variance, 'family_names', None)
+    family_free = None
+    if family_variance is not None:
+        family_free = np.asarray(fit.motif_variance.family_free, dtype=bool)
+        variance_names += [f'omega of {n}' for n, free in zip(family_names, family_free) if free]
     motif_variance_fim = Information(fit.motif_variance.fim, slice(None, len(motif_names_filtered)), 
                                      filter_items=filtered, names=variance_names,
                                      label='variances of motif activities')
@@ -609,7 +623,8 @@ def export_results(project_name: str, output_folder: str,
         motif_variance_std = np.full(len(motif_variance_std), np.nan)
     
     motif_group_variance = fit.motif_variance.group
-    motif_group_variance_fim = Information(fit.motif_variance.fim, slice(len(motif_names), None),
+    motif_group_variance_fim = Information(fit.motif_variance.fim,
+                                           slice(len(motif_names), len(motif_names) + n_nu),
                                            names=variance_names, label='variances of motif activities')
     motif_group_variance_std = motif_group_variance_fim.covariance().diagonal() ** 0.5
     
@@ -719,6 +734,54 @@ def export_results(project_name: str, output_folder: str,
     elif os.path.isdir(term_folder) and not os.listdir(term_folder):
         os.rmdir(term_folder)
 
+    # Structure of the covariance between motifs (fit --motif-families / --motif-lowrank).
+    families = getattr(fit.motif_variance, 'families', None)
+    family_lowrank = getattr(fit.motif_variance, 'family_lowrank', None)
+    fname = os.path.join(folder, 'family_variances.tsv')
+    if family_variance is not None:
+        omega_std = np.full(len(family_free), np.nan)
+        if family_free.any():
+            family_fim = Information(fit.motif_variance.fim, slice(len(motif_names) + n_nu, None),
+                                     names=variance_names, label='variances of motif activities')
+            omega_std[family_free] = np.clip(family_fim.covariance().diagonal(), 0.0, None) ** 0.5
+        DF({'omega': np.asarray(family_variance), 'std': omega_std,
+            'motifs': np.asarray(families).sum(axis=0).astype(int)},
+           index=family_names).to_csv(fname, sep='\t', index_label='family')
+    elif os.path.isfile(fname):
+        os.remove(fname)
+    for fname, rows, use in (('family_factors.tsv', family_names, families is not None),
+                             ('motif_factors.tsv', motif_names, families is None)):
+        fname = os.path.join(folder, fname)
+        if family_lowrank is None or not use:
+            if os.path.isfile(fname):
+                os.remove(fname)
+            continue
+        factors = canonical_factors(family_lowrank)
+        DF(factors, index=rows, columns=[f'factor_{i + 1}' for i in range(factors.shape[1])]).to_csv(
+            fname, sep='\t', index_label='family' if families is not None else 'motif')
+    fname = os.path.join(folder, 'family_correlations.tsv')
+    if families is not None and family_lowrank is not None:
+        # The covariance between families diag(omega) + L L^T. A family of one motif has no
+        # family variance: the tau of its motif stands for it.
+        families = np.asarray(families)
+        Psi = np.diag(np.asarray(family_variance)) + family_lowrank @ family_lowrank.T
+        single = families.sum(axis=0) == 1
+        Psi[single, single] += (families[:, single] * fit.motif_variance.motif.reshape(-1, 1)).sum(axis=0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            d = np.diag(Psi) ** -0.5
+            DF(d.reshape(-1, 1) * Psi * d, index=family_names, columns=family_names).to_csv(fname, sep='\t')
+    elif os.path.isfile(fname):
+        os.remove(fname)
+    fname = os.path.join(folder, 'activity_correlations.tsv')
+    S_motif = motif_covariance(fit.motif_variance)
+    if np.ndim(S_motif) == 2:
+        S_motif = np.delete(np.delete(S_motif, filtered, axis=0), filtered, axis=1)
+        d = np.diag(S_motif) ** -0.5
+        DF(d.reshape(-1, 1) * S_motif * d, index=motif_names_filtered,
+           columns=motif_names_filtered).to_csv(fname, sep='\t')
+    elif os.path.isfile(fname):
+        os.remove(fname)
+
     # Factors of the low-rank corrections (fit --activity-lowrank / --error-lowrank): a
     # column per factor, in the rotation of canonical_factors.
     for fname, factors in (('factors.tsv', _activity_lowrank_V(fit.motif_variance)),
@@ -821,6 +884,18 @@ def export_results(project_name: str, output_folder: str,
         anova_ass = DF(np.array([anova_ass, pval, fdrs, wald, wald_pval, wald_fdrs]).T, index=motif_names_filtered,
                        columns=['stat', 'p-value', 'FDR', 'wald_stat', 'wald_p-value', 'wald_fdr'])
         anova_ass.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
+    # Likelihood-ratio tests of the variances of motif families, H0: omega_j = 0, with the
+    # same boundary mixture as above.
+    family_lrt = getattr(fit.motif_variance, 'family_lrt', None)
+    fname = os.path.join(folder, 'family_anova.tsv')
+    if family_variance is not None and family_lrt is not None and family_free.any():
+        lrt_f = np.clip(np.asarray(family_lrt, dtype=float)[family_free], 0.0, None)
+        pval_f = np.where(lrt_f > 0, 0.5 * chi2.sf(lrt_f, 1), 1.0)
+        fdr_f = multitest.multipletests(pval_f, alpha=0.05, method='fdr_bh')[1]
+        DF({'stat': lrt_f, 'p-value': pval_f, 'FDR': fdr_f},
+           index=np.asarray(family_names, dtype=object)[family_free]).to_csv(fname, sep='\t', index_label='family')
+    elif os.path.isfile(fname):
+        os.remove(fname)
     
     sign = motif_mean.flatten() / motif_mean_std
     neg = norm.cdf(sign)
@@ -902,7 +977,8 @@ def export_results(project_name: str, output_folder: str,
                  n_motifs=len(motif_names), n_filtered=len(filtered), anova=anova_kind,
                  zero_margin=zero_margin, weighted_zscore=weighted_zscore,
                  fov_grouped=bool(fov is not None and fov.grouped), counts_grouped=counts_grouped,
-                 fov_mara=False)
+                 fov_mara=False, motif_families=family_variance is not None,
+                 motif_structure=np.ndim(motif_covariance(fit.motif_variance)) == 2)
         
             
 def export_posterior_anova(project_name: str, filename: str,

@@ -46,6 +46,7 @@ remain usable as tests of "the activity is zero" (slightly conservative in simul
 """
 from .meta_optimizer import MetaOptimizer
 from .utils import read_init, logger_print
+from .drist import LoadingDRIST
 from .export_readme import write_readme
 from statsmodels.stats import multitest
 from functools import partial
@@ -256,6 +257,9 @@ def bayes_linreg(project_name: str, output_folder: str, alpha: float = 0.05,
         jax.config.update('jax_enable_x64', True)
 
     data = read_init(project_name)
+    if getattr(data, 'deferred_transforms', None):
+        # There is no held-out set here: the DRIST transform is fitted on all promoters.
+        data.B = LoadingDRIST(data.deferred_transforms).fit(data.B, data.Y).transform(data.B)
     Y = np.asarray(data.Y, dtype=float)
     B = np.asarray(data.B, dtype=float)
     p, m = B.shape

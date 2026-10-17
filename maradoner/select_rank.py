@@ -15,6 +15,7 @@ from .fit import transform_data, split_data, align_fit_to_promoters, covariate_p
 from .linalg import lowrank_decomposition
 from . import lowrank as _lowrank
 from . import lowrank_g as _lrg
+from .lowrank_sigma import motif_covariance
 
 
 def _sym_root(A: np.ndarray) -> np.ndarray:
@@ -111,6 +112,9 @@ def select_activity_rank(project: str, max_rank: int = 5, n_null: int = 5, seed:
         raise InputError('The factors of "--activity-lowrank" need variances of motif activities, but the '
                          f'project "{project}" was fitted with "--no-motif-variance". Re-run "maradoner fit" '
                          'without that option.')
+    if np.ndim(motif_covariance(fit.motif_variance)) == 2:
+        warn('The models of this command have independent motifs: the covariance between motifs of the '
+             'fit (--motif-families / --motif-lowrank) is not used in the choice of the number of factors.')
     n_full = len(data.promoter_names)
     test_inds = held_out_inds(fit)
     data, _ = split_data(data, test_inds)

@@ -156,21 +156,21 @@ Current gradient norm: 4.2854e-08
 ---------------
 Estimating promoter-wise means...
 Estimating variances of motif activities...
+[motif variances] 7 iterations, 8 evaluations of the deviance (converged=True)
 ---------------
 Current objective: -118060.6118
 Objective at a start: -118011.8096
-Objective after a warm-up: -118017.1822
-Objective after momentum optimization: -118017.1822
-Current gradient norm: 2.9425e-07
+Objective after Fisher scoring: -118060.6118
+Current gradient norm: 3.5116e-05
 ---------------
-Smallest eigenvalue of the Fisher information of the variances (scaled to a unit diagonal): 0.04520394801248728
+Smallest eigenvalue of the Fisher information of the variances (scaled to a unit diagonal): 0.04520382150075708
 Estimating motif means...
 Estimating sample means...
 
-✔️ Done!         time: 5.04 s.
+✔️ Done!         time: 3.64 s.
 </pre>
 
-<p>The 2 blocks between the dashed lines are the 2 numerical optimizations of the fit: the first one is for the error variances, the second one is for the variances of motif activities. The gradient norm at the end of each block is close to zero, hence both have converged. The eigenvalue of the Fisher information is positive, so every variance parameter is identified by the data and has a standard error. When it is not the case, {name} prints a warning with the probable cause.</p>
+<p>The 2 blocks between the dashed lines are the 2 numerical optimizations of the fit: the first one is for the error variances, the second one is for the variances of motif activities. The line above the second block counts the steps of its optimization and the evaluations of the deviance. The gradient norm at the end of each block is close to zero, hence both have converged. The eigenvalue of the Fisher information is positive, so every variance parameter is identified by the data and has a standard error. When it is not the case, {name} prints a warning with the probable cause.</p>
 
 <p>Next, we predict motif activities and compute the goodness of fit:</p>
 

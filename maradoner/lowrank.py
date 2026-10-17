@@ -26,6 +26,7 @@ from functools import partial
 from scipy.optimize import minimize
 from .linalg import check_design_rank
 from .utils import InputError, warn
+from .lowrank_sigma import motif_root, lmul, rmul, cov_mul
 
 
 # ----------------------------------------------------------------------------- core ---
@@ -216,8 +217,10 @@ def blup_solve_W(Y, B, Sigma, Gs, Theta):
     Y = B U + E, U ~ MN(., Sigma, .) with prior sample-covariance Gs (the s x s column
     covariance of the activity term in sample space) and error column-covariance Theta.
     Gs may be a length-s vector (diagonal, per-sample activities) or a full s x s matrix
-    (e.g. the block matrix Z^T diag(nu) Z for per-group shared activities).  Uses dense
-    s x s and m x m eigendecompositions only (s small, m = #motifs), never an n*p object.
+    (e.g. the block matrix Z^T diag(nu) Z for per-group shared activities). Sigma is either
+    the vector of motif variances or the full m x m covariance between motifs (see
+    lowrank_sigma.motif_covariance). Uses dense s x s and m x m eigendecompositions only
+    (s small, m = #motifs), never an n*p object.
     """
     Y = jnp.asarray(Y); B = jnp.asarray(B)
     Sigma = jnp.asarray(Sigma)
@@ -225,7 +228,10 @@ def blup_solve_W(Y, B, Sigma, Gs, Theta):
     Gs = jnp.diag(Gs) if Gs.ndim == 1 else Gs
     Theta = jnp.asarray(Theta)
     s = Y.shape[1]
-    sig = jnp.sqrt(Sigma)
+    if Sigma.ndim == 1:
+        sig = jnp.sqrt(Sigma)
+    else:
+        sig = jnp.asarray(motif_root(np.asarray(Sigma)))
 
     R = jnp.linalg.cholesky(Theta)                      # Theta = R R^T  (lower)
     Rinv = jnp.linalg.solve(R, jnp.eye(s))              # R^{-1}
@@ -236,8 +242,12 @@ def blup_solve_W(Y, B, Sigma, Gs, Theta):
     Lam_G = jnp.clip(Lam_G, 0.0, None)
     P = (Q_G * jnp.sqrt(Lam_G)) @ Q_G.T                  # symmetric sqrt of Gw
 
-    C = B * sig[None, :]                                 # B sqrt(Sigma)  (p,m)
-    BTB_w = sig[:, None] * (B.T @ B) * sig[None, :]      # sqrt(Sig) B^T B sqrt(Sig) (m,m)
+    if sig.ndim == 1:
+        C = B * sig[None, :]                             # B sqrt(Sigma)  (p,m)
+        BTB_w = sig[:, None] * (B.T @ B) * sig[None, :]  # sqrt(Sig) B^T B sqrt(Sig) (m,m)
+    else:
+        C = B @ sig                                      # with the symmetric root of S
+        BTB_w = sig @ (B.T @ B) @ sig
     BTB_w = 0.5 * (BTB_w + BTB_w.T)
     Lam_B, Q_B = jnp.linalg.eigh(BTB_w)
     Lam_B = jnp.clip(Lam_B, 0.0, None)
@@ -286,7 +296,7 @@ def blup_activities(Y, B, Sigma, group_inds, D_group, G_group, W,
 
     # --- per-sample activities: full prior sample-cov Gs_raw ---
     W_raw = np.asarray(blup_solve_W(Y, B, Sigma, Gs_raw, Theta))
-    U_raw = Sigma[:, None] * ((B.T @ W_raw) @ Gs_raw)
+    U_raw = cov_mul(Sigma, (B.T @ W_raw) @ Gs_raw)
 
     # --- per-group activities ---
     if has_V:
@@ -303,7 +313,7 @@ def blup_activities(Y, B, Sigma, group_inds, D_group, G_group, W,
         BTWg = B.T @ W_grp
         U_grp = np.zeros((B.shape[1], g))
         for i, inds in enumerate(group_inds):
-            U_grp[:, i] = Sigma * BTWg[:, inds].sum(axis=1) * nu_grp[i]
+            U_grp[:, i] = cov_mul(Sigma, BTWg[:, inds].sum(axis=1)) * nu_grp[i]
     return U_raw, U_grp
 
 
@@ -316,7 +326,8 @@ def blup_group_cov_factors(group_inds, D_group, G_group, W, Sigma, B, tau_mult=N
     The joint posterior precision over the g group activities is
         Prec = (Lam_nu^{-1} (x) Sigma^{-1}) + (Z Theta^{-1} Z^T) (x) (B^T B),
     Lam_nu = diag(nu * tau).  Simultaneously diagonalising the two Kronecker terms gives the
-    i-th m x m diagonal block in closed form (no mg x mg object)."""
+    i-th m x m diagonal block in closed form (no mg x mg object). Sigma may also be the full
+    m x m covariance between motifs; its symmetric root then takes the place of sqrt(Sigma)."""
     B = np.asarray(B); Sigma = np.asarray(Sigma)
     g = len(group_inds)
     s = int(max(np.max(inds) for inds in group_inds)) + 1
@@ -336,12 +347,12 @@ def blup_group_cov_factors(group_inds, D_group, G_group, W, Sigma, B, tau_mult=N
     Pg = 0.5 * (Pg + Pg.T)
     Lam_Pg, Q_g = np.linalg.eigh(Pg)
     Lam_Pg = np.clip(Lam_Pg, 0.0, None)
-    sig = np.sqrt(Sigma)
-    Am = sig[:, None] * (B.T @ B) * sig[None, :]             # (m,m)
+    sig = motif_root(Sigma)
+    Am = lmul(sig, rmul(B.T @ B, sig)) if sig.ndim == 2 else sig[:, None] * (B.T @ B) * sig[None, :]
     Am = 0.5 * (Am + Am.T)
     Lam_Am, Q_m = np.linalg.eigh(Am)
     Lam_Am = np.clip(Lam_Am, 0.0, None)
-    M_eig = sig[:, None] * Q_m                               # Sigma^{1/2} Q_m  (m,m)
+    M_eig = lmul(sig, Q_m)                                   # Sigma^{1/2} Q_m  (m,m)
     G_eig = sq_nu[:, None] * Q_g                             # Lam_nu^{1/2} Q_g (g,g)
     inv_denom = 1.0 / (1.0 + Lam_Pg[:, None] * Lam_Am[None, :])   # (g_eig, m_eig)
     W_weights = (G_eig ** 2) @ inv_denom                    # (g, m)

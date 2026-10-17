@@ -15,6 +15,8 @@ _DEFAULTS = dict(project=None, version=None, n_motifs=None, n_filtered=0, by='gr
                  counts_grouped=True, covariates=('intercept',), lp_intercepts=True,
                  # Set by the other commands that can write into a results folder.
                  fov_mara=False, grn_prior=0.5, grn_means=True, grn_fdr=0.05, grn_min_variance=1e-3,
+                 # A covariance between motifs (fit --motif-families / --motif-lowrank).
+                 motif_families=False, motif_structure=False,
                  # Files with user-chosen names: {relative path: [kind, details]}.
                  files=None)
 
@@ -45,6 +47,23 @@ def _anova_asymptotic(ctx):
     else:
         cols = ['`stat`, `p-value`, `FDR`: one-sided Wald test (no likelihood-ratio statistics in this fit).']
     return cols + ['`wald_stat`, `wald_p-value`, `wald_fdr`: one-sided Wald test, tau / std. Low power.']
+
+def _motif_variances(ctx):
+    if not ctx['motif_structure']:
+        return 'Variance of activity deviations per motif. The variance of motif m in group g is tau_m * nu_g.'
+    if ctx['motif_families']:
+        cov = ('the motifs of its families: the covariance between motifs is '
+               'S = diag(tau) + F (diag(omega) + L L^T) F^T (see `family_variances.tsv`)')
+    else:
+        cov = 'the other motifs: the covariance between motifs is S = diag(tau) + L L^T (see `motif_factors.tsv`)'
+    return ('Variance of activity deviations per motif that is not shared with ' + cov + '. The variance '
+            'of motif m in group g is S_mm * nu_g.')
+
+def _anova_question(ctx):
+    if ctx['motif_structure']:
+        return ('Does the activity of a motif vary beyond what it shares with its families or with the '
+                'other motifs? H0: tau = 0.')
+    return 'Does the activity of a motif vary across samples at all? H0: tau = 0.'
 
 def _zero(ctx):
     margin = ctx['zero_margin']
@@ -135,9 +154,26 @@ _FILES = [
      'Factors of `fit --error-lowrank`: the covariance of errors between samples is diag(sigma) + F F^T '
      'with F this table. The columns are orthogonal and sorted by their norms; the sign of a column '
      'is arbitrary.', None),
-    (r'params/motif_variances\.tsv', 'motifs',
-     'Variance of activity deviations per motif. The variance of motif m in group g is tau_m * nu_g.',
+    (r'params/motif_variances\.tsv', 'motifs', _motif_variances,
      ['`tau`: estimate.', '`std`: standard error.']),
+    (r'params/family_variances\.tsv', 'families',
+     'Variance shared by the motifs of each family (`fit --motif-families`): the covariance between '
+     'motifs is diag(tau) + F (diag(omega) + L L^T) F^T, with F the table of families.',
+     ['`omega`: estimate. Not estimated (zero) for a family of one motif: its variance is a part of '
+      'the tau of that motif.', '`std`: standard error, with the factors L held fixed.',
+      '`motifs`: number of motifs in the family.']),
+    (r'params/family_factors\.tsv', 'families x factors',
+     'Factors L of `fit --motif-lowrank`: the covariance between families is diag(omega) + L L^T. The '
+     'columns are orthogonal and sorted by their norms; the sign of a column is arbitrary.', None),
+    (r'params/motif_factors\.tsv', 'motifs x factors',
+     'Factors L of `fit --motif-lowrank` without families: the covariance between motifs is '
+     'diag(tau) + L L^T. The columns are orthogonal and sorted by their norms; the sign of a column '
+     'is arbitrary.', None),
+    (r'params/family_correlations\.tsv', 'families x families',
+     'Correlations between families implied by diag(omega) + L L^T. For a family of one motif the tau '
+     'of the motif is its variance.', None),
+    (r'params/activity_correlations\.tsv', 'motifs x motifs',
+     'Correlations between the activities of motifs implied by the fitted covariance between motifs.', None),
     (r'params/filtered_motif_variances\.tsv', 'motifs',
      'Motifs dropped by `predict` because their variance is negligible.', ['`tau`: estimate.']),
     (r'params/group_variances\.tsv', 'groups',
@@ -170,8 +206,13 @@ _FILES = [
                   '`pvalue_neg`, `fdr_neg`: one-sided test, H1: mean < 0.',
                   '`pvalue_pos`, `fdr_pos`: one-sided test, H1: mean > 0.',
                   _zero(ctx)]),
-    (r'tests/asymptotics_based/anova\.tsv', 'motifs',
-     'Does the activity of a motif vary across samples at all? H0: tau = 0.', _anova_asymptotic),
+    (r'tests/asymptotics_based/anova\.tsv', 'motifs', _anova_question, _anova_asymptotic),
+    (r'tests/asymptotics_based/family_anova\.tsv', 'families',
+     'Do the activities of the motifs of a family co-vary? H0: omega = 0. Under H0 the tau of the motifs of the '
+     'family take over omega, so that only the covariance within the family is tested; the other parameters '
+     'are held at their estimates.',
+     ['`stat`: likelihood-ratio statistic.', '`p-value`: from the 0.5 chi2(0) + 0.5 chi2(1) mixture.',
+      '`FDR`: Benjamini-Hochberg.']),
     (r'tests/prediction_based/anova\.tsv', 'motifs',
      'Does the activity of a motif differ between groups? Chi-squared test on the predicted group '
      'activities and their posterior covariances.',

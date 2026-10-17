@@ -73,6 +73,7 @@ The commands depend on each other: `fit` needs `create`, `predict` needs `fit`, 
 | `tests/asymptotics_based/sign.tsv` | Is the mean activity of a motif positive or negative? z statistic, one-sided p-values (`pvalue_pos`, `pvalue_neg`) and their FDR. |
 | `tests/asymptotics_based/anova.tsv` | Does the activity of a motif vary across samples at all (`tau > 0`)? `stat`, `p-value`, `FDR` are a likelihood-ratio test; the `wald_*` columns hold the older, much less powerful Wald test. |
 | `tests/prediction_based/anova.tsv` | Does the activity of a motif differ between groups? Based on the predicted deviations. |
+| `params/family_variances.tsv`, `params/family_factors.tsv`, `tests/asymptotics_based/family_anova.tsv` | With `fit --motif-families`: the variance `omega` shared by the motifs of each family with its standard error, the factors of the covariance between families (`fit --motif-lowrank`) and a likelihood-ratio test of `omega = 0`. Without families the factors go to `params/motif_factors.tsv`. `params/activity_correlations.tsv` holds the correlations between motif activities that the fitted covariance implies. |
 | `fov/` | Goodness-of-fit statistics, if `gof` was run. |
 
 Motifs appear in the activity and test tables only if `predict` kept them (see `predict --filter-motifs`).
@@ -137,6 +138,7 @@ Motifs appear in the activity and test tables only if `predict` kept them (see `
 *   `create --covariates covariates.tsv`: mean motif activities depend on sample covariates.
 *   `create --covariates covariates.tsv --formula "age * sex + batch"`: a formula chooses columns of the table and adds their interactions (`a:b`; `a * b` stands for `a + b + a:b`).
 *   `fit --error-lowrank k` / `fit --activity-lowrank k`: low-rank corrections for correlated noise / correlated activities across samples. `export` writes the factors to `params/error_factors.tsv` / `params/factors.tsv`; the latter is a valid table for `create --covariates`.
+*   `fit --motif-families families.txt` / `fit --motif-lowrank k`: correlated activities of motifs. The covariance between motifs turns from the diagonal `Sigma` into `Sigma + F (Omega + L L^T) F^T`: `F` tells which motifs belong to which family, the diagonal `Omega` holds a variance per family, and the optional `L` of `k` columns is a covariance between families. The file of families is a JSON dictionary `{"family": ["motif", ...]}` or a text file with a family per line (`family motif motif ...`). Without families each motif forms a family of one, and the covariance is `Sigma + L L^T`.
 *   `fit --clustering KMeans|NMF --num-clusters k`: replace motifs by clusters of motifs with similar loadings (useful when there are more motifs than the data can tell apart); all later commands then report clusters.
 *   `fit --no-motif-variance`: one common variance for all motifs, closer to the classical (IS)MARA.
 *   `fit --promoter-variance` *(experimental)*: heuristic reweighting of promoters by their noise level.

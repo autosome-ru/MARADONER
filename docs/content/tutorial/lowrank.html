@@ -55,15 +55,14 @@ Here, $V$ has a row per sample and a column per factor. The rank of $V V^T$ is $
 > maradoner fit Hidden --activity-lowrank 1
 </pre>
 
-<p>Here, the value of the option is the number of factors. The output of <code>fit</code> has 3 new lines among the usual ones:</p>
+<p>Here, the value of the option is the number of factors. Among the usual lines, the output of <code>fit</code> has these:</p>
 
 <pre>
 [activity-lowrank k=1] Sigma/G REML deviance -284531.204 -> -297730.330 (gain +13199.127)
   activity covariance: diagonal G + rank-1 update (REML deviance -297730.33).
-  note: the low-rank corrections (--error-lowrank / --activity-lowrank) are not propagated into the motif means; these and their standard errors are computed under the model with diagonal covariances.
 </pre>
 
-<p>The first line compares the model with the factor to the model without it. The lower the deviance the better, and the gain is the improvement brought by the factor. The last line is a limitation: the mean activities and their standard errors are estimated as if there were no factor.</p>
+<p>The first line compares the model with the factor to the model without it. The lower the deviance the better, and the gain is the improvement brought by the factor. The mean activities and their standard errors are estimated with the factor in the model.</p>
 
 <p>The factors are written by <code>export</code>:</p>
 

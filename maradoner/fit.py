@@ -6,7 +6,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import NMF
 from dataclasses import dataclass, replace
 from functools import partial
-from .meta_optimizer import MetaOptimizer, STATIONARITY_TOL
+from .meta_optimizer import MetaOptimizer, OptimizerResult, STATIONARITY_TOL
 from sklearn.model_selection import RepeatedKFold
 from collections import defaultdict
 from enum import Enum
@@ -19,8 +19,11 @@ from .linalg import lowrank_decomposition, ones_nullspace, ones_nullspace_transf
                     ones_nullspace_transform_transpose, null_space_transform, LowrankDecomposition, \
                     check_design_rank
 from .loading_context import estimate_context, LoadingContext, LoadingMultipliers, estimate_multipliers
-from .drist import DRIST
+from .drist import DRIST, LoadingDRIST
 from . import lowrank as _lowrank
+from . import lowrank_sigma as _ls
+from . import mean_prior as _mean_prior
+from .lowrank_sigma import motif_covariance, motif_root, lmul, rmul
 
 
 def _error_lowrank_W(error_variance):
@@ -40,6 +43,24 @@ def _activity_lowrank_V(motif_variance):
         return None
     V = np.asarray(V)
     return V if V.ndim == 2 and V.shape[1] > 0 else None
+
+
+def _decorrelate_samples(D_n, nu_n, W=None, V=None):
+    """Transform of the samples for Theta = diag(D_n) + W W^T and G = diag(nu_n) + V V^T.
+    Returns (T, Ghat, T_back): T = Theta^{-1/2} R with R the eigenvectors of
+    Theta^{-1/2} G Theta^{-1/2} and Ghat their eigenvalues, so that T^T Theta T = I and
+    T^T G T = diag(Ghat); T_back = Theta^{1/2} R maps the parameters of the columns of
+    Y T back to the samples."""
+    Theta = np.diag(np.asarray(D_n, dtype=np.float64))
+    if W is not None:
+        Theta = Theta + W @ W.T
+    G = np.diag(np.asarray(nu_n, dtype=np.float64))
+    if V is not None:
+        G = G + V @ V.T
+    lt, Qt = np.linalg.eigh(Theta)
+    Theta_isqrt = (Qt / np.sqrt(lt)) @ Qt.T
+    Ghat, R = np.linalg.eigh(Theta_isqrt @ G @ Theta_isqrt)
+    return Theta_isqrt @ R, np.clip(Ghat, 0.0, None), (Qt * np.sqrt(lt)) @ Qt.T @ R
 
 
 def error_covariance(error_variance, group_inds_inv) -> np.ndarray:
@@ -96,6 +117,9 @@ ZERO_REL_VALUE = 1e-20
 # A variance at zero is released and the fit restarted if the expected decrease of the
 # objective (-2 logL) exceeds this.
 KKT_GAIN_TOL = 1e-3
+# The optimiser of the variances of motif activities: 'fisher' for Fisher scoring and L-BFGS-B in
+# the variances (_optimize_motif_variances), 'meta' for the MetaOptimizer alone.
+MOTIF_VARIANCE_OPTIMIZER = 'fisher'
 
 
 def covariate_projection(D_n: jnp.ndarray, X: jnp.ndarray, names=None) -> jnp.ndarray:
@@ -244,6 +268,19 @@ class MotifVarianceEstimates:
     # other variance parameters held at their estimates. None when not computed (old
     # pickles, --no-motif-variance).
     lrt: np.ndarray = None
+    # Optional structure of the covariance of activities between motifs (fit --motif-families /
+    # --motif-lowrank): S = diag(motif) + F (diag(family_variance) + family_lowrank
+    # family_lowrank^T) F^T with F = families (m, f) of zeros and ones, or the identity if
+    # families is None (then family_variance is None too). Only the family variances marked
+    # in family_free are estimated (a family of one motif has none: it is a part of tau), and
+    # they follow nu in fim. family_lrt holds the likelihood-ratio statistics of
+    # H0: family_variance_j = 0. All None: the motifs are independent, S = diag(motif).
+    families: np.ndarray = None
+    family_names: list = None
+    family_variance: np.ndarray = None
+    family_lowrank: np.ndarray = None
+    family_free: np.ndarray = None
+    family_lrt: np.ndarray = None
 
 @dataclass(frozen=True)
 class MotifMeanEstimates:
@@ -257,6 +294,15 @@ class MotifMeanEstimates:
     # variance of the promoter baselines, taken as i.i.d. random (see estimate_motif_mean
     # for omega^2 and for the form it takes with --promoter-variance).
     baseline_cov: np.ndarray = None
+    # Prior on the intercept column of M (fit --motif-mean-prior, see mean_prior.py): its kind,
+    # the REML estimates of its variances and of the common mean mu_0, the covariance of the
+    # prediction error of the posterior means (m, m; it replaces the intercept block of
+    # pinv(fim) + baseline_cov) and the GLS estimate before the shrinkage. None without a prior.
+    prior: str = None
+    prior_variances: dict = None
+    prior_mean: float = None
+    posterior_cov: np.ndarray = None
+    gls_intercept: np.ndarray = None
 
 @dataclass(frozen=True)
 class PromoterMeanEstimates:
@@ -548,7 +594,8 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
         group_loadings[indices, i] = 1
     group_loadings = jnp.array(group_loadings)
 
-    FIM_tau = _fim_quadratic_block(jnp.asarray(BTB), BTCQ, D_B, D_A)
+    # The block of tau is replaced by the identity with drop_sigma.
+    FIM_tau = None if drop_sigma else _fim_quadratic_block(jnp.asarray(BTB), BTCQ, D_B, D_A)
     FIM_nu = _fim_quadratic_block(jnp.asarray(D_product_inv), PGQ, D_A, D_B)
     FIM_nu = group_loadings.T @ FIM_nu @ group_loadings
     FIM_tau_nu = BTCQ ** 2 @ Mi ** 2 @ (PGQ ** 2).T / 2
@@ -558,7 +605,7 @@ def loglik_motifs_fim(x: jnp.ndarray, BTB: jnp.ndarray,
         FIM_nu = jnp.delete(jnp.delete(FIM_nu, G_fix_ind, axis=0), G_fix_ind, axis=1)
         FIM_tau_nu = jnp.delete(FIM_tau_nu, G_fix_ind, axis=1)
     if drop_sigma:
-        FIM_tau = jnp.identity(FIM_tau.shape[0])
+        FIM_tau = jnp.identity(len(BTB))
         FIM_tau_nu = jnp.zeros_like(FIM_tau_nu)
     FIM = jnp.block([[FIM_tau, FIM_tau_nu],
                      [FIM_tau_nu.T, FIM_nu]])
@@ -976,15 +1023,54 @@ def _fim_is_singular(fim, verbose=False) -> tuple:
                  f'a unit diagonal): {eig.min()}', verbose)
     return bool(eig.min() <= tol), int(np.sum(eig <= tol))
 
+def _optimize_motif_variances(problem, opt: MetaOptimizer, x0: np.ndarray, j: int, fix: float,
+                              verbose: bool = False) -> OptimizerResult:
+    """Variances of motif activities x = (tau, nu without nu[j]) by Fisher scoring and L-BFGS-B
+    in the variances themselves (lowrank_sigma.estimate_motif_covariance without families).
+    If they stop short of an optimum, the MetaOptimizer opt goes on from their result."""
+    m = problem.m
+    x0 = np.asarray(x0, dtype=np.float64)
+    if MOTIF_VARIANCE_OPTIMIZER == 'meta':
+        return opt.optimize(x0)
+    try:
+        est = _ls.estimate_motif_covariance(problem, 0, x0[:m], np.insert(x0[m:], j, fix), None, j, fix,
+                                            verbose=verbose, silent=True, stage=opt.name,
+                                            tag='motif variances')
+    except RuntimeError as e:
+        logger_print(f'[motif variances] {e}', verbose)
+        est = None
+    if est is not None and est['converged']:
+        x = np.append(est['tau'], np.delete(est['nu'], j))
+        stages = None if est['dev_fisher'] is None else (('Fisher scoring', est['dev_fisher']),)
+        return OptimizerResult(est['dev0'], est['dev0'], est['dev0'], est['dev'], est['grad_norm'], x,
+                               success=True, message=est['message'], stationarity=est['stationarity'],
+                               stages=stages)
+    logger_print('[motif variances] no optimum reached, the general optimiser goes on.', verbose)
+    start = None if est is None else est['dev0']
+    if est is not None:
+        # The MetaOptimizer works with square roots, and zero is a stationary point for them.
+        x0 = np.append(est['tau'], np.delete(est['nu'], j))
+        x0[:m] = np.maximum(x0[:m], START_REL_FLOOR * np.max(x0[:m], initial=0.0))
+        x0[m:] = np.maximum(x0[m:], START_REL_FLOOR * max(np.max(x0[m:], initial=0.0), fix))
+    res = opt.optimize(x0)
+    if start is not None:
+        res.start_loglik = start
+    return res
+
+
 def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecomposition,
                              error_variance: ErrorVarianceEstimates,
                              original_data: TransformedData = None,
                              activity_lowrank: int = 0,
                              verbose=False, motif_names=None,
-                             group_names=None) -> MotifVarianceEstimates:
+                             group_names=None, families: np.ndarray = None,
+                             family_names: list = None,
+                             motif_lowrank: int = 0) -> MotifVarianceEstimates:
     """REML estimates of the variances of motif activities tau (`motif`) and of their
     group-wise multipliers nu (`group`). motif_names / group_names are used only to
-    name motifs and groups in warnings."""
+    name motifs and groups in warnings. With families (m x f, zeros and ones), motif_lowrank
+    or both, the covariance between motifs gets the structure of lowrank_sigma, estimated
+    after (and starting from) the model with independent motifs."""
     multiplier = NU_REFERENCE_FRACTION
     D = np.asarray(error_variance.variance, dtype=np.float64)
     j = int(np.argsort(D)[len(D) // 2])
@@ -1033,15 +1119,29 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                         value_and_grad=value_and_grad, polish=True, warn_convergence=False,
                         scaling_set=[slice(0, m), slice(m, None)],
                         name='variances of motif activities')
-    res = opt.optimize(x0)
-    fim = partial(loglik_motifs_fim, BTB=BTB, D_product_inv=D_product_inv,
-                  group_inds_inv=data.group_inds_inv, group_inds=data.group_inds,
-                  G_fix_ind=j, G_fix_val=fix)
-    # The optimiser works with square roots of the variances, where zero is a stationary
-    # point whatever the gradient: release the variances stuck there and start again.
+    # The same deviance, its gradient and the Fisher information through the eigendecomposition
+    # of K = C^T diag(tau) C (B^T B = C C^T); see lowrank_sigma.
+    problem = _ls.MotifCovarianceProblem(Z, B_decomposition, D_product_inv, data.group_inds_inv,
+                                         data.group_inds)
+    res = _optimize_motif_variances(problem, opt, x0, j, fix, verbose)
+    s = len(data.group_inds_inv)
+
+    def unpack(x):
+        x = np.asarray(x, dtype=np.float64)
+        return x[:m], np.zeros(m), np.zeros((m, 0)), np.insert(x[m:], j, fix), np.zeros((s, 0))
+
+    def fim(x):
+        return problem.fim(*unpack(x), fix_ind=j)
+
+    def gradient(x):
+        g_tau, _, _, g_nu, _ = problem.value_and_grad(*unpack(x))[1]
+        return np.append(g_tau, np.delete(g_nu, j))
+    # A variance at zero, although the likelihood increases away from it, is released and the
+    # optimisation starts again.
     for _ in range(3):
+        grad_x = gradient(res.x)
         f = fim(res.x)
-        violations = _kkt_violations(res.x, np.asarray(value_and_grad(res.x)[1]), f, m, fix)
+        violations = _kkt_violations(res.x, grad_x, f, m, fix)
         if not len(violations):
             break
         logger_print(f'  {len(violations)} variance(s) stopped at zero although the likelihood '
@@ -1050,7 +1150,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
         x = res.x.copy()
         x[violations] = START_REL_FLOOR * np.where(violations < m, np.max(x[:m]),
                                                    max(np.max(x[m:], initial=0.0), fix))
-        res_restart = opt.optimize(x)
+        res_restart = _optimize_motif_variances(problem, opt, x, j, fix, verbose)
         if not res_restart.fun < res.fun:
             break
         res_restart.start_loglik = res.start_loglik
@@ -1139,12 +1239,32 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
             # The information and the likelihood ratios below refer to the refined model,
             # with the low-rank factor V held fixed.
             V_act = np.asarray(V_act)
-            fim = loglik_motifs_fim(np.append(Sigma, np.delete(G, j)), BTB=BTB,
-                                    D_product_inv=D_product_inv,
-                                    group_inds_inv=data.group_inds_inv,
-                                    group_inds=data.group_inds, G_fix_ind=j, G_fix_val=fix,
-                                    G_lowrank=V_act)
+            fim = problem.fim(np.asarray(Sigma), np.zeros(m), np.zeros((m, 0)), np.asarray(G), V_act,
+                              fix_ind=j)
             G_root = np.append(np.diag(G[data.group_inds_inv] ** 0.5), V_act, axis=1)
+    structure = None
+    if families is not None or (motif_lowrank and motif_lowrank > 0):
+        # The covariance between motifs S = diag(tau) + F (diag(omega) + L L^T) F^T, refined
+        # jointly with nu (and V) from the model with independent motifs.
+        problem = _ls.MotifCovarianceProblem(Z, B_decomposition, D_product_inv, data.group_inds_inv,
+                                             data.group_inds, F=families)
+        V_start = None if V_act is None or not np.asarray(V_act).shape[1] else np.asarray(V_act)
+        est = _ls.estimate_motif_covariance(problem, int(motif_lowrank or 0), Sigma0=Sigma, nu0=G,
+                                            V0=V_start, fix_ind=j, fix_val=fix, verbose=verbose)
+        if verbose:
+            print(f'[motif covariance] Sigma/G REML deviance {loglik:.3f} -> {est["dev"]:.3f} '
+                  f'(gain {loglik - est["dev"]:+.3f})')
+        Sigma, G, loglik = est['tau'], est['nu'], est['dev']
+        V_fit = est['V']
+        V_act = V_fit if V_fit.shape[1] else None
+        fim = problem.fim(Sigma, est['omega'], est['L'], G, V_fit, fix_ind=j)
+        lrt, family_lrt = problem.lrt(Sigma, est['omega'], est['L'], G, V_fit)
+        structure = dict(families=None if families is None else np.asarray(families, dtype=np.float64),
+                         family_names=family_names,
+                         family_variance=None if families is None else est['omega'],
+                         family_lowrank=est['L'] if est['L'].shape[1] else None,
+                         family_free=None if families is None else problem.omega_free,
+                         family_lrt=family_lrt)
     singular, n_bad = _fim_is_singular(fim, verbose=verbose)
     if singular:
         # The information matrix is rank deficient. Spell out why rather than leaving the
@@ -1157,6 +1277,10 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
         elif len(B_decomposition.S) < m:
             cause = (f'Cause: the loading matrix has rank {len(B_decomposition.S)} for {m} '
                      'motifs, so the variances of collinear motifs cannot be told apart.')
+        elif structure is not None and structure['family_free'] is not None:
+            cause = ('Cause: the motif families may overlap so that the variance of a family is a '
+                     'combination of the variances of other families (e.g. families {a, b, c}, '
+                     '{a, b}, {a, c}, {b, c}), or the motifs of a family may have collinear loadings.')
         else:
             cause = ('The degrees-of-freedom budget looks adequate, so this is more likely a '
                      'numerical or convergence issue.')
@@ -1164,7 +1288,8 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
              f'{len(np.asarray(fim))} directions are not identified. {cause} Treat the '
              'standard errors of the variance parameters and the tests based on them with '
              'caution.')
-    lrt = loglik_motifs_lrt(Sigma, G_root, Z, BTB, D_product_inv)
+    if structure is None:
+        lrt = loglik_motifs_lrt(Sigma, G_root, Z, BTB, D_product_inv)
     lrt[Sigma <= ZERO_REL_TOL * np.max(Sigma)] = 0.0
     Sigma = np.maximum(Sigma, ZERO_REL_VALUE * np.max(Sigma))
     G = np.maximum(G, ZERO_REL_VALUE * fix)
@@ -1173,7 +1298,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                                   loglik=loglik,
                                   lowrank=(np.asarray(V_act) if V_act is not None
                                            and np.asarray(V_act).shape[1] else None),
-                                  lrt=lrt)
+                                  lrt=lrt, **(structure or dict()))
 
 
 def estimate_motif_variance_identity(data: TransformedData, B_decomposition: LowrankDecomposition,
@@ -1237,7 +1362,11 @@ def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposi
 
     Solves vec(M) = (W^T S^{-1} W)^{-1} W^T S^{-1} vec(Ytilde) with W = Xt^T (x) B and
     S = Ghat (x) (B Sigma B^T) + I, exploiting the eigenstructure of sqrt(Sigma) B^T B
-    sqrt(Sigma) so that no n*p sized objects are ever formed. The stored Fisher
+    sqrt(Sigma) so that no n*p sized objects are ever formed. With the low-rank corrections
+    Theta = diag(D) + W W^T (--error-lowrank) and G = diag(nu) + V V^T (--activity-lowrank),
+    the samples are decorrelated first, and Ghat holds the eigenvalues of
+    Theta^{-1/2} G Theta^{-1/2}. Sigma may be the full covariance between motifs
+    (--motif-families, --motif-lowrank). The stored Fisher
     information `fim` is mc x mc with column-major vec(M) ordering, so the intercept
     (mu_m) sub-block is fim[:m, :m].
 
@@ -1254,10 +1383,8 @@ def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposi
     omega^2 tr((I - P_Bc) N A^2 N^T) + (p - 1 - rank B_c) / (1^T Theta^-1 1); the last
     term is the sampling noise of the row means, already accounted for by pinv(fim).
     """
-    if _error_lowrank_W(error_variance) is not None or _activity_lowrank_V(motif_variance) is not None:
-        logger_print('  note: the low-rank corrections (--error-lowrank / --activity-lowrank) are '
-                     'not propagated into the motif means; these and their standard errors '
-                     'are computed under the model with diagonal covariances.', verbose)
+    W_err = _error_lowrank_W(error_variance)
+    V_act = _activity_lowrank_V(motif_variance)
     D = jnp.array(error_variance.variance)
     Sigma = jnp.array(motif_variance.motif)
     G = jnp.array(motif_variance.group)
@@ -1265,13 +1392,27 @@ def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposi
     X = jnp.asarray(data.X, dtype=float)            # (c, n)
     c = X.shape[0]
     m = len(Sigma)
+    # The covariance between motifs: diag(Sigma), or a full matrix (fit --motif-families /
+    # --motif-lowrank). The symmetric root of the matrix takes the place of sqrt(Sigma) below.
+    S_motif = motif_covariance(motif_variance)
 
-    d = (D ** 0.5).at[data.group_inds_inv].get()    # (n,) sqrt(D)
-    Ghat = (G / D).at[data.group_inds_inv].get()    # (n,) nu/D per sample
+    if W_err is None and V_act is None:
+        d = (D ** 0.5).at[data.group_inds_inv].get()    # (n,) sqrt(D)
+        Ghat = (G / D).at[data.group_inds_inv].get()    # (n,) nu/D per sample
+        T = None
+    else:
+        # The columns of Ytilde T are independent with covariances Ghat_j B Sigma B^T + I.
+        gii = np.asarray(data.group_inds_inv)
+        T, Ghat, _ = _decorrelate_samples(np.asarray(D)[gii], np.asarray(G)[gii], W_err, V_act)
+        T, Ghat = jnp.asarray(T), jnp.asarray(Ghat)   # (n, n), (n,)
 
     BTB = B_decomposition.V.T * B_decomposition.S ** 2 @ B_decomposition.V
-    sig = jnp.sqrt(Sigma)
-    A = sig.reshape(-1, 1) * BTB                     # sqrt(Sigma) B^T B  (m, m)
+    if np.ndim(S_motif) == 1:
+        sig = jnp.sqrt(Sigma)
+        A = sig.reshape(-1, 1) * BTB                 # sqrt(Sigma) B^T B  (m, m)
+    else:
+        sig = jnp.asarray(motif_root(S_motif))
+        A = sig @ BTB
 
     weights = error_variance.promotor ** -0.5
     if np.std(weights) > 1e-12:
@@ -1281,13 +1422,20 @@ def estimate_motif_mean(data: TransformedData, B_decomposition: LowrankDecomposi
     else:
         # Standard case: Helmert transform.
         mu_p_transformed = ones_nullspace_transform(mu_p.reshape(-1, 1))
-    Y_tilde = (data.Y - mu_p_transformed) / d       # (p-1, n)  =  (Yhat - mu_p) sqrt(D^-1)
-    Xt = X / d                                       # (c, n)    =  X sqrt(D^-1)
+    if T is None:
+        Y_tilde = (data.Y - mu_p_transformed) / d       # (p-1, n)  =  (Yhat - mu_p) sqrt(D^-1)
+        Xt = X / d                                       # (c, n)    =  X sqrt(D^-1)
+    else:
+        Y_tilde = (data.Y - mu_p_transformed) @ T        # (p-1, n)
+        Xt = X @ T                                       # (c, n)
 
-    D_B, Q_B = jnp.linalg.eigh(sig.reshape(-1, 1) * BTB * sig)   # eig of sqrt(Sig) B^TB sqrt(Sig)
+    if sig.ndim == 1:
+        D_B, Q_B = jnp.linalg.eigh(sig.reshape(-1, 1) * BTB * sig)   # eig of sqrt(Sig) B^TB sqrt(Sig)
+    else:
+        D_B, Q_B = jnp.linalg.eigh(A @ sig)
     At_QB = A.T @ Q_B                                # (m, m), columns a_k
     BTY = data.B.T @ Y_tilde                         # (m, n)
-    QY = Q_B.T * sig @ BTY                           # Q_B^T sqrt(Sig) B^T Ytilde  (m, n)
+    QY = (Q_B.T * sig if sig.ndim == 1 else Q_B.T @ sig) @ BTY   # Q_B^T sqrt(Sig) B^T Ytilde  (m, n)
 
     XDX = Xt @ Xt.T                                  # (c, c) = X D^{-1} X^T
     w_jk = Ghat.reshape(-1, 1) / (1.0 + Ghat.reshape(-1, 1) * D_B.reshape(1, -1))   # (n, m)
@@ -1513,23 +1661,43 @@ def estimate_sample_mean(data: TransformedData, error_variance: ErrorVarianceEst
     G = G.at[data.group_inds_inv].get()
     D = D.at[data.group_inds_inv].get()
     a_vec = (error_variance.promotor ** (-0.5))
+    W_err = _error_lowrank_W(error_variance)
+    V_act = _activity_lowrank_V(motif_variance)
+    T_back = None
+    if W_err is not None or V_act is not None:
+        # The sample means of the columns of Y T, independent with unit error variances and
+        # the activity multipliers Ghat, are estimated, then mapped back to the samples.
+        T, G, T_back = _decorrelate_samples(D, G, W_err, V_act)
+        Y = Y @ T
+        D = np.ones(len(G))
 
     p, m = B.shape
-    sqrt_Sigma = np.sqrt(Sigma).reshape(1, -1)
+    S_motif = motif_covariance(motif_variance)
+    if np.ndim(S_motif) == 1:
+        sqrt_Sigma = np.sqrt(Sigma).reshape(1, -1)
+        sqrt_Sigma = np.asarray(sqrt_Sigma, dtype=np.float64).ravel()
+    else:
+        # the symmetric root of the full covariance between motifs
+        sqrt_Sigma = motif_root(S_motif)
     # With C = B sqrt(Sigma) = U S V^T, the sums over the left singular vectors u_k that
     # the estimator needs are sums of (S_k a^T u_k) (S_k u_k^T y) = (v_k^T C^T a) (v_k^T C^T y),
     # so the m x m eigendecomposition of C^T C replaces the SVD of the p x m matrix.
-    sqrt_Sigma = np.asarray(sqrt_Sigma, dtype=np.float64).ravel()
-    S_sq, V = np.linalg.eigh(sqrt_Sigma.reshape(-1, 1) * np.asarray(B.T @ B, dtype=np.float64) * sqrt_Sigma)
+    if sqrt_Sigma.ndim == 1:
+        S_sq, V = np.linalg.eigh(sqrt_Sigma.reshape(-1, 1) * np.asarray(B.T @ B, dtype=np.float64) * sqrt_Sigma)
+    else:
+        S_sq, V = np.linalg.eigh(sqrt_Sigma @ np.asarray(B.T @ B, dtype=np.float64) @ sqrt_Sigma)
     S_sq = np.clip(S_sq, 0.0, None)
     G = np.asarray(G, dtype=np.float64)
     D = np.asarray(D, dtype=np.float64)
 
-    a = V.T @ (sqrt_Sigma * np.asarray(B.T @ a_vec, dtype=np.float64))
+    if sqrt_Sigma.ndim == 1:
+        a = V.T @ (sqrt_Sigma * np.asarray(B.T @ a_vec, dtype=np.float64))
+    else:
+        a = V.T @ (sqrt_Sigma @ np.asarray(B.T @ a_vec, dtype=np.float64))
     sum_Y = np.asarray(a_vec.T @ Y, dtype=np.float64)
     a_sq_norm = np.sum(a_vec ** 2)
 
-    VT_Y = V.T @ (sqrt_Sigma.reshape(-1, 1) * np.asarray(B.T @ Y, dtype=np.float64))
+    VT_Y = V.T @ lmul(sqrt_Sigma, np.asarray(B.T @ Y, dtype=np.float64))
     a_sq = a ** 2
 
     a_VT_Y = a[:, np.newaxis] * VT_Y
@@ -1541,6 +1709,8 @@ def estimate_sample_mean(data: TransformedData, error_variance: ErrorVarianceEst
     denominator = a_sq_norm / D - np.sum(a_sq[:, np.newaxis] * shrink, axis=0)
 
     mu = numerator / denominator
+    if T_back is not None:
+        mu = T_back @ mu
 
     return SampleMeanEstimates(np.array(mu).reshape(-1, 1))
 
@@ -1616,7 +1786,8 @@ def _cv_tau_losses(B: np.ndarray, Y: np.ndarray, Sigma: np.ndarray, D: np.ndarra
     multiplier in `taus` (columns). The training Gram matrix and B^T Y of a fold are the full
     ones minus the test rows' contribution, a fold is decomposed once, and all groups and
     samples are handled with matrix products; the error on the held-out rows is evaluated
-    from sufficient statistics: |y - B_test u|^2 = y^T y - 2 u^T B_test^T y + u^T (B_test^T B_test) u."""
+    from sufficient statistics: |y - B_test u|^2 = y^T y - 2 u^T B_test^T y + u^T (B_test^T B_test) u.
+    Sigma is the vector of motif variances or the full covariance between motifs."""
     m = B.shape[1]
     s = Y.shape[1]
     g = len(group_inds)
@@ -1624,7 +1795,12 @@ def _cv_tau_losses(B: np.ndarray, Y: np.ndarray, Sigma: np.ndarray, D: np.ndarra
     for i, inds in enumerate(group_inds):
         gid[inds] = i
     sizes = np.array([len(inds) for inds in group_inds], dtype=float)
-    sq = np.ones(m) if pinv else np.sqrt(np.asarray(Sigma, dtype=float))
+    if pinv:
+        sq = np.ones(m)
+    elif np.ndim(Sigma) == 1:
+        sq = np.sqrt(np.asarray(Sigma, dtype=float))
+    else:
+        sq = motif_root(Sigma)
     with np.errstate(divide='ignore'):
         ratio = (np.asarray(D, dtype=float) / np.asarray(G, dtype=float))[gid]
     BT_B = B.T @ B
@@ -1638,13 +1814,16 @@ def _cv_tau_losses(B: np.ndarray, Y: np.ndarray, Sigma: np.ndarray, D: np.ndarra
         G_test = B_test.T @ B_test
         BT_Y_test = B_test.T @ Y_test
         yy = np.einsum('ij,ij->j', Y_test, Y_test)
-        S, Q = jnp.linalg.eigh(sq.reshape(-1, 1) * (BT_B - G_test) * sq.reshape(1, -1))
+        if sq.ndim == 1:
+            S, Q = jnp.linalg.eigh(sq.reshape(-1, 1) * (BT_B - G_test) * sq.reshape(1, -1))
+        else:
+            S, Q = jnp.linalg.eigh(sq @ (BT_B - G_test) @ sq)
         S = np.asarray(S, dtype=float)
         Q = np.asarray(Q, dtype=float)
-        C = Q.T @ (sq.reshape(-1, 1) * (BT_Y - BT_Y_test))
+        C = Q.T @ lmul(sq, BT_Y - BT_Y_test)
         for k, tau in enumerate(taus):
             reg = np.full(s, max(tau - 1.0, 0.0)) if pinv else ratio / tau
-            U = sq.reshape(-1, 1) * (Q @ (_inv_spectrum(S.reshape(-1, 1) + reg.reshape(1, -1), pinv) * C))
+            U = lmul(sq, Q @ (_inv_spectrum(S.reshape(-1, 1) + reg.reshape(1, -1), pinv) * C))
             sse = yy - 2 * np.einsum('ij,ij->j', U, BT_Y_test) + np.einsum('ij,ij->j', U, G_test @ U)
             losses[:, k] += np.bincount(gid, weights=sse, minlength=g) / (len(test_inds) * sizes)
         n_folds += 1
@@ -1661,7 +1840,8 @@ def _group_mean_cov_factors(group_inds: list, s: int, D_group, G_group, W, V, Si
 
     Whitening both sides turns the posterior precision of the standardised activities into
     I + P^2 (x) C^T C with C = B sqrt(Sigma), P^2 = R^-1 G R^-T and Theta = R R^T; its
-    spectral decomposition gives every group's block in closed form."""
+    spectral decomposition gives every group's block in closed form. Sigma may also be the full
+    covariance between motifs; its symmetric root then takes the place of sqrt(Sigma)."""
     B = np.asarray(B, dtype=float)
     Sigma = np.asarray(Sigma, dtype=float)
     g = len(group_inds)
@@ -1681,8 +1861,11 @@ def _group_mean_cov_factors(group_inds: list, s: int, D_group, G_group, W, V, Si
     Gw = Rinv @ Gs @ Rinv.T
     lam_G, Q_G = np.linalg.eigh(0.5 * (Gw + Gw.T))
     lam_G = np.clip(lam_G, 0.0, None)
-    sig = np.sqrt(Sigma)
-    A = sig.reshape(-1, 1) * (B.T @ B) * sig.reshape(1, -1)
+    sig = np.sqrt(Sigma) if Sigma.ndim == 1 else motif_root(Sigma)
+    if sig.ndim == 1:
+        A = sig.reshape(-1, 1) * (B.T @ B) * sig.reshape(1, -1)
+    else:
+        A = sig @ (B.T @ B) @ sig
     lam_B, Q_B = np.linalg.eigh(0.5 * (A + A.T))
     lam_B = np.clip(lam_B, 0.0, None)
     avg = np.zeros((g, s))
@@ -1690,7 +1873,7 @@ def _group_mean_cov_factors(group_inds: list, s: int, D_group, G_group, W, V, Si
         avg[i, inds] = 1.0 / len(inds)
     T = (avg @ R) @ Q_G
     W_weights = (lam_G.reshape(1, -1) * T ** 2) @ (1.0 / (1.0 + lam_G.reshape(-1, 1) * lam_B.reshape(1, -1)))
-    return sig.reshape(-1, 1) * Q_B, W_weights
+    return lmul(sig, Q_B), W_weights
 
 
 def predict_activities(data: TransformedData, fit: FitResult,
@@ -1710,7 +1893,9 @@ def predict_activities(data: TransformedData, fit: FitResult,
             sol = Q_hat @ (D.reshape(-1, 1) * (Q_hat.T @ BT_Y_sum))
         return sol
 
-    Sigma = fit.motif_variance.motif
+    # The covariance between motifs: the vector of their variances, or a full matrix with
+    # "fit --motif-families" / "--motif-lowrank".
+    Sigma = motif_covariance(fit.motif_variance)
     G = fit.motif_variance.group
     D = fit.error_variance.variance
     group_inds = data.group_inds
@@ -1729,17 +1914,20 @@ def predict_activities(data: TransformedData, fit: FitResult,
                          'Re-run "maradoner fit" on this project.')
     if filter_motifs:
         with np.errstate(divide='ignore'):
-            log_sigma = np.log10(Sigma)
+            log_sigma = np.log10(_ls.motif_variances(Sigma))
         inds = log_sigma >= (np.median(log_sigma) - filter_order)
         if not inds.any():
             raise InputError(f'--filter-order {filter_order} filters out all {len(Sigma)} motifs. '
                              'Use a larger value, or --no-filter-motifs.')
         B = B[:, inds]
-        Sigma = Sigma[inds]
+        Sigma = _ls.subset_covariance(Sigma, inds)
         filtered_motifs = np.where(~inds)[0]
     else:
         filtered_motifs = np.zeros(0, dtype=int)
     clusters = defaultdict(list)
+    if clustering_search and np.ndim(Sigma) == 2:
+        raise InputError('The search for the number of clusters is not available for a fit with a covariance '
+                         'between motifs (--motif-families / --motif-lowrank).')
     if clustering_search:
         from tqdm import tqdm
         for n_cluster in tqdm([10, 25, 50, 75, 100, 150, 200, 500, B.shape[1]]):
@@ -1797,12 +1985,16 @@ def predict_activities(data: TransformedData, fit: FitResult,
     B_unscaled = B                                   # keep loadings before sqrt(Sigma)
     BT_Y = B.T @ Y
     # BT_B and its eigenvectors in the scaled (sqrt(Sigma) B) coordinates; for --pinv the
-    # plain, unscaled B^T B.
-    sq = np.ones(B.shape[1]) if pinv else Sigma ** 0.5
-    BT_B = sq.reshape(-1, 1) * (B.T @ B) * sq.reshape(1, -1)
+    # plain, unscaled B^T B. With a full covariance between motifs its symmetric root takes
+    # the place of sqrt(Sigma).
+    sq = np.ones(B.shape[1]) if pinv else motif_root(Sigma)
+    if sq.ndim == 1:
+        BT_B = sq.reshape(-1, 1) * (B.T @ B) * sq.reshape(1, -1)
+    else:
+        BT_B = sq @ (B.T @ B) @ sq
     S, Q_hat = jnp.linalg.eigh(BT_B)
     S = np.asarray(S, dtype=float)
-    Q_hat = sq.reshape(-1, 1) * np.asarray(Q_hat, dtype=float)
+    Q_hat = lmul(sq, np.asarray(Q_hat, dtype=float))
 
     sizes = [len(inds) for inds in group_inds]
     tau_mults = [tau_groups[i] for i in range(len(group_inds))]
@@ -2202,20 +2394,56 @@ def fit(project: str, clustering: ClusteringMode,
         gpu: bool, gpu_decomposition: bool, x64=True, true_mean=None, motif_variance: bool = True,
         promoter_variance: bool = False, test_promoters_filename: str = None,
         context_r: int = 0, drist: bool = False, error_lowrank: int = 0,
-        activity_lowrank: int = 0,
-        verbose=True, dump=True) -> FitResult:
+        activity_lowrank: int = 0, motif_families: str = None, motif_lowrank: int = 0,
+        motif_mean_prior: str = 'none', verbose=True, dump=True) -> FitResult:
     if x64:
         jax.config.update("jax_enable_x64", True)
-    if (error_lowrank or 0) < 0 or (activity_lowrank or 0) < 0:
-        raise InputError('--error-lowrank and --activity-lowrank are ranks and cannot be negative.')
+    if (error_lowrank or 0) < 0 or (activity_lowrank or 0) < 0 or (motif_lowrank or 0) < 0:
+        raise InputError('--error-lowrank, --activity-lowrank and --motif-lowrank are ranks and cannot '
+                         'be negative.')
     data = read_init(project)
     validate_project(data, rank=False)
     check_design_rank(data.X, data.covariate_names)
     warn_constant_loadings(data.B, data.motif_names, verbose=verbose)
+    families = family_names = None
+    if motif_families is not None or motif_lowrank:
+        if clustering != ClusteringMode.none:
+            raise InputError('--motif-families and --motif-lowrank describe the covariance between motifs '
+                             'and cannot be combined with --clustering: the latter replaces the motifs by '
+                             'clusters.')
+        if not motif_variance:
+            warn('--motif-families and --motif-lowrank require per-motif variances; ignored because '
+                 '--no-motif-variance was set.')
+        elif motif_families is not None:
+            families, family_names = _ls.read_families(motif_families, data.motif_names, verbose=verbose)
+            if not motif_lowrank and not np.any(families.sum(axis=0) > 1):
+                warn('Every motif family has a single motif, and the variance of such a family cannot '
+                     'be told apart from that of its motif: the families are ignored. Pass families of '
+                     'several motifs, or --motif-lowrank for a covariance between them.')
+                families = family_names = None
+    motif_mean_prior = str(getattr(motif_mean_prior, 'value', motif_mean_prior) or 'none')
+    if motif_mean_prior not in _mean_prior.KINDS:
+        raise InputError(f'Unknown --motif-mean-prior "{motif_mean_prior}": choose one of '
+                         f'{", ".join(_mean_prior.KINDS)}.')
+    mean_prior_families = None
+    if motif_mean_prior == 'families':
+        if motif_families is None or clustering != ClusteringMode.none:
+            raise InputError('--motif-mean-prior families needs --motif-families and cannot be combined '
+                             'with --clustering.')
+        mean_prior_families = families if families is not None else \
+            _ls.read_families(motif_families, data.motif_names, verbose=False)[0]
     fmt = data.fmt
     group_names = data.group_names
     promoter_inds_to_drop = select_test_promoters(data.promoter_names, test_chromosomes,
                                                   test_promoters_filename, verbose=verbose)
+    deferred_transforms = getattr(data, 'deferred_transforms', None)
+    if deferred_transforms and clustering != ClusteringMode.none:
+        # The cluster profiles stored in the fit are made of the transformed loadings.
+        train = np.setdiff1d(np.arange(len(data.B)), np.asarray(promoter_inds_to_drop or [], dtype=int))
+        logger_print('Fitting the DRIST transform of the loadings on the training promoters...', verbose)
+        data.B = LoadingDRIST(deferred_transforms).fit(np.asarray(data.B)[train],
+                                                       np.asarray(data.Y)[train]).transform(data.B)
+        deferred_transforms = None
     if clustering != ClusteringMode.none:
         n_train = len(data.promoter_names) - len(promoter_inds_to_drop or ())
         if num_clusters is not None and num_clusters >= n_train - 1:
@@ -2247,6 +2475,9 @@ def fit(project: str, clustering: ClusteringMode,
         drist = DRIST(verbose=True, init=None, share_function=False).fit(data.B, data.Y)
     else:
         drist = None
+    if deferred_transforms:
+        logger_print('Fitting the DRIST transform of the loadings on the training promoters...', verbose)
+        drist = LoadingDRIST(deferred_transforms).fit(data.B, data.Y)
     
     if context_r > 1:
         if data.L is not None:
@@ -2339,6 +2570,8 @@ def fit(project: str, clustering: ClusteringMode,
                                                       error_variance=error_variance,
                                                       original_data=data_orig,
                                                       activity_lowrank=activity_lowrank,
+                                                      families=families, family_names=family_names,
+                                                      motif_lowrank=motif_lowrank,
                                                       verbose=verbose)
         else:
             if activity_lowrank and activity_lowrank > 0:
@@ -2355,11 +2588,33 @@ def fit(project: str, clustering: ClusteringMode,
             logger_print(f'  activity covariance: diagonal G + rank-'
                          f'{motif_variance.lowrank.shape[1]} update '
                          f'(REML deviance {motif_variance.loglik:.2f}).', verbose)
+        if getattr(motif_variance, 'families', None) is not None or \
+           getattr(motif_variance, 'family_lowrank', None) is not None:
+            omega = getattr(motif_variance, 'family_variance', None)
+            L_fam = getattr(motif_variance, 'family_lowrank', None)
+            parts = list()
+            if omega is not None:
+                parts.append(f'{int(np.sum(omega > 0))} of {int(np.sum(motif_variance.family_free))} '
+                             'family variances above zero')
+            if L_fam is not None:
+                what = 'families' if motif_variance.families is not None else 'motifs'
+                parts.append(f'rank-{L_fam.shape[1]} covariance between {what}')
+            logger_print(f'  covariance between motifs: diagonal Sigma + {" + ".join(parts) or "nothing"} '
+                         f'(REML deviance {motif_variance.loglik:.2f}).', verbose)
         
         logger_print('Estimating motif means...', verbose)
         motif_mean = estimate_motif_mean(data, B_decomposition, error_variance=error_variance,
                                           motif_variance=motif_variance,
                                           promoter_mean=promoter_mean, verbose=verbose)
+        if motif_mean_prior != 'none':
+            motif_mean, delta = _mean_prior.shrink_motif_means(motif_mean, motif_mean_prior,
+                                                               motif_variance=motif_variance,
+                                                               families=mean_prior_families,
+                                                               verbose=verbose)
+            # The promoter means take back what the prior removed from B mu_m: mu_p + B M X,
+            # and with it everything estimated from the residuals, stays the same.
+            promoter_mean = PromoterMeanEstimates(np.asarray(promoter_mean.mean).reshape(-1) +
+                                                  np.asarray(data_orig.B) @ delta)
         # the Helmert-transformed copies and the decomposition are no longer needed
         del data, B_decomposition
         logger_print('Estimating sample means...', verbose)

@@ -29,6 +29,9 @@ class OptimizerResult:
     success: bool = True
     message: str = ''
     stationarity: float = 0.0
+    # (name, objective) after each stage of an optimiser other than this one; when given, they
+    # are reported in place of the warm-up and the momentum stages.
+    stages: tuple = None
 
     def __str__(self):
         res = [ f'Current objective: {self.fun:.4f}',
@@ -37,6 +40,8 @@ class OptimizerResult:
                f'Objective after momentum optimization: {self.momentum_loglik:.4f}',
                f'Current gradient norm: {self.grad_norm:.4e}'
               ]
+        if self.stages is not None:
+            res = res[:2] + [f'Objective after {name}: {value:.4f}' for name, value in self.stages] + res[-1:]
         return '\n'.join(res)
 
 

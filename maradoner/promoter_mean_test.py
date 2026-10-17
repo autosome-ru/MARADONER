@@ -17,6 +17,50 @@ class FOVMeanMode(str, Enum):
     gls = 'gls'
     knn = 'knn'
 
+class CovariateModel(str, Enum):
+    gam = 'gam'
+    ridge = 'ridge'
+    boosting = 'boosting'
+    ensemble = 'ensemble'
+
+
+def learn_promoter_means(X_train: np.ndarray, y: np.ndarray, X_test: np.ndarray, model: str,
+                         cross_fit: bool = False) -> tuple:
+    """Predicts promoter means from promoter covariates (e.g. the sequence features of
+    "maradoner sequence-features") by ridge regression, gradient boosting or the average of the
+    two (ensemble), trained on the training promoters. Returns the predictions for the test
+    promoters and for the training ones; with cross_fit the latter are out-of-fold (5 folds)."""
+    from sklearn.linear_model import RidgeCV
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.model_selection import KFold
+    model = CovariateModel(model)
+
+    def one(Xa, ya, Xb):
+        preds = list()
+        if model in (CovariateModel.ridge, CovariateModel.ensemble):
+            m, sd = Xa.mean(axis=0), Xa.std(axis=0)
+            sd[sd == 0] = 1.0
+            r = RidgeCV(alphas=np.logspace(-1, 6, 15)).fit((Xa - m) / sd, ya)
+            preds.append(r.predict((Xb - m) / sd))
+        if model in (CovariateModel.boosting, CovariateModel.ensemble):
+            g = HistGradientBoostingRegressor(max_iter=3000, learning_rate=0.03, min_samples_leaf=40,
+                                              l2_regularization=1.0, early_stopping=True,
+                                              n_iter_no_change=50, random_state=0).fit(Xa, ya)
+            preds.append(g.predict(Xb))
+        return np.mean(preds, axis=0)
+
+    X_train = np.asarray(X_train, dtype=float)
+    X_test = np.asarray(X_test, dtype=float)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    pred_test = one(X_train, y, X_test)
+    if cross_fit:
+        pred_train = np.zeros(len(y))
+        for a, b in KFold(5, shuffle=True, random_state=0).split(X_train):
+            pred_train[b] = one(X_train[a], y[a], X_train[b])
+    else:
+        pred_train = one(X_train, y, X_train)
+    return pred_test, pred_train
+
 def knn_predict(B: np.ndarray, Z: np.ndarray, mu_p: np.ndarray, test_inds: np.ndarray, 
                 n_B: int = 8, n_Z: int = 8, n_neighbours: int = 64, covariate=None) -> np.ndarray:
 
@@ -103,8 +147,9 @@ def read_promoter_covariates(filename: str, promoter_names: list) -> pd.DataFram
 
 def estimate_promoter_mean(project: str,
                            mean_mode: FOVMeanMode = FOVMeanMode.null, knn_n=256, pca_b=64, pca_z=3,
-                           covariate: str = None, num_splies=10):
+                           covariate: str = None, num_splies=10, covariate_model: str = 'gam'):
     mean_mode = FOVMeanMode(mean_mode)
+    covariate_model = CovariateModel(getattr(covariate_model, 'value', covariate_model))
     if mean_mode == mean_mode.knn:
         if knn_n < 1:
             raise InputError(f'--knn-n must be a positive number of neighbours, but {knn_n} was given.')
@@ -157,6 +202,11 @@ def estimate_promoter_mean(project: str,
         inds = np.arange(0, len(B0))
         inds_train = np.setdiff1d(inds, test_inds, assume_unique=True)
         X_train = X[inds_train]
+    if covariate is not None and covariate_model != CovariateModel.gam:
+        # The knn branch below fits the residual of the training means: it needs out-of-fold predictions.
+        mu_p_d, mu_p_d_train = learn_promoter_means(X_train, mu_p, X[test_inds], covariate_model,
+                                                    cross_fit=mean_mode == mean_mode.knn)
+    elif covariate is not None:
         config = dict()
         for i, c in enumerate(cols):
             config[c] = pygam.s(i, n_splines=num_splies)

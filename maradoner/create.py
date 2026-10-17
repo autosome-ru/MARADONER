@@ -1088,8 +1088,9 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
         if not selected[k]:
             loadings_common.append(None)
             continue
-        # DRIST fits all motifs of a matrix jointly, the other transformations act on each column alone.
-        sel = list(range(len(motif_names_all[k]))) if mode.startswith('drist') else selected[k]
+        # DRIST is fitted later by fit, on the selected motifs and the training promoters only.
+        # sel = list(range(len(motif_names_all[k]))) if mode.startswith('drist') else selected[k]
+        sel = selected[k]
         loadings_common.append(_matrix(t, rows=rows_common[k], cols=sel, row_word='promoter', col_word='motif'))
         t.frame = None
     del rows_common
@@ -1122,19 +1123,26 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
 
     # ---- loadings ----
     blocks, motif_names = list(), list()
+    # (mode, columns of the loading matrix): DRIST transforms that fit estimates on the training
+    # promoters, so that promoters held out by "fit --test-chromosomes" take no part in them.
+    deferred_transforms = list()
     for k, mode in enumerate(loading_matrix_transformations):
         if loadings_common[k] is None:
             continue
         names = motif_names_all[k]
-        sel = list(range(len(names))) if mode.startswith('drist') else selected[k]
+        # sel = list(range(len(names))) if mode.startswith('drist') else selected[k]
+        sel = selected[k]
         X = loadings_common[k] if n_kept == n_total else loadings_common[k][kept]
         loadings_common[k] = None
-        X, left = _transform_array(X, [names[j] for j in sel], mode, Y=promoter_expression,
-                                   test_chromosomes=test_chromosomes, verbose=verbose)
+        X, left = _transform_array(X, [names[j] for j in sel], 'none' if mode.startswith('drist') else mode,
+                                   Y=promoter_expression, test_chromosomes=test_chromosomes, verbose=verbose)
         if mode.startswith('drist') and wanted_motifs is not None:
             chosen = {names[j] for j in selected[k]}
             keep = [j for j, n in enumerate(left) if n in chosen]
             X, left = X[:, keep], [left[j] for j in keep]
+        if mode.startswith('drist') and left:
+            start = len(motif_names)
+            deferred_transforms.append((mode, list(range(start, start + len(left)))))
         if left:
             blocks.append(X)
             motif_names.extend(left)
@@ -1187,7 +1195,8 @@ def create_project(project_name: str, promoter_expression_filename: str, loading
            'covariates': covariates,
            'covariate_names': covariate_names,
            'covariate_terms': covariate_terms,
-           'groups': sample_groups}
+           'groups': sample_groups,
+           'deferred_transforms': deferred_transforms or None}
     if dump:
         logger_print('Saving project...', verbose)
         init_filename = stage_filename(project_name, 'init', compression)
