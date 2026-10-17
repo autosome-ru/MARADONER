@@ -38,7 +38,8 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
                       error_lowrank: int = 0, error_lowrank_scale: float = 1.0,
                       activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0,
                       families: int = 0, family_scale: float = 1.0,
-                      motif_lowrank: int = 0, motif_lowrank_scale: float = 1.0):
+                      motif_lowrank: int = 0, motif_lowrank_scale: float = 1.0,
+                      windows: list = None):
     """Covariate-aware synthetic data generator for the model
 
         Y = 1_p mu_s^T + mu_p 1_s^T + B U + E,
@@ -59,6 +60,15 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     order family_scale * mean(tau) and L (families x motif_lowrank) of the order
     motif_lowrank_scale * sqrt(mean(tau)). Without families, motif_lowrank > 0 gives
     Sigma + L L^T with L (m x motif_lowrank) zero for the inactive motifs.
+
+    windows (a list of K names) gives each of the m motifs K columns of loadings, one per window
+    around the TSS, with a correlation of 0.5 between the windows of a motif; the data then have
+    m K columns, motif i holding columns i K, ..., i K + K - 1. The windows of a motif form a
+    family. An active motif acts through all its windows together (a family variance), through
+    one window (the tau of that window) or both, at random; the variances are those of an active
+    motif above, the family variance times family_scale. families > 0 then splits the active
+    motifs among that many families of a second level, each holding all windows of its motifs.
+    F lists the families of windows first (one per motif, inactive motifs included).
     """
     for name, value in (('promoters (--p)', p), ('motifs (--m)', m), ('groups (--g)', g)):
         if value < 1:
@@ -102,7 +112,14 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     D_group = g_std ** 2                      # error variance per group
     nu_group = g_std ** 2 * sigma_rel         # G multiplier per group
 
-    B = np.random.rand(p, m)
+    if windows:
+        windows = list(windows)
+        if len(set(windows)) != len(windows) or not all(windows):
+            raise InputError(f'The names of the windows must be distinct and non-empty, but {windows} were given.')
+        K = len(windows)
+        B = 0.5 * np.repeat(np.random.rand(p, m), K, axis=1) + 0.5 * np.random.rand(p, m * K)
+    else:
+        B = np.random.rand(p, m)
 
     # Motif variances Sigma (tau); a fraction of motifs are inactive (Sigma = 0).
     U_mult = np.random.rand(m) * 1.0 + 0.05
@@ -117,7 +134,37 @@ def generate_data_cov(p: int, m: int, g: int, min_samples: int, max_samples: int
     # Families of the active motifs and the covariance between motifs S.
     F = omega = L_motif = None
     S_motif = None
-    if families or motif_lowrank:
+    if windows:
+        # Per active motif: 0 all windows together, 1 one window, 2 both.
+        mean_tau = Sigma[significant].mean() if significant.any() else 1.0
+        pattern = np.random.randint(0, 3, size=m)
+        window = np.random.randint(0, K, size=m)
+        tau = np.zeros(m * K)
+        omega_w = np.where(significant & (pattern != 1), Sigma * family_scale, 0.0)
+        one = significant & (pattern != 0)
+        tau[np.arange(m)[one] * K + window[one]] = Sigma[one]
+        F = np.kron(np.eye(m), np.ones((K, 1)))
+        omega = omega_w
+        if families:
+            F_c = np.zeros((m, int(families)))
+            active = np.where(significant)[0]
+            F_c[active, np.random.randint(0, int(families), size=len(active))] = 1.0
+            F = np.hstack([F, np.repeat(F_c, K, axis=0)])
+            omega = np.concatenate([omega_w, (np.random.rand(int(families)) + 0.5) * family_scale * mean_tau])
+        if motif_lowrank and motif_lowrank >= F.shape[1]:
+            raise InputError('--motif-lowrank must be smaller than the number of families.')
+        Psi = np.diag(omega)
+        if motif_lowrank:
+            L_motif = st.norm.rvs(size=(F.shape[1], int(motif_lowrank))) * motif_lowrank_scale * mean_tau ** 0.5
+            L_motif[:m][~significant] = 0.0
+            Psi += L_motif @ L_motif.T
+        m = m * K
+        significant = np.repeat(significant, K)
+        Sigma = tau
+        S_motif = np.diag(Sigma) + F @ Psi @ F.T
+        w, v = np.linalg.eigh(S_motif)
+        S_half = (v * np.sqrt(np.clip(w, 0.0, None))) @ v.T
+    elif families or motif_lowrank:
         if motif_lowrank and motif_lowrank >= (families or m):
             raise InputError('--motif-lowrank must be smaller than the number of families (of motifs '
                              'without --families).')
@@ -305,7 +352,8 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
                      error_lowrank: int = 0, error_lowrank_scale: float = 1.0,
                      activity_lowrank: int = 0, activity_lowrank_scale: float = 1.0,
                      families: int = 0, family_scale: float = 1.0,
-                     motif_lowrank: int = 0, motif_lowrank_scale: float = 1.0):
+                     motif_lowrank: int = 0, motif_lowrank_scale: float = 1.0,
+                     windows: list = None):
     random.seed(seed)
     if not 0 <= seed < 2 ** 32:
         raise InputError(f'--seed must lie between 0 and {2 ** 32 - 1}, but {seed} was given.')
@@ -321,7 +369,8 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
                             activity_lowrank=activity_lowrank,
                             activity_lowrank_scale=activity_lowrank_scale,
                             families=families, family_scale=family_scale,
-                            motif_lowrank=motif_lowrank, motif_lowrank_scale=motif_lowrank_scale)
+                            motif_lowrank=motif_lowrank, motif_lowrank_scale=motif_lowrank_scale,
+                            windows=windows)
     inds = res.group_inds
     Ys = res.Y; B = res.B; Us = res.U; std_g = res.sigmas; Sigma = res.Sigma
     insignificant_inds = ~res.significant_motifs
@@ -334,9 +383,14 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
         colnames[sub] = cols
         sample_names.extend(cols)
     proms = [f'prom_{i}' for i in range(1, p + 1)]
-    motifs = [f'motif_{i}' for i in range(1, m + 1)]
-    for i in np.where(insignificant_inds)[0]:
-        motifs[i] = f'inactive_{motifs[i]}'
+    if windows:
+        bases = [f'motif_{i}' for i in range(1, m + 1)]
+        bases = [f'inactive_{b}' if insignificant_inds[i * len(windows)] else b for i, b in enumerate(bases)]
+        motifs = [f'{b}_{w}' for b in bases for w in windows]
+    else:
+        motifs = [f'motif_{i}' for i in range(1, m + 1)]
+        for i in np.where(insignificant_inds)[0]:
+            motifs[i] = f'inactive_{motifs[i]}'
 
     Y = pd.DataFrame(Ys, columns=colnames, index=proms)
     B = pd.DataFrame(B, index=proms, columns=motifs)
@@ -390,6 +444,22 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
     # covariance between motifs.
     if res.F is not None:
         fam_names = [f'family_{j + 1}' for j in range(res.F.shape[1])]
+        if windows:
+            # A family of windows is named after its motif; the families of the second level follow.
+            # The class of a motif in windows_gt.tsv refers to its windows, beyond the second level.
+            fam_names = bases + [f'family_{j + 1}' for j in range(res.F.shape[1] - m)]
+            K = len(windows)
+            cluster = res.F[::K, m:]
+            omega_w = res.omega[:m]
+            tau = res.Sigma.reshape(m, K)
+            classes = {(True, True): 'family+individual', (True, False): 'family',
+                       (False, True): 'individual', (False, False): 'none'}
+            kind = [classes[o > 0, bool(t.any())] for o, t in zip(omega_w, tau)]
+            pd.DataFrame({'class': kind, 'omega': omega_w,
+                          'individual': [','.join(f'{b}_{w}' for w, t_ in zip(windows, t) if t_ > 0)
+                                         for b, t in zip(bases, tau)],
+                          'family': [fam_names[m + int(np.argmax(c))] if c.any() else '' for c in cluster]},
+                         index=pd.Index(bases, name='motif')).to_csv(os.path.join(folder, 'windows_gt.tsv'), sep='\t')
         lines = [' '.join([fam] + [motifs[i] for i in np.where(res.F[:, j])[0]])
                  for j, fam in enumerate(fam_names) if res.F[:, j].any()]
         with open(os.path.join(folder, 'families.txt'), 'w') as f:

@@ -49,6 +49,11 @@
  "menu": "Motif families",
  "keywords": ["motif families", "motif-families", "motif-lowrank", "covariance between motifs", "omega", "family variance"]
 },
+{"file": "windows.html",
+ "title": "Motif families and windows",
+ "menu": "Windows",
+ "keywords": ["windows", "core promoter", "upstream", "downstream", "motif families", "nested families", "families.tsv"]
+},
 {"file": "means.html",
  "title": "Regularization of motif means",
  "menu": "Motif means",

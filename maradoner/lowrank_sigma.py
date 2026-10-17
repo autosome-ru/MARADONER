@@ -52,6 +52,9 @@ STALL_TOL = 1e-3
 STALL_ITERATIONS = 100
 # Fisher scoring goes on until the stationarity is at most this.
 FISHER_TOL = 1e-4
+# Fisher scoring covers L when the variances and the entries of L number at most this: a step
+# holds about 5 dense square matrices of that size (5.8 GB at 12000).
+FISHER_MAX_PARAMETERS = 12000
 
 
 # ------------------------------------------------------------- the covariance S itself ---
@@ -409,6 +412,30 @@ def _fim_block_lowrank_sym(E, U, w, size: int = 1024):
     return out
 
 
+@jax.jit
+def _fim_block_lowrank_L(E1, E2, Y, U, w):
+    # sum_l w_l (E1 diag(U_l) E2^T)[i, j] (E1 diag(U_l) Y)[i, a] as an (i, j, a) array: the
+    # information between the parameters adding c c^T to K (c a row of E1) and the entries
+    # L_ja of L (rows of E2 for the families, columns of Y for the factors).
+    def body(l, mx):
+        A = E1 * U[:, l]
+        return mx + w[l] * (A @ E2.T)[:, :, None] * (A @ Y)[:, None, :]
+    return jax.lax.fori_loop(0, U.shape[1], body, jnp.zeros((E1.shape[0], E2.shape[0], Y.shape[1])))
+
+
+@jax.jit
+def _fim_block_lowrank_LL(E, Y, U, w):
+    # sum_l w_l [X_l[j, i] T_l[a, b] + Y_l[j, b] Y_l[i, a]] as a (j, a, i, b) array, with
+    # X_l = E diag(U_l) E^T, T_l = Y^T diag(U_l) Y and Y_l = E diag(U_l) Y: the information
+    # between the entries L_ja and L_ib of L.
+    def body(l, mx):
+        A = E * U[:, l]
+        X, T, Yl = A @ E.T, (Y.T * U[:, l]) @ Y, A @ Y
+        return mx + w[l] * (jnp.einsum('ji,ab->jaib', X, T) + jnp.einsum('jb,ia->jaib', Yl, Yl))
+    f, k = E.shape[0], Y.shape[1]
+    return jax.lax.fori_loop(0, U.shape[1], body, jnp.zeros((f, k, f, k)))
+
+
 def _fim_sample_side(P, PGQ, D_A, D_K, Mi, tol: float) -> np.ndarray:
     """1/2 sum_a D_K[a]^2 W_a o W_a with W_a = P - D_K[a] PGQ diag(Mi[a]) PGQ^T (s x s): the
     information between the entries of the diagonal of G, as _fim_block(P, PGQ, PGQ, D_A, D_K).
@@ -561,14 +588,16 @@ class MotifCovarianceProblem():
             res.append(0.5 * (E ** 2 * D_A ** 2).sum(axis=1))
         return tuple(res)
 
-    def fim(self, tau, omega, L, nu, V, fix_ind=None, kernel_tol: float = 1e-13) -> np.ndarray:
+    def fim(self, tau, omega, L, nu, V, fix_ind=None, kernel_tol: float = 1e-13,
+            lowrank: bool = False) -> np.ndarray:
         """Fisher information of (tau, nu without nu[fix_ind], the free omega), with L and V
         held fixed: 1/2 tr(V^-1 dV_i V^-1 dV_j) for the covariance V of the projected data.
         The blocks of tau and omega are sums over the s eigenvalues e_k of the sample side of
         terms (E diag(M_k) E^T)^2, M_k = 1 / (1 + e_k D_K). The kernel sum_k e_k^2 M_k M_k^T has
         a small numerical rank (M is a Cauchy-like matrix), and the sums run over its
         eigenvectors down to kernel_tol times the largest eigenvalue; the block of nu likewise
-        (see _fim_sample_side). kernel_tol = None sums over all eigenvalues."""
+        (see _fim_sample_side). kernel_tol = None sums over all eigenvalues.
+        With lowrank, the entries of L (row-major) follow the free omega (see _fim_L)."""
         D_K, Q_K, D_A, RQ, Mi = self.spectral(tau, omega, L, nu, V)
         reduced = Q_K.shape[1] < self.r
         Qs = Q_K * np.sqrt(D_K)
@@ -625,7 +654,54 @@ class MotifCovarianceProblem():
                 F_to = np.asarray(_fim_block(jnp.asarray(self.C @ CF.T), jnp.asarray(U_C), jnp.asarray(U_F), jD_K, jD_A))
             F_on = (U_F ** 2 @ Mi2 @ (PGQ ** 2).T / 2) @ loadings[:, free_nu]
             blocks = [[F_tt, F_tn, F_to], [F_tn.T, F_nn, F_on.T], [F_to.T, F_on, F_oo]]
+        if lowrank and np.shape(L)[1]:
+            side = self._fim_L(L, D_K, Q_K, D_A, PGQ, Mi, reduced, loadings[:, free_nu], kernel_tol)
+            F_LL = side.pop()
+            blocks = [row + [b] for row, b in zip(blocks, side)] + [[b.T for b in side] + [F_LL]]
         return np.block(blocks)
+
+    def _fim_L(self, L, D_K, Q_K, D_A, PGQ, Mi, reduced, loadings, kernel_tol) -> list:
+        """The blocks of the Fisher information between the entries of L and (tau, the free
+        nu, the free omega, L), as 2-D arrays with a column per entry L_ja (row-major).
+        With u_a the columns of C_F^T L and c_j the rows of C_F, L_ja adds c_j u_a^T + u_a c_j^T
+        to K. With G = (I + e K)^-1 for an eigenvalue e of the sample side, the terms are
+            tau_i, L_ja:  sum_e e^2 (c_i^T G c_j)(c_i^T G u_a),  c_i a row of C,
+            L_ja, L_ib:   sum_e e^2 [(c_j^T G c_i)(u_a^T G u_b) + (c_j^T G u_b)(c_i^T G u_a)],
+        the same for omega with c_i a row of C_F, and for nu the terms of the diagonal of
+        q^T (c_j u_a^T + u_a c_j^T) q = 2 (q^T c_j)(q^T u_a) over the eigenvectors q of K.
+        The u_a lie in the span of Q_K, so the complement of Q_K (G = I on it) enters through
+        c^T G c only."""
+        L = np.asarray(L, dtype=np.float64)
+        f, k = L.shape
+        Ut = Q_K.T @ (self.CF.T @ L)
+        E_raw, EF_raw = self.C @ Q_K, self.CF @ Q_K
+        # The kernel as in fim, for the columns of C Q_K scaled to unit length.
+        n2 = (E_raw ** 2).sum(axis=0)
+        n2 = np.where(n2 > 0, n2, 1.0)
+        w_t, U_t, _ = _kernel_factor(n2[:, None] * Mi * D_A, kernel_tol or 0.0)
+        jU, jw = jnp.asarray(U_t), jnp.asarray(w_t)
+        sn = np.sqrt(n2)
+        E_C, E_F, Y = (jnp.asarray(x) for x in (E_raw / sn, EF_raw / sn, Ut / sn[:, None]))
+        free = np.where(self.omega_free)[0] if self.has_omega else np.zeros(0, dtype=int)
+        F_tL = np.asarray(_fim_block_lowrank_L(E_C, E_F, Y, jU, jw))
+        F_oL = np.asarray(_fim_block_lowrank_L(E_F[free], E_F, Y, jU, jw)) if len(free) else None
+        F_LL = np.asarray(_fim_block_lowrank_LL(E_F, Y, jU, jw))
+        if reduced:
+            h = Mi @ D_A ** 2
+            N_CF = self._gram('CF_all', self.C, self.CF) - E_raw @ EF_raw.T
+            N_FF = self._gram('FF_all', self.CF, self.CF) - EF_raw @ EF_raw.T
+            F_tL = F_tL + N_CF[:, :, None] * ((E_raw * h) @ Ut)[:, None, :]
+            F_LL = F_LL + N_FF[:, None, :, None] * ((Ut.T * h) @ Ut)[None, :, None, :]
+            if F_oL is not None:
+                F_oL = F_oL + N_FF[free][:, :, None] * ((EF_raw[free] * h) @ Ut)[:, None, :]
+        Mi2P = (Mi ** 2) @ (PGQ ** 2).T
+        F_nL = np.stack([(EF_raw * (Ut[:, a] * D_K)) @ Mi2P for a in range(k)], axis=1)
+        F_nL = (F_nL.reshape(f * k, -1) @ loadings).T
+        F_LL = F_LL.reshape(f * k, f * k)
+        side = [F_tL.reshape(len(F_tL), f * k), F_nL]
+        if self.has_omega:
+            side.append(F_oL.reshape(len(free), f * k))
+        return side + [(F_LL + F_LL.T) / 2]
 
     def lrt(self, tau, omega, L, nu, V) -> tuple:
         """Likelihood-ratio statistics (dev under H0 minus dev) of tau_i = 0 for every motif
@@ -688,11 +764,14 @@ class MotifCovarianceProblem():
 # ------------------------------------------------------------------------ estimation ---
 def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fix_ind: int, stationarity,
                    max_steps: int = 100, verbose: bool = False, tag: str = 'motif covariance',
-                   tol: float = FISHER_TOL) -> tuple:
-    """Fisher scoring for the variances (tau, the free nu, the free omega: the first n entries
-    of x0) with L and V absent. The expected Hessian of the deviance is twice the Fisher
-    information I. On real data the model is misspecified, the observed Hessian differs from
-    2 I, and plain scoring converges only linearly near the optimum; a secant correction S, as
+                   tol: float = FISHER_TOL, n_bounded: int = None) -> tuple:
+    """Fisher scoring for the first n entries of x0, with V absent: the variances (tau, the free
+    nu, the free omega) and then the entries of L. The first n_bounded entries (all n by default)
+    are bounded below by zero, and the entries of L have no bounds. The expected Hessian of the
+    deviance is twice the Fisher information I (see MotifCovarianceProblem.fim; with L,
+    lowrank=True). I is singular along the rotations of L (L R has the same L L^T for an
+    orthogonal R); the gradient is zero along them, and the damping below keeps the steps finite.
+    On real data the model is misspecified, the observed Hessian differs from 2 I, and plain scoring converges only linearly near the optimum; a secant correction S, as
     in NL2SOL, collects that difference from successive gradients, and H = 2 I + S. S starts at
     zero and is cleared whenever the set of variances at zero changes, so scoring is plain until
     that set settles. A step solves (H + lam diag(2 I)) d = -grad over the variances that are
@@ -704,6 +783,7 @@ def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fi
     information matrices, or when lam exceeds 1e8. Returns the new x, the number of steps and
     of evaluations."""
     x = np.array(x0, dtype=np.float64)
+    nb = n if n_bounded is None else n_bounded
     dev, grad = vg(x)
     lam, n_steps, n_ev = 1e-3, 0, 1
     dev_start = dev
@@ -711,9 +791,10 @@ def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fi
     for _ in range(max_steps):
         if stationarity(x, grad) <= tol:
             break
-        F2 = 2 * problem.fim(*assemble(x), fix_ind=fix_ind)
+        F2 = 2 * problem.fim(*assemble(x), fix_ind=fix_ind, lowrank=n > nb)
         F2 = 0.5 * (F2 + F2.T)
-        zero = x[:n] <= 0
+        zero = np.zeros(n, dtype=bool)
+        zero[:nb] = x[:nb] <= 0
         if prev is not None and not np.array_equal(zero, prev[2]):
             S[:] = 0.0
             prev = None
@@ -743,7 +824,8 @@ def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fi
                 lam *= 10
                 continue
             x_new = x.copy()
-            x_new[np.where(free)[0]] = np.clip(x[free] + step, 0.0, None)
+            x_new[np.where(free)[0]] = x[:n][free] + step
+            x_new[:nb] = np.clip(x_new[:nb], 0.0, None)
             dev_new, grad_new = vg(x_new)
             n_ev += 1
             if np.isfinite(dev_new) and dev_new < dev:
@@ -781,10 +863,12 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
     the last STALL_ITERATIONS iterations. If the result does not improve on the starting model,
     the latter is returned (with omega = 0 and an L with no columns), and if L does not improve
     on the model without it, that model is returned.
-    Without L and V, at most fisher_steps steps of Fisher scoring come before L-BFGS-B (see
-    fisher_scoring): with families, omega and the tau of the members of a family trade off
-    nearly one for one, and L-BFGS-B scaled by the diagonal of the information crawls along that
-    ridge. L-BFGS-B does not run if Fisher scoring ends at the optimum.
+    Without V, at most fisher_steps steps of Fisher scoring over the variances and L come
+    before L-BFGS-B (see fisher_scoring; L is left to L-BFGS-B when the variances and L number
+    more than FISHER_MAX_PARAMETERS): with families, omega and the tau of the members of a
+    family trade off nearly one for one, as do omega and the diagonal of L L^T, and L-BFGS-B
+    scaled by the diagonal of the information crawls along these ridges. L-BFGS-B does not run
+    if Fisher scoring ends at the optimum.
     stage names the estimation in messages, tag in the log lines.
     Returns a dict with tau, nu, omega, L, V, dev (the deviance), dev0 (that of the start),
     the numbers of iterations and evaluations of both stages, n_it and n_ev, dev_fisher (the
@@ -909,9 +993,11 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
         return float(np.max(stationarity_terms(x, grad), initial=0.0))
 
     dev_fisher = None
-    if fisher_steps and not k and not kv:
-        x0, n_fs, n_fe = fisher_scoring(problem, x0, n_var, assemble, vg, fix_ind, stationarity,
-                                        max_steps=fisher_steps, verbose=verbose and not silent, tag=tag)
+    if fisher_steps and not kv:
+        n_fs = offsets[4] if offsets[4] <= FISHER_MAX_PARAMETERS else n_var
+        x0, n_fs, n_fe = fisher_scoring(problem, x0, n_fs, assemble, vg, fix_ind, stationarity,
+                                        max_steps=fisher_steps, verbose=verbose and not silent, tag=tag,
+                                        n_bounded=n_var)
         n_it += n_fs
         n_ev += n_fe
         dev_fisher = last['value']
@@ -1069,6 +1155,14 @@ def _selftest():
     fim_exact = prob.fim(*args, fix_ind=0, kernel_tol=None)
     print(f'  Fisher information vs dense: {np.abs(fim - fim_dense).max() / np.abs(fim_dense).max():.2e}, '
           f'summed over all eigenvalues: {np.abs(fim_exact - fim_dense).max() / np.abs(fim_dense).max():.2e}')
+    for j, a in np.ndindex(f, k):
+        dL = np.zeros((f, k)); dL[j, a] = 1.0
+        dV.append(np.kron(Hs @ G @ Hs.T, Bh @ F @ (dL @ L.T + L @ dL.T) @ F.T @ Bh.T))
+    fim_dense = np.array([[0.5 * np.trace(Ci @ a @ Ci @ b) for b in dV] for a in dV])
+    fim = prob.fim(*args, fix_ind=0, lowrank=True)
+    fim_exact = prob.fim(*args, fix_ind=0, kernel_tol=None, lowrank=True)
+    print(f'  Fisher information with L vs dense: {np.abs(fim - fim_dense).max() / np.abs(fim_dense).max():.2e}, '
+          f'summed over all eigenvalues: {np.abs(fim_exact - fim_dense).max() / np.abs(fim_dense).max():.2e}')
     args0 = (tau, omega, L, np.where(np.arange(g) == 1, 0.0, nu), np.zeros((s, 0)))
     f0, f0_exact = prob.fim(*args0, fix_ind=0), prob.fim(*args0, fix_ind=0, kernel_tol=None)
     print(f'  Fisher information with nu[1] = 0 and no V vs summed over all eigenvalues: '
@@ -1080,6 +1174,7 @@ def _selftest():
         prob.reduce_step, prob.reduce_fraction, prob._spec_key = step, fraction, None
         vg_ = prob.value_and_grad(*pz)
         out = [np.array([vg_[0]])] + list(vg_[1]) + [prob.fim(*pz, fix_ind=0), prob.fim(*pz, fix_ind=0, kernel_tol=None)]
+        out += [prob.fim(*pz, fix_ind=0, lowrank=True), prob.fim(*pz, fix_ind=0, kernel_tol=None, lowrank=True)]
         out += [x for x in prob.lrt(*pz)] + list(prob.information_diagonal(*pz)) + [prob.family_gradient(*pz)]
         return out, prob.spectral(*pz)[1].shape[1]
     full, n_full = everything(None, -1.0)
@@ -1092,6 +1187,10 @@ def _selftest():
     fits = [estimate_motif_covariance(prob, 0, tau, nu, None, 0, nu[0], fisher_steps=n, silent=True)
             for n in (0, 100)]
     print(f'  fit with Fisher scoring vs without: deviance {fits[1]["dev"] - fits[0]["dev"]:+.2e}, '
+          f'evaluations {fits[1]["n_ev"]} vs {fits[0]["n_ev"]}')
+    fits = [estimate_motif_covariance(prob, 1, tau, nu, None, 0, nu[0], fisher_steps=n, silent=True)
+            for n in (0, 100)]
+    print(f'  rank 1, fit with Fisher scoring vs without: deviance {fits[1]["dev"] - fits[0]["dev"]:+.2e}, '
           f'evaluations {fits[1]["n_ev"]} vs {fits[0]["n_ev"]}')
     # likelihood ratios vs differences of the deviance
     lrt_tau, lrt_omega = prob.lrt(*args)

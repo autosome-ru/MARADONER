@@ -303,6 +303,9 @@ class MotifMeanEstimates:
     prior_mean: float = None
     posterior_cov: np.ndarray = None
     gls_intercept: np.ndarray = None
+    # With a prior on the coefficients of the covariates as well: the covariance of the
+    # prediction error of each row of M (m, c, c). None otherwise.
+    posterior_blocks: np.ndarray = None
 
 @dataclass(frozen=True)
 class PromoterMeanEstimates:
@@ -2395,7 +2398,8 @@ def fit(project: str, clustering: ClusteringMode,
         promoter_variance: bool = False, test_promoters_filename: str = None,
         context_r: int = 0, drist: bool = False, error_lowrank: int = 0,
         activity_lowrank: int = 0, motif_families: str = None, motif_lowrank: int = 0,
-        motif_mean_prior: str = 'none', verbose=True, dump=True) -> FitResult:
+        motif_mean_prior: str = 'none', covariate_prior: str = 'none', verbose=True,
+        dump=True) -> FitResult:
     if x64:
         jax.config.update("jax_enable_x64", True)
     if (error_lowrank or 0) < 0 or (activity_lowrank or 0) < 0 or (motif_lowrank or 0) < 0:
@@ -2432,6 +2436,13 @@ def fit(project: str, clustering: ClusteringMode,
                              'with --clustering.')
         mean_prior_families = families if families is not None else \
             _ls.read_families(motif_families, data.motif_names, verbose=False)[0]
+    covariate_prior = str(getattr(covariate_prior, 'value', covariate_prior) or 'none')
+    if covariate_prior not in _mean_prior.COVARIATE_PRIORS:
+        raise InputError(f'Unknown --covariate-prior "{covariate_prior}": choose one of '
+                         f'{", ".join(_mean_prior.COVARIATE_PRIORS)}.')
+    if covariate_prior != 'none' and motif_mean_prior == 'none':
+        raise InputError('--covariate-prior needs --motif-mean-prior: the coefficients of the covariates get '
+                         'a prior of the same kind.')
     fmt = data.fmt
     group_names = data.group_names
     promoter_inds_to_drop = select_test_promoters(data.promoter_names, test_chromosomes,
@@ -2610,7 +2621,8 @@ def fit(project: str, clustering: ClusteringMode,
             motif_mean, delta = _mean_prior.shrink_motif_means(motif_mean, motif_mean_prior,
                                                                motif_variance=motif_variance,
                                                                families=mean_prior_families,
-                                                               verbose=verbose)
+                                                               verbose=verbose, covariates=covariate_prior,
+                                                               covariate_names=getattr(data_orig, 'covariate_names', None))
             # The promoter means take back what the prior removed from B mu_m: mu_p + B M X,
             # and with it everything estimated from the residuals, stays the same.
             promoter_mean = PromoterMeanEstimates(np.asarray(promoter_mean.mean).reshape(-1) +

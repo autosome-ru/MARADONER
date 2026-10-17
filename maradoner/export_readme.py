@@ -16,7 +16,7 @@ _DEFAULTS = dict(project=None, version=None, n_motifs=None, n_filtered=0, by='gr
                  # Set by the other commands that can write into a results folder.
                  fov_mara=False, grn_prior=0.5, grn_means=True, grn_fdr=0.05, grn_min_variance=1e-3,
                  # A covariance between motifs (fit --motif-families / --motif-lowrank).
-                 motif_families=False, motif_structure=False,
+                 motif_families=False, motif_structure=False, family_alpha=0.05,
                  # Files with user-chosen names: {relative path: [kind, details]}.
                  files=None)
 
@@ -113,6 +113,24 @@ def _registered(kind):
                 'Input of `create --motif-filename`.')
     return text
 
+def _families_summary(ctx):
+    return ('The tests of a family and of its motifs joined (`fit --motif-families`), with classes and lists '
+            f'at the FDR level {ctx["family_alpha"]:g} (`export --alpha`). A motif left out of a list lacks '
+            'evidence of the property. That is no evidence of its absence.')
+
+def _families_columns(ctx):
+    return ['`motifs`: number of motifs of the family kept by `predict`.',
+            '`class`: `family` if the motifs share a variation (`family_FDR`), `individual` if some of them '
+            'vary beyond the family (`individual`), `family+individual` for both, `none` for neither. Empty '
+            'without the tests of tau or omega.',
+            '`family_FDR`: FDR of `asymptotics_based/family_anova.tsv`, H0: omega = 0.',
+            '`family_groups_FDR`: FDR of `prediction_based/family_anova.tsv`: does the family part differ '
+            'between groups?',
+            '`individual`: motifs varying beyond the family, from the FDR of `asymptotics_based/anova.tsv`.',
+            '`individual_groups`: motifs whose individual part differs between groups, from the FDR of '
+            '`prediction_based/individual_anova.tsv`.',
+            '`members`: motifs of the family kept by `predict`.']
+
 def _counts_by(ctx):
     return 'groups' if ctx['counts_grouped'] else 'samples'
 
@@ -133,6 +151,22 @@ _FILES = [
     (r'activities/activity_raw\.tsv', 'motifs x samples',
      'Activity deviation predicted from each sample alone. No standard deviations; equals '
      '`activity_group_raw.tsv` for groups of one sample.', None),
+    (r'activities/family_activity_group_raw\.tsv', 'families x groups',
+     'Family part of the activity deviations (`fit --motif-families`): the part shared by the motifs of '
+     'a family, in each group. The posterior mean of f in u = F f + e. Families of one motif are absent.',
+     None),
+    (r'activities/family_activity_group_raw_std\.tsv', 'families x groups',
+     'Posterior standard deviations of `family_activity_group_raw.tsv`.', None),
+    (r'activities/family_activity\.tsv', 'families x groups',
+     '`family_activity_group_raw.tsv` divided by `family_activity_group_raw_std.tsv`: signed z-scores.', None),
+    (r'activities/individual_activity_group_raw\.tsv', 'motifs x groups',
+     'Individual part of the activity deviation of a motif: the part not shared with its families, in '
+     'each group. The posterior mean of e in u = F f + e.', None),
+    (r'activities/individual_activity_group_raw_std\.tsv', 'motifs x groups',
+     'Posterior standard deviations of `individual_activity_group_raw.tsv`.', None),
+    (r'activities/individual_activity\.tsv', 'motifs x groups',
+     '`individual_activity_group_raw.tsv` divided by `individual_activity_group_raw_std.tsv`: signed z-scores.',
+     None),
 
     (r'params/motif_means\.tsv', 'motifs',
      'Mean activity of each motif.', ['`mean`: estimate.', '`std`: standard error.']),
@@ -218,6 +252,17 @@ _FILES = [
      'activities and their posterior covariances.',
      ['`stat`: test statistic.', '`p-value`: chi2 with (groups - 1) degrees of freedom.',
       '`FDR`: Benjamini-Yekutieli.']),
+    (r'tests/prediction_based/family_anova\.tsv', 'families',
+     'Does the family part of the activities differ between groups? The test of '
+     '`anova.tsv` on `activities/family_activity_group_raw.tsv` and its standard deviations.',
+     ['`stat`: test statistic.', '`p-value`: chi2 with (groups - 1) degrees of freedom.',
+      '`FDR`: Benjamini-Yekutieli.']),
+    (r'tests/prediction_based/individual_anova\.tsv', 'motifs',
+     'Does the individual part of the activity of a motif differ between groups? The test of '
+     '`anova.tsv` on `activities/individual_activity_group_raw.tsv` and its standard deviations.',
+     ['`stat`: test statistic.', '`p-value`: chi2 with (groups - 1) degrees of freedom.',
+      '`FDR`: Benjamini-Yekutieli.']),
+    (r'tests/families\.tsv', 'families', _families_summary, _families_columns),
     (r'tests/covariates/[^/]+\.tsv', 'motifs',
      'One table per term of the covariate design with several columns (a categorical covariate with '
      'more than two levels, an interaction with one). Do the effects of the term on a motif differ '
@@ -300,7 +345,8 @@ _FILES = [
 _SECTIONS = {'': None,
              'activities': _activities,
              'params': None,
-             'tests': 'Tables hold one row per motif; motifs dropped by `predict` appear only in `sign.tsv`.',
+             'tests': 'Tables hold one row per motif or per family; motifs dropped by `predict` appear only in '
+                      '`sign.tsv`.',
              'fov': 'Written if `gof` was run before the export.',
              'log_counts': None,
              'loadings-product': None,

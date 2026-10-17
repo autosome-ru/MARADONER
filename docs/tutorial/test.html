@@ -42,6 +42,7 @@
 <a href="covariates.html">Covariates</a>
 <a href="lowrank.html">Hidden covariates</a>
 <a href="families.html">Motif families</a>
+<a href="windows.html">Windows</a>
 <a href="means.html">Motif means</a>
 <a href="grn.html">Regulatory network</a>
 <a href="other.html">Other models</a>
@@ -83,6 +84,16 @@
       <td data-th="Question">Do the activities of the motifs of a family change together?</td>
       <td data-th="Way">Parameters</td>
       <td data-th="Where"><i>tests/asymptotics_based/family_anova.tsv</i>, for a fit with <a href="./families.html"><code class="nw">--motif-families</code></a></td>
+    </tr>
+    <tr>
+      <td data-th="Question">Does the part of the activities shared by a family differ between groups?</td>
+      <td data-th="Way">Activities</td>
+      <td data-th="Where"><i>tests/prediction_based/family_anova.tsv</i>, see <a href="./families.html#groups">families</a></td>
+    </tr>
+    <tr>
+      <td data-th="Question">Does a motif differ between groups beyond its families?</td>
+      <td data-th="Way">Activities</td>
+      <td data-th="Where"><i>tests/prediction_based/individual_anova.tsv</i></td>
     </tr>
     <tr>
       <td data-th="Question">Does the activity of a motif differ between groups?</td>

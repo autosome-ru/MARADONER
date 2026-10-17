@@ -1,0 +1,135 @@
+<p>This page follows a project where every motif has loadings in several windows around the TSS, and the motifs of related factors form families. It covers the layout of the input files, the fit and the reading of the results. The model of families itself is on the <a href="./families.html">Motif families</a> page.</p>
+
+<h2 id="questions">What do we ask of such data?</h2>
+
+<p>A motif scanned in 3 windows (the core promoter, upstream and downstream of it) gives 3 columns of the loading matrix, and each column gets an activity. The questions are about the motif, though:</p>
+
+<ul>
+  <li>Does the motif act through all its windows together, through one of them, or both?</li>
+  <li>Do the motifs of related factors change together?</li>
+  <li>In which groups is the motif, or the family, up or down?</li>
+</ul>
+
+<p>The model answers them through families of 2 levels. The windows of a motif form a family, and the windows of all motifs of related factors form a family of the second level. The activity of a window is then the sum of 3 parts: the part shared by the factors of its family, the part shared by the windows of its motif, and the individual part of the window.</p>
+
+<h2 id="input">Input files</h2>
+
+<p>The loading matrix has a column per motif and window. The name of a column is the name of the motif followed by the window, as in <i>MEF2D_core</i>, <i>MEF2D_up</i> and <i>MEF2D_down</i>. {name} reads no meaning into the names: the windows are tied together by the file of families only.</p>
+
+<p>The <a href="./families.html#file">file of families</a> has a line per motif with its windows, and a line per family of factors with the windows of all its motifs:</p>
+
+<pre>
+motif_1 motif_1_core motif_1_up motif_1_down
+motif_2 motif_2_core motif_2_up motif_2_down
+...
+family_3 motif_1_core motif_1_up motif_1_down motif_6_core motif_6_up motif_6_down ...
+</pre>
+
+<p>A window belongs to 2 families, one of each level. The second level is optional: without it, a family per motif is the whole file.</p>
+
+<h2 id="example">Example</h2>
+
+<p>The <a href="./other.html#generate">generator</a> of synthetic data makes such a dataset with the <code>--windows</code> option. First, we generate 150 motifs in 3 windows, split into 10 families of factors, and create a project:</p>
+
+<pre class="prettyprint">
+> maradoner generate windows_demo --m 150 --windows core,up,down --families 10
+> maradoner create Windows windows_demo/expression.tsv windows_demo/loadings.tsv --sample-groups windows_demo/groups.json --loading-transform none
+</pre>
+
+<p>Here, the loading matrix has 450 columns, and the loadings of the windows of a motif have a correlation of 0.5. The generator draws for each of the 120 active motifs whether it acts through all windows together, through one window, or both. The truth goes to <i>windows_demo/windows_gt.tsv</i>:</p>
+
+<pre>
+motif	class	omega	individual	family
+motif_1	family	0.2896226645646708		family_3
+motif_2	family+individual	0.6585818884946497	motif_2_up	family_9
+motif_3	family+individual	0.0091505241586455	motif_3_core	family_8
+inactive_motif_4	none	0.0
+</pre>
+
+<p>The <i>class</i> column refers to the windows of a motif: <i>family</i> for a motif acting through its windows together, <i>individual</i> for a motif acting through the windows of the <i>individual</i> column alone, and <i>family+individual</i> for both. The family of factors in the last column adds a part to all windows of its motifs on top of that. The file of families is <i>windows_demo/families.txt</i>, with 150 families of windows and 10 families of factors.</p>
+
+<p>Then we fit the model with the families, predict the activities and export the results:</p>
+
+<pre class="prettyprint">
+> maradoner fit Windows --motif-families windows_demo/families.txt
+> maradoner predict Windows
+> maradoner export Windows windows_results
+</pre>
+
+<p>The output of <code>fit</code> has these lines:</p>
+
+<pre>
+  Motif families: 160 families (160 of them with more than one motif) cover 450 of 450 motifs.
+...
+[motif covariance] Sigma/G REML deviance -174566.915 -> -191645.622 (gain +17078.706)
+  covariance between motifs: diagonal Sigma + 89 of 160 family variances above zero (REML deviance -191645.62).
+</pre>
+
+<p>Here, 89 families have a variance above zero: 79 of the 150 families of windows and all 10 families of factors. The fit takes 3.6 seconds.</p>
+
+<h2 id="table">Reading the table of families</h2>
+
+<p>The <i>windows_results/tests/families.tsv</i> table has a row per family. A row of a family of windows reads as a statement about the motif:</p>
+
+<pre>
+family	motifs	class	family_FDR	family_groups_FDR	individual	individual_groups	members
+motif_1	3	family	1.0226992525708141e-17	9.41987098468065e-10			motif_1_core,motif_1_up,motif_1_down
+motif_2	3	family+individual	6.4274789955139946e-12	0.0054119433147867	motif_2_up		motif_2_core,motif_2_up,motif_2_down
+motif_6	3	none	1.0				motif_6_core,motif_6_up,motif_6_down
+motif_8	3	individual	1.0		motif_8_down	motif_8_down	motif_8_core,motif_8_up,motif_8_down
+</pre>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Statement</th>
+      <th scope="col">Row of the motif</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>The motif acts through all its windows together</td>
+      <td><i>class</i> is <i>family</i></td>
+    </tr>
+    <tr>
+      <td>The motif acts in the downstream window alone</td>
+      <td><i>class</i> is <i>individual</i>, and the <i>individual</i> column lists the downstream window only</td>
+    </tr>
+    <tr>
+      <td>The motif acts through all windows, and through the upstream one beyond that</td>
+      <td><i>class</i> is <i>family+individual</i>, and the <i>individual</i> column lists the upstream window</td>
+    </tr>
+    <tr>
+      <td>The common part of the windows differs between groups</td>
+      <td><i>family_groups_FDR</i> is small</td>
+    </tr>
+    <tr>
+      <td>A window differs between groups beyond the rest of the motif</td>
+      <td>The window is in the <i>individual_groups</i> column</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The <i>class</i> joins the test of the family variance $ω = 0$ (<i>family_FDR</i>) with the tests of $τ = 0$ of the windows. The lists and classes use the FDR level of the <code>--alpha</code> option of <code>export</code>, 0.05 by default. The truth of all 4 rows above is in <i>windows_gt.tsv</i>. The first 3 are right: <i>motif_8</i>, for instance, acts through its downstream window alone. The truth of <i>motif_6</i> is <i>individual</i> through the upstream window, and the export found nothing. A window left out of a list lacks evidence of an effect. That is no evidence of its absence.</p>
+
+<p>A row of a family of factors reads the same way, with the motifs of the factors in place of the windows. In the example, all 10 families of factors are of class <i>family+individual</i>, and their common parts differ between groups with FDRs from $4.2 × 10^{-9}$ down to $8.9 × 10^{-158}$. Their <i>individual</i> columns list the windows varying beyond both families of the window.</p>
+
+<h2 id="groups">In which groups?</h2>
+
+<p>The z-scores of the common parts of families are in <i>windows_results/activities/family_activity.tsv</i>, a row per family and a column per group. For <i>motif_5</i>, of class <i>family</i>, they range from -5.90 in <i>group_5</i> to 9.87 in <i>group_9</i>: the motif is down in group 5 and up in group 9 through all its windows. For the family of factors <i>family_3</i> (16 motifs, 48 windows) they range from -21.23 in <i>group_10</i> to 9.73 in <i>group_2</i>.</p>
+
+<p>The individual parts of the windows are in <i>activities/individual_activity.tsv</i>, and their test across groups in <i>tests/prediction_based/individual_anova.tsv</i>. The downstream window of <i>motif_8</i> differs between groups with an FDR of 0.00044, and its z-scores range from -4.35 in <i>group_8</i> to 3.00 in <i>group_7</i>. The other 2 windows of the motif have FDRs of 1. The raw values and their standard deviations are in the files ending in <i>_group_raw.tsv</i> and <i>_group_raw_std.tsv</i>; the <a href="./families.html#groups">Motif families</a> page lists them all.</p>
+
+<h2 id="truth">How well does it work?</h2>
+
+<p>On this example, 124 of the 150 motifs get the class of the truth, and 126 get the right list of individual windows. All 30 inactive motifs are of class <i>none</i>. Every error is an effect missed: 10 motifs of class <i>family+individual</i> came out as <i>family</i> (the individual window was missed), 9 motifs of class <i>individual</i> and 5 of class <i>family+individual</i> came out as <i>none</i>, 1 motif of class <i>family+individual</i> came out as <i>individual</i>, and 1 motif of class <i>family</i> came out as <i>none</i>. No motif got an effect it does not have.</p>
+
+<p>Without the file of families, the test of $τ$ in <a href="./test.html#anova"><i>anova.tsv</i></a> finds all 3 windows of each of the 120 active motifs. That is right, as the family of factors adds a part to all windows of its motifs. Hence the test of single columns cannot tell a motif acting through one window from a motif acting through all of them. The families can.</p>
+
+<h2 id="notes">Notes</h2>
+
+<ul>
+  <li>The mean activity of a motif is estimated per window, as for any column of the loading matrix. With <a href="./means.html"><code>--motif-mean-prior covariance</code></a>, the prior of the means follows the fitted covariance between windows;</li>
+  <li><code>predict</code> drops the windows of negligible variance. A family left without windows appears in <i>tests/families.tsv</i> with 0 motifs and class <i>none</i>;</li>
+  <li>On a muscle atlas with 1595 motifs in 3 windows, 905 of the families of windows kept at least 2 windows. Of them, 305 were of class <i>individual</i>: 83 with the core window alone and 89 with the downstream window alone. The export took 9 minutes, 1.5 seconds of which went to the parts of families. The fit is described in the <a href="./families.html#cost">cost</a> section of the Motif families page.</li>
+</ul>

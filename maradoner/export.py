@@ -425,6 +425,13 @@ def motif_mean_covariance(motif_mean, motif_names=None, covariate_names=None, ve
     cov = cov_full[:m, :m]
     baseline_cov = getattr(motif_mean, 'baseline_cov', None)
     posterior_cov = getattr(motif_mean, 'posterior_cov', None)
+    posterior_blocks = getattr(motif_mean, 'posterior_blocks', None)
+    if posterior_blocks is not None:
+        # fit --covariate-prior: the errors of the posterior means of all columns of M
+        cov = np.asarray(posterior_cov, dtype=np.float64)
+        per_motif = np.asarray(posterior_blocks, dtype=np.float64)
+        var = np.clip(np.einsum('iaa->ia', per_motif), 0.0, None)
+        return (var ** 0.5, cov, per_motif) if blocks else (var ** 0.5, cov)
     if posterior_cov is not None:
         # fit --motif-mean-prior: the error of the posterior means of the intercept column
         cov = np.asarray(posterior_cov, dtype=np.float64)
@@ -469,6 +476,96 @@ def joint_covariate_tests(M: np.ndarray, blocks: np.ndarray, columns: list) -> t
     pvalue = chi2.sf(stat, np.maximum(df, 1))
     pvalue[df == 0] = np.nan
     return stat, df, pvalue
+
+
+def family_activities(act: ActivitiesPrediction, fit: FitResult, group_inds: list):
+    """Posterior means and variances of the family parts f (f, g) and the individual parts e (m, g)
+    of the group activities u = F f + e (fit --motif-families), over the motifs kept by predict.
+    With f ~ N(0, c Psi), e ~ N(0, c diag(tau)) and c the prior scale of a group, the data depend on
+    f through u only: E[f | data] = K E[u | data], Var[f | data] = c (Psi - K F Psi) + K Var[u | data] K^T
+    with K = Psi F^T S^+ and S = diag(tau) + F Psi F^T. For e, K = diag(tau) S^+. None without
+    families or with predict --pinv (no prior covariance of activities)."""
+    mv = fit.motif_variance
+    F = getattr(mv, 'families', None)
+    if F is None or act.clustering is not None or act._cov is None:
+        return None
+    W_err = _error_lowrank_W(fit.error_variance)
+    V = _activity_lowrank_V(mv)
+    if act._cov_lowrank is not None and W_err is None and V is None:
+        return None
+    keep = np.ones(len(mv.motif), dtype=bool)
+    keep[filtered_motifs(act)] = False
+    tau = np.asarray(mv.motif, dtype=np.float64)[keep]
+    F = np.asarray(F, dtype=np.float64)[keep]
+    Psi = np.diag(np.asarray(mv.family_variance, dtype=np.float64))
+    L = getattr(mv, 'family_lowrank', None)
+    if L is not None and np.ndim(L) == 2:
+        Psi += np.asarray(L, dtype=np.float64) @ np.asarray(L, dtype=np.float64).T
+    S = np.diag(tau) + F @ Psi @ F.T
+    w, v = np.linalg.eigh(0.5 * (S + S.T))
+    keep_w = w > max(w.max(), 0.0) * len(w) * np.finfo(float).eps
+    S_pinv = (v[:, keep_w] / w[keep_w]) @ v[:, keep_w].T
+    # The prior scale c of a group: nu times the multiplier of predict --tau-search, or with
+    # fit --activity-lowrank the variance of the mean of the per-sample activities of the group.
+    nu_tau = np.asarray(mv.group, dtype=np.float64) * np.asarray(act._cov[-1], dtype=np.float64)
+    if V is None or not np.shape(V)[1]:
+        c = nu_tau
+    else:
+        V = np.asarray(V, dtype=np.float64)
+        c = np.array([nu_tau[i] / len(inds) + np.sum(V[inds].sum(axis=0) ** 2) / len(inds) ** 2
+                      for i, inds in enumerate(group_inds)])
+    Q, W = act.cov_factors()
+    U = np.asarray(act.U, dtype=np.float64)
+    PF = Psi @ F.T
+    K = PF @ S_pinv
+    f_cond = np.clip(np.diag(Psi) - np.einsum('ij,ij->i', K, PF), 0.0, None)
+    f_var = f_cond.reshape(-1, 1) * c + ((K @ Q) ** 2) @ W.T
+    T = tau.reshape(-1, 1) * S_pinv
+    e_cond = np.clip(tau - tau ** 2 * np.diag(S_pinv), 0.0, None)
+    e_var = e_cond.reshape(-1, 1) * c + ((T @ Q) ** 2) @ W.T
+    return K @ U, np.clip(f_var, 0.0, None), T @ U, np.clip(e_var, 0.0, None)
+
+
+def scalar_group_anova(mean: np.ndarray, var: np.ndarray) -> tuple:
+    """Chi-squared test of equal values over the groups (columns) for each row of mean, given
+    the posterior variances var, as in the posterior ANOVA of motifs. Rows with a zero variance
+    get no test. Returns (stat, pvalue, fdr); the FDR is Benjamini-Yekutieli."""
+    g = mean.shape[1]
+    stat = np.full(len(mean), np.nan)
+    pvalue = stat.copy()
+    fdr = stat.copy()
+    ok = (var > 0).all(axis=1)
+    if g < 2 or not ok.any():
+        return stat, pvalue, fdr
+    iv = 1 / var[ok]
+    pooled = (mean[ok] * iv).sum(axis=1, keepdims=True) / iv.sum(axis=1, keepdims=True)
+    stat[ok] = (((mean[ok] - pooled) ** 2) * iv).sum(axis=1)
+    pvalue[ok] = chi2.sf(stat[ok], g - 1)
+    fdr[ok] = multitest.multipletests(pvalue[ok], alpha=0.05, method='fdr_by')[1]
+    return stat, pvalue, fdr
+
+
+def family_summary(F: np.ndarray, names: list, motif_names: list, family_fdr, family_groups_fdr,
+                   tau_fdr, individual_groups_fdr, alpha: float) -> DF:
+    """One row per family: the members, whether they share a variation (omega test), whether
+    the family part differs between groups, the members varying beyond the family (tau test)
+    and the members whose individual part differs between groups. A test that was not made is
+    an empty value."""
+    rows = list()
+    motif_names = np.asarray(motif_names, dtype=object)
+    for j, name in enumerate(names):
+        inds = np.where(F[:, j] > 0)[0]
+        individual = '' if tau_fdr is None else ','.join(motif_names[inds[tau_fdr[inds] < alpha]])
+        if tau_fdr is None or not np.isfinite(family_fdr[j]):
+            kind = ''
+        else:
+            kind = {(True, True): 'family+individual', (True, False): 'family',
+                    (False, True): 'individual', (False, False): 'none'}[family_fdr[j] < alpha, bool(individual)]
+        rows.append({'family': name, 'motifs': len(inds), 'class': kind, 'family_FDR': family_fdr[j],
+                     'family_groups_FDR': family_groups_fdr[j], 'individual': individual,
+                     'individual_groups': ','.join(motif_names[inds[individual_groups_fdr[inds] < alpha]]),
+                     'members': ','.join(motif_names[inds])})
+    return DF(rows).set_index('family')
 
 
 def _explain_singular_information(data: ProjectData, fit: FitResult) -> str:
@@ -834,6 +931,27 @@ def export_results(project_name: str, output_folder: str,
     motif_names_filtered = np.array(motif_names_filtered)[~bad_inds]
     anova = DF([stat, pvalue, fdr], columns=motif_names_filtered, index=['stat', 'p-value', 'FDR']).T
     anova.to_csv(os.path.join(folder, 'anova.tsv'), sep='\t')
+    # The same test for the part of the activities shared by the motifs of a family and for
+    # the individual part of a motif (fit --motif-families).
+    fam = None
+    if family_variance is not None:
+        fam = family_activities(act, fit, data.group_inds)
+        if fam is None:
+            warn('The family and individual parts of the activities are not exported: they come from '
+                 'the prior covariance of the activities, and "predict --pinv" does not use it.')
+    family_groups_fdr = individual_groups_fdr = None
+    for fname in ('family_anova.tsv', 'individual_anova.tsv'):
+        if fam is None and os.path.isfile(os.path.join(folder, fname)):
+            os.remove(os.path.join(folder, fname))
+    if fam is not None:
+        f_mean, f_var, e_mean, e_var = fam
+        f_stat, f_pvalue, family_groups_fdr = scalar_group_anova(f_mean[family_free], f_var[family_free])
+        DF({'stat': f_stat, 'p-value': f_pvalue, 'FDR': family_groups_fdr},
+           index=np.asarray(family_names, dtype=object)[family_free]).to_csv(
+            os.path.join(folder, 'family_anova.tsv'), sep='\t', index_label='family')
+        e_stat, e_pvalue, individual_groups_fdr = scalar_group_anova(e_mean, e_var)
+        DF({'stat': e_stat, 'p-value': e_pvalue, 'FDR': individual_groups_fdr},
+           index=motif_names_filtered).to_csv(os.path.join(folder, 'individual_anova.tsv'), sep='\t')
 
     folder = os.path.join(output_folder, 'tests', 'asymptotics_based')
     os.makedirs(folder, exist_ok=True)
@@ -888,12 +1006,27 @@ def export_results(project_name: str, output_folder: str,
     # same boundary mixture as above.
     family_lrt = getattr(fit.motif_variance, 'family_lrt', None)
     fname = os.path.join(folder, 'family_anova.tsv')
+    fdr_f = None
     if family_variance is not None and family_lrt is not None and family_free.any():
         lrt_f = np.clip(np.asarray(family_lrt, dtype=float)[family_free], 0.0, None)
         pval_f = np.where(lrt_f > 0, 0.5 * chi2.sf(lrt_f, 1), 1.0)
         fdr_f = multitest.multipletests(pval_f, alpha=0.05, method='fdr_bh')[1]
         DF({'stat': lrt_f, 'p-value': pval_f, 'FDR': fdr_f},
            index=np.asarray(family_names, dtype=object)[family_free]).to_csv(fname, sep='\t', index_label='family')
+    elif os.path.isfile(fname):
+        os.remove(fname)
+    # The tests above and the prediction-based ones joined per family, with classes at the FDR
+    # level alpha.
+    fname = os.path.join(output_folder, 'tests', 'families.tsv')
+    if fam is not None and family_free.any():
+        n_free = int(family_free.sum())
+        keep = np.ones(len(motif_names), dtype=bool)
+        keep[filtered] = False
+        family_summary(np.asarray(families, dtype=float)[keep][:, family_free],
+                       np.asarray(family_names, dtype=object)[family_free], motif_names_filtered,
+                       np.full(n_free, np.nan) if fdr_f is None else fdr_f, family_groups_fdr,
+                       np.asarray(fdrs) if anova_kind in ('lrt', 'wald') else None,
+                       individual_groups_fdr, alpha).to_csv(fname, sep='\t')
     elif os.path.isfile(fname):
         os.remove(fname)
     
@@ -949,6 +1082,28 @@ def export_results(project_name: str, output_folder: str,
     DF(U, index=motif_names_filtered,
        columns=['overall'] + list(group_names)).to_csv(os.path.join(folder, 'z_score.tsv'), sep='\t')
     DF(act.U_raw, index=motif_names_filtered, columns=data.sample_names).to_csv(os.path.join(folder, 'activity_raw.tsv'), sep='\t')
+    # The family parts per family and the individual parts per motif, laid out as above.
+    parts = list()
+    if fam is not None:
+        parts = [('family', f_mean[family_free], f_var[family_free],
+                  np.asarray(family_names, dtype=object)[family_free]),
+                 ('individual', e_mean, e_var, motif_names_filtered)]
+    for kind in ('family', 'individual'):
+        names = [f'{kind}_activity_group_raw.tsv', f'{kind}_activity_group_raw_std.tsv', f'{kind}_activity.tsv']
+        if fam is None:
+            for fname in names:
+                if os.path.isfile(os.path.join(folder, fname)):
+                    os.remove(os.path.join(folder, fname))
+    for kind, mean, var, rows in parts:
+        std = var ** 0.5
+        label = 'family' if kind == 'family' else None
+        for fname, table in ((f'{kind}_activity_group_raw.tsv', mean), (f'{kind}_activity_group_raw_std.tsv', std)):
+            DF(table, index=rows, columns=group_names).to_csv(os.path.join(folder, fname), sep='\t',
+                                                             index_label=label)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z = np.where(std > 0, mean / np.where(std > 0, std, 1.0), np.nan)
+        DF(z, index=rows, columns=group_names).to_csv(os.path.join(folder, f'{kind}_activity.tsv'), sep='\t',
+                                                      index_label=label)
     
     
             
@@ -977,7 +1132,7 @@ def export_results(project_name: str, output_folder: str,
                  n_motifs=len(motif_names), n_filtered=len(filtered), anova=anova_kind,
                  zero_margin=zero_margin, weighted_zscore=weighted_zscore,
                  fov_grouped=bool(fov is not None and fov.grouped), counts_grouped=counts_grouped,
-                 fov_mara=False, motif_families=family_variance is not None,
+                 fov_mara=False, motif_families=family_variance is not None, family_alpha=alpha,
                  motif_structure=np.ndim(motif_covariance(fit.motif_variance)) == 2)
         
             

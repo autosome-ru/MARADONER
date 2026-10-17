@@ -42,6 +42,7 @@
 <a href="covariates.html">Covariates</a>
 <a href="lowrank.html">Hidden covariates</a>
 <a class="active" href="families.html" aria-current="page">Motif families</a>
+<a href="windows.html">Windows</a>
 <a href="means.html">Motif means</a>
 <a href="grn.html">Regulatory network</a>
 <a href="other.html">Other models</a>
@@ -163,6 +164,56 @@ family_3	192.52328841334426	4.472396497332097e-44	5.770834190105931e-44
 
 <p>Do the families help to predict activities? In this example they do. Without families, the deviations predicted for single samples have a squared error of 10.6% of the variance of the true deviations, and with them 8.4%. A motif borrows strength from the other motifs of its family. The <i>params/activity_correlations.tsv</i> table has the correlations between the activities of motifs implied by the fitted covariance.</p>
 
+<h2 id="groups">Which families differ between groups?</h2>
+
+<p>The <code class="nw">export</code> command splits the predicted deviation of each motif in each group into the family part and the individual part. Both are posterior means given the activities of all motifs, with posterior standard deviations. The group test of <a href="./test.html#groups"><i>anova.tsv</i></a> is then applied to each part:</p>
+
+<div class="tbl"><table>
+  <thead>
+    <tr>
+      <th scope="col">Question</th>
+      <th scope="col">Where</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td data-th="Question">What is the family part of a family in each group?</td>
+      <td data-th="Where"><i>activities/family_activity_group_raw.tsv</i>, with the standard deviations in <i>family_activity_group_raw_std.tsv</i> and the z-scores in <i>family_activity.tsv</i></td>
+    </tr>
+    <tr>
+      <td data-th="Question">What is the individual part of a motif in each group?</td>
+      <td data-th="Where">The same files with <i>individual</i> in place of <i>family</i></td>
+    </tr>
+    <tr>
+      <td data-th="Question">Does the family part differ between groups?</td>
+      <td data-th="Where"><i>tests/prediction_based/family_anova.tsv</i></td>
+    </tr>
+    <tr>
+      <td data-th="Question">Does a motif differ between groups beyond its families?</td>
+      <td data-th="Where"><i>tests/prediction_based/individual_anova.tsv</i></td>
+    </tr>
+    <tr>
+      <td data-th="Question">All of the above for a family in one row</td>
+      <td data-th="Where"><i>tests/families.tsv</i></td>
+    </tr>
+  </tbody>
+</table></div>
+
+<p>In the example, the family parts of 32 of the 40 families differ between groups at an FDR of 0.05. The z-scores of <i>family_1</i> range from -5.29 in <i>group_6</i> to 2.47 in <i>group_2</i>. Of the 449 motifs, 383 differ between groups in <i>anova.tsv</i>, and 138 in their individual parts. For 246 of the 383, the test finds no difference beyond their families.</p>
+
+<p>The <i>tests/families.tsv</i> table joins the tests of a family and of its motifs. The row of <i>family_3</i> is</p>
+
+<pre>
+family	motifs	class	family_FDR	family_groups_FDR	individual	individual_groups	members
+family_3	7	family+individual	5.770834190105931e-44	2.9590055972384587e-05	motif_112,motif_144,motif_187,motif_212,motif_274	motif_112,motif_212	motif_99,motif_112,motif_144,motif_187,motif_212,motif_274,motif_345
+</pre>
+
+<p>The 7 motifs of the family share a variation (<i>family_FDR</i>, the test of $ω = 0$), and the family part differs between groups (<i>family_groups_FDR</i>). Of them, 5 vary beyond the family (<i>individual</i>, the test of $τ = 0$), and the individual parts of 2 differ between groups (<i>individual_groups</i>). The <i>class</i> column sums up the 2 tests of variances: <i>family</i>, <i>individual</i>, <i>family+individual</i> or <i>none</i>. All 40 families of the example are of class <i>family+individual</i>, as the generator gives every motif an individual variance. The lists and the classes use the FDR level of the <code class="nw">--alpha</code> option of <code class="nw">export</code>, 0.05 by default.</p>
+
+<p>For a family of the core, upstream and downstream windows of a motif X, a row is a statement about the windows. Class <i>individual</i> with only <i>X_core</i> in the <i>individual</i> column means that the windows share no variation and only the core varies: X acts in the core. Class <i>family</i> means that X acts through all windows together. A window left out of a list lacks evidence of the property. That is no evidence of its absence. With families of 2 levels, e.g. clusters of related factors over the families of windows, every family has a row, and the individual part of a motif is the part shared with neither of its families.</p>
+
+<p>The <a href="./windows.html">Motif families and windows</a> page goes through such a project from the input files to the conclusions.</p>
+
 <h2 id="lowrank">Covariance between families</h2>
 
 <p>Families may change together as well. With the <code class="nw">--motif-lowrank</code> option, $Ω$ becomes
@@ -180,20 +231,21 @@ Here, $L$ has a row per family and a column per factor. As with the <a href="./l
 <p>The true factor is saved to <i>demo/L_motif_gt.tsv</i>. The output of <code class="nw">fit</code> has these lines:</p>
 
 <pre>
-[motif covariance] 185 iterations, 202 evaluations of the deviance (converged=True)
+[motif covariance] Fisher scoring: 10 steps, 11 evaluations, deviance -350976.215 -> -351422.338
+[motif covariance] 19 iterations, 21 evaluations of the deviance (converged=True)
 [motif covariance] Sigma/G REML deviance -332921.551 -> -351422.338 (gain +18500.787)
-Smallest eigenvalue of the Fisher information of the variances (scaled to a unit diagonal): 0.04786614868192972
+Smallest eigenvalue of the Fisher information of the variances (scaled to a unit diagonal): 0.04786604990828177
   covariance between motifs: diagonal Sigma + 40 of 40 family variances above zero + rank-1 covariance between families (REML deviance -351422.34).
 </pre>
 
-<p>Here, the gain is counted from the model with independent motifs. The families alone reach a deviance of -350592.269 on these data, so the factor adds 830. The model with a factor is fitted by L-BFGS-B, as Fisher scoring covers the variances only, and it takes more iterations.</p>
+<p>Here, the gain is counted from the model with independent motifs. The families alone reach a deviance of -350592.269 on these data, so the factor adds 830. Fisher scoring covers the factor as well as the variances. It starts from the fit with families alone, and the first line counts its 10 steps. The second line counts the steps of both models, 9 of them for the families alone.</p>
 
 <p>The <i>params/family_factors.tsv</i> table of the exported folder has a row per family and a column per factor:</p>
 
 <pre>
 family	factor_1
-family_1	3.805307134695904
-family_2	-1.755312326802828
+family_1	3.8053847574250192
+family_2	-1.7553280784059162
 </pre>
 
 <p>The factor has a correlation of -0.986 with the true one. The minus is no error: $L L^T$ is the same for $L$ and $-L$, so the sign of a factor is arbitrary. The <i>params/family_correlations.tsv</i> table has the correlations between families implied by $Ω + L L^T$. In this example the factor leaves the predicted activities as accurate as they are with the families alone, with a squared error of 5.3% in both fits.</p>
@@ -207,7 +259,7 @@ family_2	-1.755312326802828
 <h2 id="cost">What does it cost?</h2>
 
 <ul>
-  <li>Time. On the data of the first example, <code class="nw">fit</code> takes 2.6 seconds without families, 3.4 with them and 7.6 with a factor and no families. On the data of the second example it takes 3.6 seconds with the families and 6.6 with the families and a factor;</li>
+  <li>Time. On the data of the first example, <code class="nw">fit</code> takes 2.9 seconds without families, 3.7 with them and 5.8 with a factor and no families. On the data of the second example it takes 3.8 seconds with the families and 5.1 with the families and a factor;</li>
   <li>On real data. A muscle atlas had 1595 motifs, each with occupancies in 3 windows around the TSS (4785 columns of the loading matrix), and 27,007 training promoters. With a family per motif made of its 3 windows, <code class="nw">fit</code> took 18.6 minutes against 10.6 without families, on 8 threads. The families lowered the deviance by 9069 and left the FOV of held-out promoters where it was (0.268 against 0.269 without them). Families that fit the data well do not have to improve prediction;</li>
   <li>The options need motif variances. With <code class="nw">--no-motif-variance</code> they are ignored with a warning;</li>
   <li>They cannot be combined with <code class="nw">--clustering</code>, as the latter replaces motifs by clusters.</li>
@@ -220,6 +272,7 @@ family_2	-1.755312326802828
 <a href="#family">What is a family?</a>
 <a href="#file">The file of families</a>
 <a href="#example">Example</a>
+<a href="#groups">Which families differ between groups?</a>
 <a href="#lowrank">Covariance between families</a>
 <a href="#cost">What does it cost?</a>
 </nav>

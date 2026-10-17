@@ -125,6 +125,11 @@ class MotifMeanPrior(str, Enum):
     families = 'families'
     covariance = 'covariance'
 
+class CovariatePrior(str, Enum):
+    none = 'none'
+    shared = 'shared'
+    separate = 'separate'
+
 class LoadingTransform(str, Enum):
     none = 'none'
     scale = 'scale'
@@ -371,6 +376,13 @@ def _fit(name: str = Argument(..., help='Project name.'),
                                       'fitted covariance between motif activities on top of it). Without a prior, the means of many '
                                       'similar motifs fit the levels of the training promoters and predict those of other promoters '
                                       'poorly.'),
+          covariate_prior: CovariatePrior = Option(CovariatePrior.none, '--covariate-prior',
+                                      help='The prior of [purple]--motif-mean-prior[/purple] for the effects of the covariates on '
+                                      'the motif activities (the columns of [cyan]M[/cyan] other than the intercept) as well: '
+                                      '[dark_orange]shared[/dark_orange] (one set of variances for all covariates) or '
+                                      '[dark_orange]separate[/dark_orange] (one set per covariate). By default only the means are '
+                                      'shrunk, and the effects of the covariates fit the training promoters as freely as the means '
+                                      'without a prior.'),
           gpu: bool = Option(False, help='Use GPU if available for most of computations.'),
           gpu_decomposition: bool = Option(False, help='Use GPU if available for the SVD decomposition of the loading matrix.'),
           x64: bool = Option(True, help='Use high precision algebra.')):
@@ -388,7 +400,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
             error_lowrank=error_lowrank,
             activity_lowrank=activity_lowrank,
             motif_families=motif_families, motif_lowrank=motif_lowrank,
-            motif_mean_prior=motif_mean_prior.value,
+            motif_mean_prior=motif_mean_prior.value, covariate_prior=covariate_prior.value,
             gpu_decomposition=gpu_decomposition, x64=x64)
     _done(t0)
 
@@ -635,6 +647,11 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
                 motif_lowrank: int = Option(0, '--motif-lowrank', help='Inject a rank-[dark_orange]k[/dark_orange] covariance L L^T between the '
                                             'families, or between the motifs without --families (L_motif_gt.tsv).'),
                 motif_lowrank_scale: float = Option(1.0, help='Entries of L relative to the square root of the mean tau.'),
+                windows: str = Option(None, '--windows', help='Comma-separated names of windows around the TSS, e.g. '
+                                      '[blue]core,up,down[/blue]: each motif gets a column of loadings per window, the windows of '
+                                      'a motif form a family, and an active motif acts through all its windows together, through '
+                                      'one of them or both (windows_gt.tsv). With [purple]--families[/purple] the motifs form families '
+                                      'of a second level as well. families.txt holds both levels.'),
                 seed: int = Option(1, help='Random seed.')
             ):
     t0 = time()
@@ -648,6 +665,7 @@ def _generate(output_folder: Path = Argument(..., help='Output folder.'),
                          activity_lowrank=activity_lowrank, activity_lowrank_scale=activity_lowrank_scale,
                          families=families, family_scale=family_scale,
                          motif_lowrank=motif_lowrank, motif_lowrank_scale=motif_lowrank_scale,
+                         windows=[w.strip() for w in windows.split(',')] if windows else None,
                          seed=seed)
     _done(t0)
 
@@ -661,13 +679,15 @@ def _export(name: str = Argument(..., help='Project name.'),
             zero_margin: float = Option(None, help='If given, the [dark_orange]zero[/dark_orange] column of sign.tsv becomes an equivalence test of the mean motif '
                                                    'activity lying within [-margin, margin]; by default it is just the lower tail of the |z| statistic.'),
             weighted_zscore: bool = Option(False, help='Reciprocal variance weighted Z-scores'),
-            alpha: float = Option(0.05, help='[i](Has no effect, kept for backward compatibility)[/i] FDR alpha: the exported FDR values are adjusted p-values, which do not depend on it.'),
+            alpha: float = Option(0.05, help='FDR level of the classes in tests/families.tsv. The exported FDR values are adjusted p-values and do not depend on it.'),
             log_counts: bool = Option(False, help='Export expression value predictions.'),
             log_counts_grouped: bool = Option(True, help='Whether to export expressions wrt to groups or samples.'),
             loadings_product: bool = Option(False, help='Export loading matrix-activity 3D tensor. This will produce num_of_groups tabular files.'),
             lp_hdf: bool = Option(True, help='Each loadings-product table will be stored in hdf format (occupies much less space than plain tsv) using float16 precision.'),
             lp_intercepts: bool = Option(True, help='Include motif means in the 3D tensor.'),
             lp_tsv_truncation: int = Option(4, min=0, help='Number of digits after a floating point to truncate. Decreases the output size of a tabular if [dark_orange]lp-hdf[/dark_orange] is disabled.')):
+    if not 0 < alpha < 1:
+        raise InputError(f'--alpha is a false discovery rate and must lie strictly between 0 and 1, but {alpha:g} was given.')
     t0 = time()
     with spinner("Exporting results..."):
         export_results(name, output_folder, std_mode=std_mode, anova_mode=anova_mode, alpha=alpha,

@@ -176,6 +176,11 @@ The <b>std</b> column is the posterior standard deviation given the estimated va
       <td>0, 1</td>
     </tr>
     <tr>
+      <td><code>--windows &lt;names&gt;</code></td>
+      <td>Comma-separated names of windows around the TSS, e.g. <code>core,up,down</code>. Each motif gets a column of loadings per window, the windows of a motif form a family, and an active motif acts through all its windows together, through one of them or both. With <code>--families</code> the motifs form families of a second level. Both levels go to <i>families.txt</i> and the truth per motif to <i>windows_gt.tsv</i>, see <a href="./windows.html">Motif families and windows</a></td>
+      <td>None</td>
+    </tr>
+    <tr>
       <td><code>--seed &lt;int&gt;</code></td>
       <td>Random seed</td>
       <td>1</td>
