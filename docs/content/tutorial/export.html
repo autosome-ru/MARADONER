@@ -103,6 +103,26 @@
       <td>For a fit with <code>--activity-lowrank</code>: the <a href="./lowrank.html">factors</a>, a column per factor. <i>error_factors.tsv</i> is the same for <code>--error-lowrank</code></td>
     </tr>
     <tr>
+      <td><i>family_variances.tsv</i></td>
+      <td>Families</td>
+      <td>For a fit with <code>--motif-families</code>: the variance shared by the motifs of each <a href="./families.html">family</a> (<b>omega</b>), its standard error (<b>std</b>) and the number of motifs (<b>motifs</b>). The <b>tau</b> of a motif is then the variance of its individual part</td>
+    </tr>
+    <tr>
+      <td><i>family_factors.tsv</i></td>
+      <td>Families</td>
+      <td>For a fit with <code>--motif-families</code> and <code>--motif-lowrank</code>: the <a href="./families.html#lowrank">factors</a> of the covariance between families, a column per factor. Without families the factors are in <i>motif_factors.tsv</i>, a row per motif</td>
+    </tr>
+    <tr>
+      <td><i>family_correlations.tsv</i></td>
+      <td>Families</td>
+      <td>For a fit with <code>--motif-lowrank</code> and families: the correlations between families implied by $Ω + L L^T$</td>
+    </tr>
+    <tr>
+      <td><i>activity_correlations.tsv</i></td>
+      <td>Motifs</td>
+      <td>For a fit with <code>--motif-families</code> or <code>--motif-lowrank</code>: the correlations between the activities of motifs implied by the fitted covariance between motifs</td>
+    </tr>
+    <tr>
       <td><i>correlations/</i></td>
       <td></td>
       <td>Correlations between the estimates of a kind, e.g. between the mean activities of different motifs</td>

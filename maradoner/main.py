@@ -366,7 +366,7 @@ def _fit(name: str = Argument(..., help='Project name.'),
           motif_mean_prior: MotifMeanPrior = Option(MotifMeanPrior.none, '--motif-mean-prior',
                                       help='Prior on the mean activities of the motifs, with its variances estimated by REML: '
                                       '[dark_orange]ridge[/dark_orange] (a variance shared by all motifs), '
-                                      '[dark_orange]families[/dark_orange] (a variance per family on top of it, needs '
+                                      '[dark_orange]families[/dark_orange] (on top of it, a part common to the motifs of a family, with one variance for all families; needs '
                                       '[purple]--motif-families[/purple]) or [dark_orange]covariance[/dark_orange] (a multiple of the '
                                       'fitted covariance between motif activities on top of it). Without a prior, the means of many '
                                       'similar motifs fit the levels of the training promoters and predict those of other promoters '

@@ -139,6 +139,7 @@ Motifs appear in the activity and test tables only if `predict` kept them (see `
 *   `create --covariates covariates.tsv --formula "age * sex + batch"`: a formula chooses columns of the table and adds their interactions (`a:b`; `a * b` stands for `a + b + a:b`).
 *   `fit --error-lowrank k` / `fit --activity-lowrank k`: low-rank corrections for correlated noise / correlated activities across samples. `export` writes the factors to `params/error_factors.tsv` / `params/factors.tsv`; the latter is a valid table for `create --covariates`.
 *   `fit --motif-families families.txt` / `fit --motif-lowrank k`: correlated activities of motifs. The covariance between motifs turns from the diagonal `Sigma` into `Sigma + F (Omega + L L^T) F^T`: `F` tells which motifs belong to which family, the diagonal `Omega` holds a variance per family, and the optional `L` of `k` columns is a covariance between families. The file of families is a JSON dictionary `{"family": ["motif", ...]}` or a text file with a family per line (`family motif motif ...`). Without families each motif forms a family of one, and the covariance is `Sigma + L L^T`.
+*   `fit --motif-mean-prior ridge|families|covariance`: a prior on the mean activities of motifs, with its variances estimated by REML. It shrinks the means when the motifs are many for the number of promoters, and the levels of held-out promoters are predicted better.
 *   `fit --clustering KMeans|NMF --num-clusters k`: replace motifs by clusters of motifs with similar loadings (useful when there are more motifs than the data can tell apart); all later commands then report clusters.
 *   `fit --no-motif-variance`: one common variance for all motifs, closer to the classical (IS)MARA.
 *   `fit --promoter-variance` *(experimental)*: heuristic reweighting of promoters by their noise level.
@@ -167,16 +168,34 @@ maradoner fit --help
 There's also a project doumentation available at [maradoner.georgy.top](https://maradoner.georgy.top).
 
 # Cite
-For the time being, you can cite [our technical arXiv paper](https://doi.org/10.48550/arXiv.2602.03343) that explains MARADONER's inner clockworks in a great detail:
+Please cite the [conference paper](https://doi.org/10.1145/3822521.3822537) on MARADONER:
 
 ```
-@misc{meshcheryakov2026,
-      title={MARADONER: Motif Activity Response Analysis Done Right}, 
+@inproceedings{meshcheryakov2026,
+      title={MARADONER: Motif Activity Response Analysis Done Right},
+      author={Meshcheryakov, Georgy and Buyan, Andrey and Favorov, Alexander and Makeev, Vsevolod Jurievich and Kulakovskiy, Ivan Vladimirovich},
+      booktitle={Proceedings of the 2026 18th International Conference on Bioinformatics and Biomedical Technology},
+      series={ICBBT 2026},
+      pages={264--269},
+      year={2026},
+      month=may,
+      publisher={ACM},
+      location={Suzhou, China},
+      doi={10.1145/3822521.3822537},
+      url={https://doi.org/10.1145/3822521.3822537},
+}
+```
+
+The [arXiv preprint](https://doi.org/10.48550/arXiv.2602.03343) is a longer manuscript with the mathematics in more detail, and it can be cited as well:
+
+```
+@misc{meshcheryakov2026arxiv,
+      title={MARADONER: Motif Activity Response Analysis Done Right},
       author={Georgy Meshcheryakov and Andrey I. Buyan},
       year={2026},
       eprint={2602.03343},
       archivePrefix={arXiv},
       primaryClass={stat.CO},
-      url={https://arxiv.org/abs/2602.03343}, 
+      url={https://arxiv.org/abs/2602.03343},
 }
 ```

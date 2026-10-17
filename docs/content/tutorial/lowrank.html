@@ -208,7 +208,6 @@ Number of factors supported by the data: 0
 
 <ul>
   <li>Time. The <code>fit</code> of this example takes 7 seconds without factors, 41 with 1 factor and 69 with 2. The <code>select-rank</code> command fits the model twice per simulated dataset. The run above tried 2 factors and took 6 minutes. The run on the Quickstart data stopped at the first factor and took a bit over a minute;</li>
-  <li>The mean activities and their standard errors do not account for the factors, as the note in the output of <code>fit</code> says;</li>
   <li>The option needs motif variances. With <code>--no-motif-variance</code> it is ignored with a warning;</li>
   <li>The optimization may stop at the limit of iterations, and <code>fit</code> then warns that the variances may be inaccurate. We got the warning on a dataset generated with <code>--cov-effect 1</code>, i.e. with a hidden covariate about 3 times stronger. The covariate was reconstructed all the same.</li>
 </ul>

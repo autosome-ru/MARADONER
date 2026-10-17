@@ -44,6 +44,16 @@
  "menu": "Hidden covariates",
  "keywords": ["low-rank", "activity-lowrank", "latent factor", "hidden covariate", "batch", "confounder"]
 },
+{"file": "families.html",
+ "title": "Motif families",
+ "menu": "Motif families",
+ "keywords": ["motif families", "motif-families", "motif-lowrank", "covariance between motifs", "omega", "family variance"]
+},
+{"file": "means.html",
+ "title": "Regularization of motif means",
+ "menu": "Motif means",
+ "keywords": ["motif means", "motif-mean-prior", "prior", "shrinkage", "ridge", "regularization", "held-out promoters"]
+},
 {"file": "grn.html",
  "title": "Gene regulatory network",
  "menu": "Regulatory network",

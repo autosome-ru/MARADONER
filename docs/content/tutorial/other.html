@@ -166,6 +166,16 @@ The <b>std</b> column is the posterior standard deviation given the estimated va
       <td>0, 0</td>
     </tr>
     <tr>
+      <td><code>--families &lt;int&gt;</code>, <code>--family-scale &lt;float&gt;</code></td>
+      <td>The number of <a href="./families.html">motif families</a> among which the active motifs are split at random, and their variances $ω$ relative to the mean $τ$. The families are written to <i>families.txt</i> and their variances to <i>family_variances_gt.tsv</i></td>
+      <td>0, 1</td>
+    </tr>
+    <tr>
+      <td><code>--motif-lowrank &lt;int&gt;</code>, <code>--motif-lowrank-scale &lt;float&gt;</code></td>
+      <td>The rank of a <a href="./families.html#lowrank">covariance between families</a>, or between motifs without families, and the size of the entries of $L$ relative to the square root of the mean $τ$. $L$ is written to <i>L_motif_gt.tsv</i></td>
+      <td>0, 1</td>
+    </tr>
+    <tr>
       <td><code>--seed &lt;int&gt;</code></td>
       <td>Random seed</td>
       <td>1</td>

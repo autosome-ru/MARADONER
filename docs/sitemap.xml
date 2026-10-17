@@ -2,18 +2,20 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://maradoner.georgy.top/</loc><lastmod>2026-10-14</lastmod></url>
   <url><loc>https://maradoner.georgy.top/tutorial/quickstart.html</loc><lastmod>2026-10-17</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/tutorial/create.html</loc><lastmod>2026-10-16</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/tutorial/fit.html</loc><lastmod>2026-10-14</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/create.html</loc><lastmod>2026-10-17</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/fit.html</loc><lastmod>2026-10-17</lastmod></url>
   <url><loc>https://maradoner.georgy.top/tutorial/predict.html</loc><lastmod>2026-10-13</lastmod></url>
   <url><loc>https://maradoner.georgy.top/tutorial/gof.html</loc><lastmod>2026-10-17</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/tutorial/export.html</loc><lastmod>2026-10-14</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/tutorial/test.html</loc><lastmod>2026-10-14</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/export.html</loc><lastmod>2026-10-17</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/test.html</loc><lastmod>2026-10-17</lastmod></url>
   <url><loc>https://maradoner.georgy.top/tutorial/covariates.html</loc><lastmod>2026-10-14</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/tutorial/lowrank.html</loc><lastmod>2026-10-14</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/lowrank.html</loc><lastmod>2026-10-17</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/families.html</loc><lastmod>2026-10-17</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/means.html</loc><lastmod>2026-10-17</lastmod></url>
   <url><loc>https://maradoner.georgy.top/tutorial/grn.html</loc><lastmod>2026-10-14</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/tutorial/other.html</loc><lastmod>2026-10-13</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/tutorial/clockworks.html</loc><lastmod>2026-10-13</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/other.html</loc><lastmod>2026-10-17</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/tutorial/clockworks.html</loc><lastmod>2026-10-17</lastmod></url>
   <url><loc>https://maradoner.georgy.top/faq.html</loc><lastmod>2026-10-13</lastmod></url>
   <url><loc>https://maradoner.georgy.top/contact.html</loc><lastmod>2026-10-13</lastmod></url>
-  <url><loc>https://maradoner.georgy.top/cite.html</loc><lastmod>2026-10-13</lastmod></url>
+  <url><loc>https://maradoner.georgy.top/cite.html</loc><lastmod>2026-10-17</lastmod></url>
 </urlset>

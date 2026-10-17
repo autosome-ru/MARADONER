@@ -120,6 +120,16 @@ So each motif has a mean activity $μ_m$ and a variance $τ$, and each group of 
       <td>0</td>
     </tr>
     <tr>
+      <td><code>--motif-families &lt;path&gt;</code></td>
+      <td>A file of <a href="./families.html">motif families</a>. The activities of the motifs of a family get a common part with a variance $ω$ per family, and the covariance between motifs becomes $Σ + F Ω F^T$. Requires motif variances</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td><code>--motif-lowrank &lt;int&gt;</code></td>
+      <td>Rank $k$ of a <a href="./families.html#lowrank">covariance between families</a>: $Ω$ becomes $Ω + L L^T$. Without <code>--motif-families</code> the covariance between motifs becomes $Σ + L L^T$</td>
+      <td>0</td>
+    </tr>
+    <tr>
       <td><code>--promoter-variance</code></td>
       <td>(Experimental) Promoters are reweighted by a heuristic estimate of their individual error variances</td>
       <td>Disabled</td>
@@ -131,7 +141,7 @@ So each motif has a mean activity $μ_m$ and a variance $τ$, and each group of 
 The paper describes a REML estimator of promoter variances. The <code>--promoter-variance</code> option does a different thing at the moment, namely a mixture-based reweighting of promoters. The weights define no likelihood, so the likelihood-ratio test of the <a href="./test.html#anova">ANOVA</a> is replaced with a Wald test for such fits.
 </div>
 
-<p>The low-rank corrections enter the estimation of variances only. The motif means and their standard errors are still computed under the model with diagonal covariances, and {name} prints a note about it.</p>
+<p>The low-rank corrections and the families enter the estimation of the motif means and their standard errors as well.</p>
 
 <h2 id="clustering">Clustering</h2>
 
@@ -155,6 +165,16 @@ The paper describes a REML estimator of promoter variances. The <code>--promoter
 </pre>
 
 <p>The first form needs promoter names that contain a chromosome, e.g. <i>chr3:1000-2000</i>. The second one takes a text file with one promoter name per line. What to do with the testing set next is explained in the <a href="./gof.html#test">Goodness of fit</a> section.</p>
+
+<h2 id="means">Motif means</h2>
+
+<p>With many motifs for the number of promoters, the mean activities fit the levels of the training promoters too closely. The <code>--motif-mean-prior</code> option shrinks them with a prior, and its variances are estimated by REML:</p>
+
+<pre class="prettyprint">
+> maradoner fit MyProject --motif-mean-prior covariance
+</pre>
+
+<p>Here, <code>covariance</code> is one of the kinds of the prior. The others are <code>ridge</code>, <code>families</code> and <code>none</code>, the default. They are compared in <a href="./means.html">Regularization of motif means</a>.</p>
 
 <h2 id="options">Other options</h2>
 

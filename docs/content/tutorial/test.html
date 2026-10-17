@@ -29,6 +29,11 @@
       <td><i>tests/asymptotics_based/sign.tsv</i></td>
     </tr>
     <tr>
+      <td>Do the activities of the motifs of a family change together?</td>
+      <td>Parameters</td>
+      <td><i>tests/asymptotics_based/family_anova.tsv</i>, for a fit with <a href="./families.html"><code>--motif-families</code></a></td>
+    </tr>
+    <tr>
       <td>Does the activity of a motif differ between groups?</td>
       <td>Activities</td>
       <td><i>tests/prediction_based/anova.tsv</i></td>
@@ -56,7 +61,7 @@
   </tbody>
 </table>
 
-<p>The first 3 tables are written by <a href="./export.html"><code>export</code></a>. All tests need a prior run of <code>predict</code>.</p>
+<p>The first 4 tables are written by <a href="./export.html"><code>export</code></a>. All tests need a prior run of <code>predict</code>.</p>
 
 <h2 id="anova">Does a motif vary at all?</h2>
 
@@ -82,6 +87,8 @@
 </table>
 
 <p>In the <a href="./quickstart.html#Example">Quickstart</a> example, the likelihood-ratio test finds 366 motifs at an FDR of 0.05, and 1 of them is a motif of constant activity.</p>
+
+<p>With <a href="./families.html">motif families</a>, $τ$ is the variance of the part of a motif not shared with its families. The test then asks whether a motif varies beyond its families, and the families are tested in <i>family_anova.tsv</i>.</p>
 
 <p>The <code>--anova-mode negative</code> option of <code>export</code> reports the opposite tail of the Wald statistic. A small p-value then says that the estimate of $τ$ is unusually close to zero for its standard error. That alone is no evidence that a motif does not vary.</p>
 
@@ -119,6 +126,8 @@
 <div class="alert alert-warning" role="alert">
 The <b>zero</b> column is no p-value of a test that the mean is zero. For a proper test of that kind, <code>export</code> has the <code>--zero-margin &lt;float&gt;</code> option. With it, the column becomes an equivalence test with the null hypothesis of the absolute mean being at least the margin.
 </div>
+
+<p>With a <a href="./means.html">prior on the motif means</a>, the test uses the posterior means and the standard deviations of their prediction error.</p>
 
 <p>In the Quickstart example, 172 motifs get a positive sign and 167 a negative one at an FDR of 0.05. The true means are known there, and every one of the 337 calls made for an active motif has the right sign. The other 2 calls are for motifs with a true mean of zero.</p>
 
