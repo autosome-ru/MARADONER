@@ -462,6 +462,10 @@ def generate_dataset(folder: str, p: int, m: int, g: int, min_samples: int, max_
                          index=pd.Index(bases, name='motif')).to_csv(os.path.join(folder, 'windows_gt.tsv'), sep='\t')
         lines = [' '.join([fam] + [motifs[i] for i in np.where(res.F[:, j])[0]])
                  for j, fam in enumerate(fam_names) if res.F[:, j].any()]
+        if windows:
+            # A family of the second level lists the families of windows of its motifs.
+            lines = lines[:m] + [' '.join([fam_names[m + j]] + [bases[i] for i in np.where(c)[0]])
+                                 for j, c in enumerate(cluster.T) if c.any()]
         with open(os.path.join(folder, 'families.txt'), 'w') as f:
             f.write('\n'.join(lines) + '\n')
         pd.DataFrame({'omega': res.omega, 'motifs': res.F.sum(axis=0).astype(int)}, index=fam_names).to_csv(

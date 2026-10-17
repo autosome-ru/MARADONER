@@ -90,6 +90,16 @@ Here, $F$ has a row per motif and a column per family, with a one where the moti
 
 <p>In a text file the names are separated by spaces or tabs. Motifs absent from the project are ignored, families left without motifs are dropped, and families with the same motifs are merged into one.</p>
 
+<p>A member of a family may also be another family, and it then stands for all motifs of that family. The file</p>
+
+<pre>
+tfA motif_39 motif_195
+tfB motif_240 motif_262
+class_1 tfA tfB motif_315
+</pre>
+
+<p>gives <i>class_1</i> the 5 motifs of its line and of the families <i>tfA</i> and <i>tfB</i>. A family may be listed before its definition, and families of families may be nested to any depth. A name of a motif of the project always means the motif: if a family has the same name, <b>MARADONER</b> warns about it. A family containing itself, directly or through other families, is an error. The <a href="./windows.html">Motif families and windows</a> page uses families of families for the windows of motifs.</p>
+
 <h2 id="example">Example</h2>
 
 <p>The <a href="./other.html#generate">generator</a> of synthetic data can split the active motifs into families. First, we generate a dataset with 40 families and create a project from it:</p>
@@ -260,7 +270,7 @@ family_2	-1.7553280784059162
 
 <ul>
   <li>Time. On the data of the first example, <code class="nw">fit</code> takes 2.9 seconds without families, 3.7 with them and 5.8 with a factor and no families. On the data of the second example it takes 3.8 seconds with the families and 5.1 with the families and a factor;</li>
-  <li>On real data. A muscle atlas had 1595 motifs, each with occupancies in 3 windows around the TSS (4785 columns of the loading matrix), and 27,007 training promoters. With a family per motif made of its 3 windows, <code class="nw">fit</code> took 18.6 minutes against 10.6 without families, on 8 threads. The families lowered the deviance by 9069 and left the FOV of held-out promoters where it was (0.268 against 0.269 without them). Families that fit the data well do not have to improve prediction;</li>
+  <li>Families that fit the data well do not have to improve prediction. In fact, on a real data you may observe the converse - a marginal worsening of FOV on held out promoters, if used with low-rank structure. Thats' it, the low-rank structure should be used as a tool to study the structure, but not as a way to improve predictions quality;</li>
   <li>The options need motif variances. With <code class="nw">--no-motif-variance</code> they are ignored with a warning;</li>
   <li>They cannot be combined with <code class="nw">--clustering</code>, as the latter replaces motifs by clusters.</li>
 </ul>

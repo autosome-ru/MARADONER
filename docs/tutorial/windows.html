@@ -68,16 +68,22 @@
 
 <p>The loading matrix has a column per motif and window. The name of a column is the name of the motif followed by the window, as in <i>MEF2D_core</i>, <i>MEF2D_up</i> and <i>MEF2D_down</i>. <b>MARADONER</b> reads no meaning into the names: the windows are tied together by the file of families only.</p>
 
-<p>The <a href="./families.html#file">file of families</a> has a line per motif with its windows, and a line per family of factors with the windows of all its motifs:</p>
+<p>The <a href="./families.html#file">file of families</a> has a line per motif with its windows, and a line per family of factors with its motifs:</p>
 
 <pre>
 motif_1 motif_1_core motif_1_up motif_1_down
 motif_2 motif_2_core motif_2_up motif_2_down
 ...
+family_3 motif_1 motif_6 ...
+</pre>
+
+<p>Here, <i>motif_1</i> on the last line is the name of a family, and it stands for the 3 windows of the motif. The windows may be listed instead, and the line</p>
+
+<pre>
 family_3 motif_1_core motif_1_up motif_1_down motif_6_core motif_6_up motif_6_down ...
 </pre>
 
-<p>A window belongs to 2 families, one of each level. The second level is optional: without it, a family per motif is the whole file.</p>
+<p>gives the same family. A window belongs to 2 families, one of each level. The second level is optional: without it, a family per motif is the whole file.</p>
 
 <h2 id="example">Example</h2>
 
@@ -183,7 +189,6 @@ motif_8	3	individual	1.0		motif_8_down	motif_8_down	motif_8_core,motif_8_up,moti
 <ul>
   <li>The mean activity of a motif is estimated per window, as for any column of the loading matrix. With <a href="./means.html"><code class="nw">--motif-mean-prior covariance</code></a>, the prior of the means follows the fitted covariance between windows;</li>
   <li><code class="nw">predict</code> drops the windows of negligible variance. A family left without windows appears in <i>tests/families.tsv</i> with 0 motifs and class <i>none</i>;</li>
-  <li>On a muscle atlas with 1595 motifs in 3 windows, 905 of the families of windows kept at least 2 windows. Of them, 305 were of class <i>individual</i>: 83 with the core window alone and 89 with the downstream window alone. The export took 9 minutes, 1.5 seconds of which went to the parts of families. The fit is described in the <a href="./families.html#cost">cost</a> section of the Motif families page.</li>
 </ul>
 
 </main>

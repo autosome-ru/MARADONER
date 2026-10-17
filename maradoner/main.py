@@ -364,7 +364,8 @@ def _fit(name: str = Argument(..., help='Project name.'),
           motif_families: Path = Option(None, '--motif-families', help='Families of motifs with co-varying activities: the covariance '
                                         'between motifs becomes [cyan]Sigma + F Omega F^T[/cyan], with a variance per family in '
                                         '[cyan]Omega[/cyan]. A JSON dictionary [blue]{"family": ["motif", ...]}[/blue], or a text file with '
-                                        'a family per line ([blue]family motif motif ...[/blue]) or a motif per line ([blue]motif family[/blue]).'),
+                                        'a family per line ([blue]family motif motif ...[/blue]) or a motif per line ([blue]motif family[/blue]). '
+                                        'A member of a family may be the name of another family, standing for all its motifs.'),
           motif_lowrank: int = Option(0, '--motif-lowrank', min=0, help='Rank [dark_orange]k[/dark_orange] of a covariance between motif '
                                       'families: [cyan]Omega[/cyan] becomes [cyan]Omega + L L^T[/cyan]. Without [purple]--motif-families[/purple] '
                                       'the covariance between motifs is [cyan]Sigma + L L^T[/cyan].'),

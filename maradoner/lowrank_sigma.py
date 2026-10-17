@@ -198,13 +198,48 @@ def _load_families_file(path: str, motif_names: list) -> dict:
     return families
 
 
+def _expand_families(families: dict, known: set, path: str) -> tuple:
+    """family -> motifs with the members naming other families replaced by the motifs of those,
+    at any depth. A member that is a motif of the project stays a motif, even if a family has
+    the same name; such names are returned as the second item. A family containing itself,
+    directly or through others, is an error."""
+    clashes = sorted(n for n in families if n in known and any(n in m for m in families.values()))
+    expanded = dict()
+
+    def expand(name, stack):
+        if name in expanded:
+            return expanded[name]
+        if name in stack:
+            cycle = stack[stack.index(name):] + [name]
+            links = ', '.join(f'{a} contains {b}' for a, b in zip(cycle, cycle[1:]))
+            raise InputError(f'The motif families file "{path}" defines families through each other in a '
+                             f'circle: {links}.')
+        motifs = list()
+        for member in families[name]:
+            if member in known or member not in families:
+                motifs.append(member)
+            else:
+                motifs.extend(expand(member, stack + [name]))
+        expanded[name] = list(dict.fromkeys(motifs))
+        return expanded[name]
+
+    for name in families:
+        expand(name, list())
+    return expanded, clashes
+
+
 def read_families(path: str, motif_names: list, verbose: bool = True) -> tuple:
     """The matrix F (m x f) of zeros and ones of the motif families listed in the file path,
-    and the names of the families. A motif may belong to several families or to none. Motifs
-    that the project does not have are ignored, families left without motifs are dropped,
-    and families with the same motifs are merged."""
+    and the names of the families. A motif may belong to several families or to none. A member
+    of a family may also be another family: it stands for all the motifs of that family. Motifs
+    that the project does not have are ignored, families left without motifs are dropped, and
+    families with the same motifs are merged."""
     motif_names = list(map(str, motif_names))
     families = _load_families_file(os.fspath(path), motif_names)
+    families, clashes = _expand_families(families, set(motif_names), os.fspath(path))
+    if clashes:
+        warn(f'{len(clashes)} name(s) of the motif families file belong both to a motif of the project and '
+             f'to a family; as members of other families they stand for the motif: {_show(clashes)}.')
     index = {n: i for i, n in enumerate(motif_names)}
     unknown = sorted({mo for members in families.values() for mo in members if mo not in index})
     if unknown:
