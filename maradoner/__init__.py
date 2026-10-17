@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__version__ = '0.34.0'
+__version__ = '1.0.0'
 import importlib.metadata
 import re
 
