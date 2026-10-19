@@ -135,6 +135,7 @@ class LoadingTransform(str, Enum):
     scale = 'scale'
     ecdf = 'ecdf'
     esf = 'esf'
+    thermo = 'thermo'
     drist = 'drist'
     dristun = 'dristun'
 
@@ -260,6 +261,7 @@ def _create(name: str = Argument(..., help='Project name. [bold]MARADONER[/bold]
                                                                help='A type of transformation to apply to loading '
                                                                 'matrices. [dark_orange]ecdf[/dark_orange] substitutes values in the table with empirical CDF,'
                                                                 ' [dark_orange]esf[/dark_orange] with negative logarithm of the empirical survival function. '
+                                                                '[dark_orange]thermo[/dark_orange] with log(1 + S/t), t twice the column median, scaled to unit sd (the free energy of a window holding one TF at most; expects occupancies). '
                                                                 '[dark_orange]scale[/dark_orange] just rescales all entries to [0, 1] range. '
                                                                 '[dark_orange]drist[/dark_orange] will attempt to find an optimal monotonous transform of each column. '
                                                                 '[dark_orange]dristun[/dark_orange] is [dark_orange]drist[/dark_orange] but the transform function is same for all columns/motifs. '

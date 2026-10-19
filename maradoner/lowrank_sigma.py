@@ -228,14 +228,35 @@ def _expand_families(families: dict, known: set, path: str) -> tuple:
     return expanded, clashes
 
 
-def read_families(path: str, motif_names: list, verbose: bool = True) -> tuple:
+def _split_ties(families: dict, path: str) -> tuple:
+    """family -> motifs with the labels of shared variances cut off the names ("name@label"),
+    and family -> label for the labelled families."""
+    plain, labels = dict(), dict()
+    for name, members in families.items():
+        base, sep, label = name.partition('@')
+        if sep and not (base and label):
+            raise InputError(f'Family "{name}" of the motif families file "{path}" must be named '
+                             '"family@label", with both parts present.')
+        if sep:
+            if labels.get(base, label) != label:
+                raise InputError(f'Family "{base}" of the motif families file "{path}" has 2 labels of '
+                                 f'shared variances: {labels[base]} and {label}.')
+            labels[base] = label
+        plain.setdefault(base, list()).extend(members)
+    return plain, labels
+
+
+def read_families(path: str, motif_names: list, verbose: bool = True, ties: bool = False) -> tuple:
     """The matrix F (m x f) of zeros and ones of the motif families listed in the file path,
     and the names of the families. A motif may belong to several families or to none. A member
     of a family may also be another family: it stands for all the motifs of that family. Motifs
     that the project does not have are ignored, families left without motifs are dropped, and
-    families with the same motifs are merged."""
+    families with the same motifs are merged. A family named "name@label" shares one variance
+    with the other families of the label; with ties, a third item gives the label of every
+    family (None for a family with a separate variance)."""
     motif_names = list(map(str, motif_names))
     families = _load_families_file(os.fspath(path), motif_names)
+    families, labels = _split_ties(families, os.fspath(path))
     families, clashes = _expand_families(families, set(motif_names), os.fspath(path))
     if clashes:
         warn(f'{len(clashes)} name(s) of the motif families file belong both to a motif of the project and '
@@ -267,15 +288,26 @@ def read_families(path: str, motif_names: list, verbose: bool = True) -> tuple:
         raise InputError(f'None of the motifs of the motif families file "{path}" are in the project '
                          f'(for example {_show(unknown, 3)} versus {_show(motif_names, 3)}).')
     F = np.zeros((len(motif_names), len(columns)))
-    names = list()
+    names, tie = list(), list()
     for j, (rows, fam) in enumerate(columns.items()):
         F[list(rows), j] = 1.0
         names.append('+'.join(fam))
+        found = sorted({labels[n] for n in fam if n in labels})
+        if len(found) > 1:
+            raise InputError(f'The families {", ".join(fam)} of the motif families file "{path}" consist of '
+                             f'the same motifs and have different labels of shared variances: '
+                             f'{", ".join(found)}.')
+        tie.append(found[0] if found else None)
     sizes = F.sum(axis=0)
     in_family = int((F.sum(axis=1) > 0).sum())
     logger_print(f'  Motif families: {F.shape[1]} families ({int((sizes > 1).sum())} of them with more '
                  f'than one motif) cover {in_family} of {len(motif_names)} motifs.', verbose)
-    return F, names
+    shared = sorted({t for t, size in zip(tie, sizes) if t is not None and size > 1})
+    if shared:
+        counts = ', '.join(f'{sum(t == lab and size > 1 for t, size in zip(tie, sizes))} of label {lab}'
+                           for lab in shared)
+        logger_print(f'  Shared family variances: {counts}.', verbose)
+    return (F, names, tie) if ties else (F, names)
 
 
 # ---------------------------------------------------------------- B-space quantities ---
@@ -507,7 +539,7 @@ class MotifCovarianceProblem():
     reduce_fraction = 0.7
     reduce_step = None
 
-    def __init__(self, Z, B_decomposition, P, gii, group_inds, F=None, omega_free=None):
+    def __init__(self, Z, B_decomposition, P, gii, group_inds, F=None, omega_free=None, omega_tie=None):
         self.C = b_space(B_decomposition)
         self.W = b_space_data(Z, B_decomposition)
         self.P = np.asarray(P, dtype=np.float64)
@@ -521,6 +553,17 @@ class MotifCovarianceProblem():
             omega_free = np.zeros(f, dtype=bool) if F is None else self.F.sum(axis=0) > 1
         self.omega_free = np.asarray(omega_free, dtype=bool)
         self.has_omega = bool(self.omega_free.any())
+        # The free family variances (columns) as functions of the estimated parameters (rows):
+        # the families of one label of omega_tie share a row.
+        free = np.where(self.omega_free)[0]
+        tie = [None] * f if omega_tie is None else list(omega_tie)
+        rows = dict()
+        for i, j in enumerate(free):
+            rows.setdefault(('label', tie[j]) if tie[j] is not None else ('own', i), list()).append(i)
+        self.omega_tie = tie
+        self.omega_map = np.zeros((len(rows), len(free)))
+        for r, cols in enumerate(rows.values()):
+            self.omega_map[r, cols] = 1.0
         self.m, self.f, self.g, self.s = m, f, len(group_inds), len(self.gii)
         self._jW, self._jC, self._jCF, self._jP = (jnp.asarray(x) for x in (self.W, self.C, self.CF, self.P))
         self._jgii = jnp.asarray(self.gii)
@@ -799,7 +842,7 @@ class MotifCovarianceProblem():
 # ------------------------------------------------------------------------ estimation ---
 def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fix_ind: int, stationarity,
                    max_steps: int = 100, verbose: bool = False, tag: str = 'motif covariance',
-                   tol: float = FISHER_TOL, n_bounded: int = None) -> tuple:
+                   tol: float = FISHER_TOL, n_bounded: int = None, jac=None) -> tuple:
     """Fisher scoring for the first n entries of x0, with V absent: the variances (tau, the free
     nu, the free omega) and then the entries of L. The first n_bounded entries (all n by default)
     are bounded below by zero, and the entries of L have no bounds. The expected Hessian of the
@@ -816,7 +859,8 @@ def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fi
     stationarity of estimate_motif_covariance is at most tol (tighter than the L-BFGS-B stage:
     a step near the optimum costs one evaluation and one information matrix), after max_steps
     information matrices, or when lam exceeds 1e8. Returns the new x, the number of steps and
-    of evaluations."""
+    of evaluations. jac maps the entries of x to those of the information matrix (when
+    families share a variance); None for the identity."""
     x = np.array(x0, dtype=np.float64)
     nb = n if n_bounded is None else n_bounded
     dev, grad = vg(x)
@@ -827,6 +871,9 @@ def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fi
         if stationarity(x, grad) <= tol:
             break
         F2 = 2 * problem.fim(*assemble(x), fix_ind=fix_ind, lowrank=n > nb)
+        if jac is not None:
+            J = jac[:len(F2), :n]
+            F2 = J.T @ F2 @ J
         F2 = 0.5 * (F2 + F2.T)
         zero = np.zeros(n, dtype=bool)
         zero[:nb] = x[:nb] <= 0
@@ -926,7 +973,8 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
     kv = V0.shape[1]
     free_nu = np.array([i for i in range(g) if i != fix_ind], dtype=int)
     free_om = np.where(problem.omega_free)[0]
-    n_om = len(free_om)
+    T = problem.omega_map
+    n_om = len(T)
     sizes = [m, len(free_nu), n_om, f * k, s * kv]
     offsets = np.cumsum([0] + sizes)
     n_var = offsets[3]
@@ -937,13 +985,13 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
         nu = np.full(g, fix_val)
         nu[free_nu] = x[offsets[1]:offsets[2]]
         omega = np.zeros(f)
-        omega[free_om] = x[offsets[2]:offsets[3]]
+        omega[free_om] = x[offsets[2]:offsets[3]] @ T
         L = x[offsets[3]:offsets[4]].reshape(f, k)
         V = x[offsets[4]:offsets[5]].reshape(s, kv)
         return tau, omega, L, nu, V
 
     def pack(tau, omega, L, nu, V):
-        return np.concatenate([tau, nu[free_nu], omega[free_om], np.asarray(L).reshape(-1),
+        return np.concatenate([tau, nu[free_nu], T @ omega[free_om] / T.sum(axis=1), np.asarray(L).reshape(-1),
                                np.asarray(V).reshape(-1)])
 
     last = dict()
@@ -954,7 +1002,7 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
         except Exception as e:
             raise RuntimeError(f'Estimation of the {stage} failed while evaluating the objective '
                                f'({type(e).__name__}: {e})') from e
-        grad = np.concatenate([g_tau, g_nu[free_nu], g_omega[free_om], g_L.reshape(-1), g_V.reshape(-1)])
+        grad = np.concatenate([g_tau, g_nu[free_nu], T @ g_omega[free_om], g_L.reshape(-1), g_V.reshape(-1)])
         last.update(x=np.array(x), grad=grad, value=float(value))
         return value, grad
 
@@ -980,10 +1028,10 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
         # A Newton step for omega from zero, the expected Hessian of the deviance being twice
         # the Fisher information.
         _, (_, g_omega, _, _, _) = problem.value_and_grad(Sigma0, omega0, L_zero, nu0, V0)
-        info = problem.information_diagonal(Sigma0, omega0, L_zero, nu0, V0)[1]
+        info = T @ problem.information_diagonal(Sigma0, omega0, L_zero, nu0, V0)[1][free_om]
         with np.errstate(divide='ignore', invalid='ignore'):
-            step = np.where(info > 0, -g_omega / (2 * info), 0.0)
-        omega0[free_om] = np.clip(step[free_om], 0.0, scale_tau)
+            step = np.where(info > 0, -(T @ g_omega[free_om]) / (2 * info), 0.0)
+        omega0[free_om] = np.clip(step, 0.0, scale_tau) @ T
     L0 = L_zero
     if k:
         # dev(t L) = dev(0) + t^2 tr(L^T A L) + O(t^4) with A = d dev / d Psi: the best directions
@@ -1008,7 +1056,7 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
                             np.repeat(max(float(np.mean(nu0[problem.gii])), tiny) ** 0.5, s * kv)])
     # The standard error of a variance is about (2 I_ii)^-1/2, I the Fisher information.
     info_tau, info_om = problem.information_diagonal(*assemble(x0))
-    info = np.concatenate([info_tau, np.zeros(len(free_nu)), info_om[free_om]])
+    info = np.concatenate([info_tau, np.zeros(len(free_nu)), T @ info_om[free_om]])
     known = info > 0
     scale[:n_var][known] = (2 * info[known]) ** -0.5
     fun_scale = 1.0 / max(abs(dev0), 1.0)
@@ -1030,9 +1078,15 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
     dev_fisher = None
     if fisher_steps and not kv:
         n_fs = offsets[4] if offsets[4] <= FISHER_MAX_PARAMETERS else n_var
+        jac = None
+        if len(T) < len(free_om):
+            jac = np.zeros((offsets[4] + len(free_om) - n_om, offsets[4]))
+            jac[:offsets[2], :offsets[2]] = np.eye(offsets[2])
+            jac[offsets[2]:offsets[2] + len(free_om), offsets[2]:offsets[3]] = T.T
+            jac[offsets[2] + len(free_om):, offsets[3]:] = np.eye(f * k)
         x0, n_fs, n_fe = fisher_scoring(problem, x0, n_fs, assemble, vg, fix_ind, stationarity,
                                         max_steps=fisher_steps, verbose=verbose and not silent, tag=tag,
-                                        n_bounded=n_var)
+                                        n_bounded=n_var, jac=jac)
         n_it += n_fs
         n_ev += n_fe
         dev_fisher = last['value']

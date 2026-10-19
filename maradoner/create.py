@@ -16,7 +16,7 @@ import os
 import re
 
 
-_TRANSFORMS = ('none', 'scale', 'ecdf', 'esf', 'drist', 'dristun')
+_TRANSFORMS = ('none', 'scale', 'ecdf', 'esf', 'thermo', 'drist', 'dristun')
 # Intermediate files of a project that are produced after (and from) `create`.
 _PROJECT_STAGES = ('init', 'fit', 'predict', 'fov', 'promoter_mean', 'promvar',
                    'old.fit', 'old.predict', 'old.fov')
@@ -136,6 +136,28 @@ def _transform_array(X: np.ndarray, names: list, mode: str, Y: pd.DataFrame = No
             X[:, j] = -np.log(v)
         # if mode == 'drist':
         #     df = drist_it(df, Y, test_chromosomes=test_chromosomes)
+    elif mode == 'thermo':
+        # log(1 + S / t) is the log partition function of a window that holds one TF at most, with the
+        # half point t at twice the column median; columns are then scaled to unit sd as esf columns are.
+        n_shifted = 0
+        for j in range(X.shape[1]):
+            c = X[:, j]
+            if c.min() < 0:
+                c = c - c.min()
+                n_shifted += 1
+            positive = c[c > 0]
+            if not len(positive):
+                X[:, j] = 0.0
+                continue
+            t = 2 * np.median(c)
+            if t <= 0:
+                t = 2 * np.median(positive)
+            c = np.log1p(c / t)
+            sd = c.std(ddof=1) if len(c) > 1 else 0.0
+            X[:, j] = c / sd if sd > 0 else c
+        if n_shifted:
+            warn(f'{n_shifted} column(s) have negative loadings; the "thermo" transform expects occupancies '
+                 '(sums of likelihood ratios), so each of them was shifted to start at 0.')
     elif mode.startswith('drist'):
         logger_print(f'Fitting the "{mode}" transformation of {X.shape[1]} motifs (this can take a while)...', verbose)
         df = pd.DataFrame(X, columns=names)

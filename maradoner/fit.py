@@ -274,13 +274,16 @@ class MotifVarianceEstimates:
     # families is None (then family_variance is None too). Only the family variances marked
     # in family_free are estimated (a family of one motif has none: it is a part of tau), and
     # they follow nu in fim. family_lrt holds the likelihood-ratio statistics of
-    # H0: family_variance_j = 0. All None: the motifs are independent, S = diag(motif).
+    # H0: family_variance_j = 0, and family_tie the label of the variance shared by a family
+    # with others (None for a separate variance). All None: the motifs are independent,
+    # S = diag(motif).
     families: np.ndarray = None
     family_names: list = None
     family_variance: np.ndarray = None
     family_lowrank: np.ndarray = None
     family_free: np.ndarray = None
     family_lrt: np.ndarray = None
+    family_tie: list = None
 
 @dataclass(frozen=True)
 class MotifMeanEstimates:
@@ -1068,12 +1071,13 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                              verbose=False, motif_names=None,
                              group_names=None, families: np.ndarray = None,
                              family_names: list = None,
-                             motif_lowrank: int = 0) -> MotifVarianceEstimates:
+                             motif_lowrank: int = 0, family_tie: list = None) -> MotifVarianceEstimates:
     """REML estimates of the variances of motif activities tau (`motif`) and of their
     group-wise multipliers nu (`group`). motif_names / group_names are used only to
     name motifs and groups in warnings. With families (m x f, zeros and ones), motif_lowrank
     or both, the covariance between motifs gets the structure of lowrank_sigma, estimated
-    after (and starting from) the model with independent motifs."""
+    after (and starting from) the model with independent motifs. family_tie gives the label of
+    the shared variance of every family (None for a separate variance)."""
     multiplier = NU_REFERENCE_FRACTION
     D = np.asarray(error_variance.variance, dtype=np.float64)
     j = int(np.argsort(D)[len(D) // 2])
@@ -1250,7 +1254,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
         # The covariance between motifs S = diag(tau) + F (diag(omega) + L L^T) F^T, refined
         # jointly with nu (and V) from the model with independent motifs.
         problem = _ls.MotifCovarianceProblem(Z, B_decomposition, D_product_inv, data.group_inds_inv,
-                                             data.group_inds, F=families)
+                                             data.group_inds, F=families, omega_tie=family_tie)
         V_start = None if V_act is None or not np.asarray(V_act).shape[1] else np.asarray(V_act)
         est = _ls.estimate_motif_covariance(problem, int(motif_lowrank or 0), Sigma0=Sigma, nu0=G,
                                             V0=V_start, fix_ind=j, fix_val=fix, verbose=verbose)
@@ -1267,7 +1271,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                          family_variance=None if families is None else est['omega'],
                          family_lowrank=est['L'] if est['L'].shape[1] else None,
                          family_free=None if families is None else problem.omega_free,
-                         family_lrt=family_lrt)
+                         family_lrt=family_lrt, family_tie=family_tie)
     singular, n_bad = _fim_is_singular(fim, verbose=verbose)
     if singular:
         # The information matrix is rank deficient. Spell out why rather than leaving the
@@ -2110,7 +2114,7 @@ def cluster_data(B: np.ndarray, mode=ClusteringMode.none, num_clusters=200,
         raise InputError(f'--clustering NMF needs non-negative loadings, but the loading matrix has '
                          f'{int((B < 0).sum())} negative entries (minimum {B.min():.3g}). '
                          'Use --clustering KMeans, or create the project with a non-negative '
-                         'loading transformation (esf, ecdf or scale).')
+                         'loading transformation (esf, thermo, ecdf or scale).')
     if mode == ClusteringMode.KMeans:
         km = KMeans(n_clusters=num_clusters, n_init=10, random_state=0)
         km = km.fit(B.T)
@@ -2409,7 +2413,7 @@ def fit(project: str, clustering: ClusteringMode,
     validate_project(data, rank=False)
     check_design_rank(data.X, data.covariate_names)
     warn_constant_loadings(data.B, data.motif_names, verbose=verbose)
-    families = family_names = None
+    families = family_names = family_tie = None
     if motif_families is not None or motif_lowrank:
         if clustering != ClusteringMode.none:
             raise InputError('--motif-families and --motif-lowrank describe the covariance between motifs '
@@ -2419,12 +2423,13 @@ def fit(project: str, clustering: ClusteringMode,
             warn('--motif-families and --motif-lowrank require per-motif variances; ignored because '
                  '--no-motif-variance was set.')
         elif motif_families is not None:
-            families, family_names = _ls.read_families(motif_families, data.motif_names, verbose=verbose)
+            families, family_names, family_tie = _ls.read_families(motif_families, data.motif_names,
+                                                                   verbose=verbose, ties=True)
             if not motif_lowrank and not np.any(families.sum(axis=0) > 1):
                 warn('Every motif family has a single motif, and the variance of such a family cannot '
                      'be told apart from that of its motif: the families are ignored. Pass families of '
                      'several motifs, or --motif-lowrank for a covariance between them.')
-                families = family_names = None
+                families = family_names = family_tie = None
     motif_mean_prior = str(getattr(motif_mean_prior, 'value', motif_mean_prior) or 'none')
     if motif_mean_prior not in _mean_prior.KINDS:
         raise InputError(f'Unknown --motif-mean-prior "{motif_mean_prior}": choose one of '
@@ -2582,7 +2587,7 @@ def fit(project: str, clustering: ClusteringMode,
                                                       original_data=data_orig,
                                                       activity_lowrank=activity_lowrank,
                                                       families=families, family_names=family_names,
-                                                      motif_lowrank=motif_lowrank,
+                                                      family_tie=family_tie, motif_lowrank=motif_lowrank,
                                                       verbose=verbose)
         else:
             if activity_lowrank and activity_lowrank > 0:
