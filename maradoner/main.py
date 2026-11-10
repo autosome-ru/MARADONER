@@ -85,6 +85,8 @@ from pathlib import Path
 from .fit import fit, ClusteringMode, calculate_fov, predict, GOFStat, GOFStatMode
 from .promoter_mean_test import FOVMeanMode, CovariateModel, estimate_promoter_mean
 from .grn import grn
+from .cap import fit_cap, predict_expression
+from .line_gain import line_gain
 from .synthetic_data import generate_dataset
 from time import time
 from dill import __version__ as dill_version
@@ -129,6 +131,19 @@ class CovariatePrior(str, Enum):
     none = 'none'
     shared = 'shared'
     separate = 'separate'
+
+class PromoterSet(str, Enum):
+    test = 'test'
+    train = 'train'
+    all = 'all'
+
+class LineGainSize(str, Enum):
+    nu = 'nu'
+    part = 'part'
+
+class LineGainForm(str, Enum):
+    gain = 'gain'
+    added = 'added'
 
 class LoadingTransform(str, Enum):
     none = 'none'
@@ -621,6 +636,75 @@ def _predict(name: str = Argument(..., help='Project name.'),
         predict(name, tau_search=tau_search, cv_splits=cv_splits, cv_repeats=cv_repeats,
                 tau_left=tau_left, tau_right=tau_right, tau_num=tau_num, pinv=pinv,
                 filter_motifs=filter_motifs, filter_order=filter_order, gpu=gpu, x64=x64)
+    _done(t0)
+
+@app.command('cap', help='Fit one saturating curve per sample on top of the predicted expression, for [cyan]predict-expression --cap[/cyan]. '
+                         'Motif activities stay as they are.')
+def _cap(name: str = Argument(..., help='Project name.'),
+         folds: List[str] = Option(None, '--folds', help='A fold project: a project made and fitted like this one, with a part of its training promoters held out too. '
+                                                         'The curves are then fit on the predictions for the promoters held out by the fold projects. Repeat the option '
+                                                         'for each of them. Without it, the curves are fit on the predictions for the promoters the model was fitted to.')):
+    """
+    Fit a saturating curve per sample on the training promoters of the given project.
+    """
+
+    t0 = time()
+    with spinner('Fitting curves...'):
+        curves, fov_plain, fov_cap, sd = fit_cap(name, folds=folds)
+    source = f'predictions of {curves.n_folds} fold project(s)' if curves.n_folds else 'predictions for the promoters the model was fitted to'
+    rprint(f'{curves.n_promoters} promoters, {source}. FOV without curves {fov_plain:.4f}, with them {fov_cap:.4f}.')
+    t = Table('Sample', 'slope', 'ceiling', 'bend, sd of the prediction',
+              title='The curve flattens past the bend: ceiling / slope away from the mean prediction')
+    for sample, slope, ceiling, s in zip(curves.sample_names, curves.slope, curves.ceiling, sd):
+        t.add_row(str(sample), f'{slope:.3f}', f'{ceiling:.3f}', f'{ceiling / slope / s:.2f}')
+    rprint(t)
+    _done(t0)
+
+@app.command('predict-expression', help='Write the predicted expression of promoters, [cyan]mu_s + B M X + B U[/cyan], to a table. '
+                                        'Promoter means are left out, as a new promoter has none.')
+def _predict_expression(name: str = Argument(..., help='Project name.'),
+                        output: Path = Argument(..., help='Output tsv file, promoters in rows and samples in columns.'),
+                        promoters: PromoterSet = Option(None, help='Promoters of the project to predict. By default, the held-out ones if there are any, and all of them if not.'),
+                        loadings: Path = Option(None, help='A tsv file with loadings of other promoters: promoters in rows, motifs of the project in columns. '
+                                                           'Its values must be on the scale of the project, that is transformed like the loadings given to [cyan]create[/cyan].'),
+                        cap: bool = Option(False, '--cap', help='Put the predictions through the curves of [cyan]maradoner cap[/cyan].'),
+                        line_gain: bool = Option(False, '--line-gain', help='Multiply the part of the activities specific to each sample by its k from '
+                                                                            '[cyan]maradoner line-gain[/cyan]: the prediction for a library read without the defect.')):
+    """
+    Write the expression predicted by the model for promoters of the project or for new ones.
+    """
+
+    t0 = time()
+    with spinner('Predicting expression...'):
+        p, s = predict_expression(name, output, loadings=loadings, cap=cap, line_gain=line_gain,
+                                  promoters=None if promoters is None else promoters.value)
+    rprint(f'{p} promoters, {s} samples.')
+    _done(t0)
+
+@app.command('line-gain', help='Estimate how much a defect of the readout enlarges the part of the activities specific to a group, for '
+                               '[cyan]predict-expression --line-gain[/cyan]. The defect is identified by a prior tying the sizes of these parts across groups.')
+def _line_gain(name: str = Argument(..., help='Project name.'),
+               defects: Path = Argument(..., help='A csv or tsv table with the probability that a replicate of a group was read with the defect: columns '
+                                                  '"group" (or "line") and "p_def", one row per replicate. The rows of a group are multiplied, and '
+                                                  'groups absent from the table get 0.'),
+               size: LineGainSize = Option(LineGainSize.nu, help='Size of the part of a group: [cyan]nu[/cyan], its activity variance, or [cyan]part[/cyan], '
+                                                                 'the variance of B U over the training promoters.'),
+               form: LineGainForm = Option(LineGainForm.gain, help='The defect multiplies the part of a group by a gain ([cyan]gain[/cyan]) or adds '
+                                                                  'an independent part to it ([cyan]added[/cyan]).'),
+               threshold: float = Option(0.5, help='Groups with a defect probability below it make the prior of the clean sizes.')):
+    """
+    Estimate the multiplier k of the part of the activities specific to each group for a library read without the defect.
+    """
+
+    t0 = time()
+    with spinner('Estimating line gains...'):
+        res = line_gain(name, defects, size=size.value, form=form.value, threshold=threshold)
+    rprint(f'Prior of the clean sizes from {int(res.reference.sum())} groups: typical size {res.typical:.4g}, '
+           f'sd of the log sizes {res.spread:.3f}.')
+    t = Table('Group', 'p of the defect', 'size / typical', 'k')
+    for group, p, size_g, k in zip(res.group_names, res.p, res.size, res.k):
+        t.add_row(escape(str(group)), f'{p:.3g}', f'{size_g / res.typical:.3f}', f'{k:.3f}')
+    rprint(t)
     _done(t0)
 
 @app.command('generate', help='Generate synthetic dataset for testing purposes.')

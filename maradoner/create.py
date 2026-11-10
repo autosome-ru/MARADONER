@@ -18,7 +18,7 @@ import re
 
 _TRANSFORMS = ('none', 'scale', 'ecdf', 'esf', 'thermo', 'drist', 'dristun')
 # Intermediate files of a project that are produced after (and from) `create`.
-_PROJECT_STAGES = ('init', 'fit', 'predict', 'fov', 'promoter_mean', 'promvar',
+_PROJECT_STAGES = ('init', 'fit', 'predict', 'fov', 'promoter_mean', 'promvar', 'cap',
                    'old.fit', 'old.predict', 'old.fov')
 _NUMERIC_STYPES = {dt.stype.bool8, dt.stype.int8, dt.stype.int16, dt.stype.int32, dt.stype.int64,
                    dt.stype.float32, dt.stype.float64}

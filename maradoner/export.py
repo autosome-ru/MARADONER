@@ -708,22 +708,36 @@ def export_results(project_name: str, output_folder: str,
     if family_variance is not None:
         family_free = np.asarray(fit.motif_variance.family_free, dtype=bool)
         variance_names += [f'omega of {n}' for n, free in zip(family_names, family_free) if free]
-    motif_variance_fim = Information(fit.motif_variance.fim, slice(None, len(motif_names_filtered)), 
-                                     filter_items=filtered, names=variance_names,
-                                     label='variances of motif activities')
-    motif_variance_stat, motif_variance_std = motif_variance_fim.standardize(motif_variance, 
-                                                                             mode=Standardization.std)
+    tied_jac = getattr(fit.motif_variance, 'parameter_jac', None)
+    tied_covariance = None
+    if tied_jac is not None:
+        reduced = Information(fit.motif_variance.fim, label='variances of motif activities')
+        tied_covariance = tied_jac @ reduced.covariance() @ tied_jac.T
+        std = np.clip(np.diag(tied_covariance)[:len(motif_names)], 0.0, None) ** 0.5
+        motif_variance_std = np.delete(std, filtered)
+        motif_variance_stat = np.delete(motif_variance, filtered) / motif_variance_std
+    else:
+        motif_variance_fim = Information(fit.motif_variance.fim, slice(None, len(motif_names_filtered)),
+                                         filter_items=filtered, names=variance_names,
+                                         label='variances of motif activities')
+        motif_variance_stat, motif_variance_std = motif_variance_fim.standardize(
+            motif_variance, mode=Standardization.std)
     # With "fit --no-motif-variance" all motif variances are fixed to one: there is nothing
     # to estimate or to test per motif.
     motif_variance_estimated = excluded_motif_group is not None
     if not motif_variance_estimated:
         motif_variance_std = np.full(len(motif_variance_std), np.nan)
-    
+
     motif_group_variance = fit.motif_variance.group
-    motif_group_variance_fim = Information(fit.motif_variance.fim,
-                                           slice(len(motif_names), len(motif_names) + n_nu),
-                                           names=variance_names, label='variances of motif activities')
-    motif_group_variance_std = motif_group_variance_fim.covariance().diagonal() ** 0.5
+    if tied_covariance is not None:
+        group_cov = tied_covariance[len(motif_names):len(motif_names) + n_nu,
+                                    len(motif_names):len(motif_names) + n_nu]
+        motif_group_variance_std = np.clip(np.diag(group_cov), 0.0, None) ** 0.5
+    else:
+        motif_group_variance_fim = Information(fit.motif_variance.fim,
+                                               slice(len(motif_names), len(motif_names) + n_nu),
+                                               names=variance_names, label='variances of motif activities')
+        motif_group_variance_std = motif_group_variance_fim.covariance().diagonal() ** 0.5
     
     
     # motif_mean.mean is the (m, c) matrix M (U ~ MN(M X, Sigma, G)); column 0 is
@@ -838,9 +852,13 @@ def export_results(project_name: str, output_folder: str,
     if family_variance is not None:
         omega_std = np.full(len(family_free), np.nan)
         if family_free.any():
-            family_fim = Information(fit.motif_variance.fim, slice(len(motif_names) + n_nu, None),
-                                     names=variance_names, label='variances of motif activities')
-            omega_std[family_free] = np.clip(family_fim.covariance().diagonal(), 0.0, None) ** 0.5
+            if tied_covariance is not None:
+                family_cov = tied_covariance[len(motif_names) + n_nu:, len(motif_names) + n_nu:]
+                omega_std[family_free] = np.clip(np.diag(family_cov), 0.0, None) ** 0.5
+            else:
+                family_fim = Information(fit.motif_variance.fim, slice(len(motif_names) + n_nu, None),
+                                         names=variance_names, label='variances of motif activities')
+                omega_std[family_free] = np.clip(family_fim.covariance().diagonal(), 0.0, None) ** 0.5
         DF({'omega': np.asarray(family_variance), 'std': omega_std,
             'motifs': np.asarray(families).sum(axis=0).astype(int)},
            index=family_names).to_csv(fname, sep='\t', index_label='family')
@@ -907,13 +925,27 @@ def export_results(project_name: str, output_folder: str,
     d = motif_mean_cov.diagonal() ** (-0.5)
     DF(d.reshape(-1, 1) * motif_mean_cov * d, index=motif_names, columns=motif_names).to_csv(os.path.join(folder, 'motif_means.tsv'),
                                                                       sep='\t')
-    DF(motif_variance_fim.correlation(), index=motif_names_filtered, columns=motif_names_filtered).to_csv(os.path.join(folder, 'motif_variances.tsv'),
-                                                                      sep='\t')
+    if tied_covariance is not None:
+        cov = tied_covariance[:len(motif_names), :len(motif_names)]
+        cov = np.delete(np.delete(cov, filtered, axis=0), filtered, axis=1)
+        d = np.clip(np.diag(cov), 0.0, None) ** -0.5
+        motif_variance_correlation = d.reshape(-1, 1) * cov * d
+    else:
+        motif_variance_correlation = motif_variance_fim.correlation()
+    DF(motif_variance_correlation, index=motif_names_filtered, columns=motif_names_filtered).to_csv(
+        os.path.join(folder, 'motif_variances.tsv'), sep='\t')
     _group_names = group_names
     if excluded_motif_group is not None:
         _group_names = np.delete(_group_names, excluded_motif_group)
-    DF(motif_group_variance_fim.correlation(), index=_group_names, columns=_group_names).to_csv(os.path.join(folder, 'motif_group_variances.tsv'),
-                                                                      sep='\t')
+    if tied_covariance is not None:
+        cov = tied_covariance[len(motif_names):len(motif_names) + n_nu,
+                              len(motif_names):len(motif_names) + n_nu]
+        d = np.clip(np.diag(cov), 0.0, None) ** -0.5
+        motif_group_variance_correlation = d.reshape(-1, 1) * cov * d
+    else:
+        motif_group_variance_correlation = motif_group_variance_fim.correlation()
+    DF(motif_group_variance_correlation, index=_group_names, columns=_group_names).to_csv(
+        os.path.join(folder, 'motif_group_variances.tsv'), sep='\t')
 
     DF(error_variance_fim.correlation(), index=group_names, columns=group_names).to_csv(os.path.join(folder, 'error_variances.tsv'),
                                                                       sep='\t')
@@ -991,8 +1023,9 @@ def export_results(project_name: str, output_folder: str,
         else:
             dof = variance_dof(data.X, data.group_inds)['dof']
             warn('This fit holds no likelihood-ratio statistics of the motif variances (it was made by '
-                 'an older MARADONER version, or with "--promoter-variance", whose heuristic promoter '
-                 'weights do not define a likelihood), so tests/asymptotics_based/anova.tsv falls back to '
+                 'an older MARADONER version, with tied motif variances, or with "--promoter-variance", '
+                 'whose heuristic promoter weights do not define a likelihood), so '
+                 'tests/asymptotics_based/anova.tsv falls back to '
                  'the one-sided Wald test. That test has little power: with the '
                  f'{dof} residual degrees of freedom of the samples its statistic cannot exceed about '
                  f'{np.sqrt(max(dof, 0) / 2):.2f}, i.e. its p-values cannot fall below '

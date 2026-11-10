@@ -539,7 +539,8 @@ class MotifCovarianceProblem():
     reduce_fraction = 0.7
     reduce_step = None
 
-    def __init__(self, Z, B_decomposition, P, gii, group_inds, F=None, omega_free=None, omega_tie=None):
+    def __init__(self, Z, B_decomposition, P, gii, group_inds, F=None, omega_free=None, omega_tie=None,
+                 tau_tie=None):
         self.C = b_space(B_decomposition)
         self.W = b_space_data(Z, B_decomposition)
         self.P = np.asarray(P, dtype=np.float64)
@@ -549,6 +550,16 @@ class MotifCovarianceProblem():
         self.F = None if F is None else np.asarray(F, dtype=np.float64)
         self.CF = self.C if F is None else self.F.T @ self.C
         m, f = len(self.C), len(self.CF)
+        tie = [None] * m if tau_tie is None else list(tau_tie)
+        if len(tie) != m:
+            raise InputError(f'The motif variance ties have {len(tie)} entries for {m} motifs.')
+        rows = dict()
+        for i, label in enumerate(tie):
+            rows.setdefault(('label', label) if label is not None else ('own', i), list()).append(i)
+        self.tau_tie = tie
+        self.tau_map = np.zeros((len(rows), m))
+        for r, cols in enumerate(rows.values()):
+            self.tau_map[r, cols] = 1.0
         if omega_free is None:
             omega_free = np.zeros(f, dtype=bool) if F is None else self.F.sum(axis=0) > 1
         self.omega_free = np.asarray(omega_free, dtype=bool)
@@ -840,6 +851,22 @@ class MotifCovarianceProblem():
 
 
 # ------------------------------------------------------------------------ estimation ---
+def tied_parameter_jacobian(problem: MotifCovarianceProblem, rank: int = 0) -> np.ndarray:
+    """Map free tied variances and low-rank entries to their full parameter vector."""
+    n_nu = problem.g - 1
+    n_omega = int(problem.omega_free.sum())
+    n_l = problem.f * int(rank)
+    T_tau, T_omega = problem.tau_map, problem.omega_map
+    nt, no = len(T_tau), len(T_omega)
+    J = np.zeros((problem.m + n_nu + n_omega + n_l, nt + n_nu + no + n_l))
+    J[:problem.m, :nt] = T_tau.T
+    J[problem.m:problem.m + n_nu, nt:nt + n_nu] = np.eye(n_nu)
+    J[problem.m + n_nu:problem.m + n_nu + n_omega, nt + n_nu:nt + n_nu + no] = T_omega.T
+    if n_l:
+        J[-n_l:, -n_l:] = np.eye(n_l)
+    return J
+
+
 def fisher_scoring(problem: MotifCovarianceProblem, x0, n: int, assemble, vg, fix_ind: int, stationarity,
                    max_steps: int = 100, verbose: bool = False, tag: str = 'motif covariance',
                    tol: float = FISHER_TOL, n_bounded: int = None, jac=None) -> tuple:
@@ -973,25 +1000,26 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
     kv = V0.shape[1]
     free_nu = np.array([i for i in range(g) if i != fix_ind], dtype=int)
     free_om = np.where(problem.omega_free)[0]
-    T = problem.omega_map
-    n_om = len(T)
-    sizes = [m, len(free_nu), n_om, f * k, s * kv]
+    T_tau, T_omega = problem.tau_map, problem.omega_map
+    n_tau, n_om = len(T_tau), len(T_omega)
+    sizes = [n_tau, len(free_nu), n_om, f * k, s * kv]
     offsets = np.cumsum([0] + sizes)
     n_var = offsets[3]
 
     def assemble(x):
         x = np.asarray(x, dtype=np.float64)
-        tau = x[offsets[0]:offsets[1]]
+        tau = x[offsets[0]:offsets[1]] @ T_tau
         nu = np.full(g, fix_val)
         nu[free_nu] = x[offsets[1]:offsets[2]]
         omega = np.zeros(f)
-        omega[free_om] = x[offsets[2]:offsets[3]] @ T
+        omega[free_om] = x[offsets[2]:offsets[3]] @ T_omega
         L = x[offsets[3]:offsets[4]].reshape(f, k)
         V = x[offsets[4]:offsets[5]].reshape(s, kv)
         return tau, omega, L, nu, V
 
     def pack(tau, omega, L, nu, V):
-        return np.concatenate([tau, nu[free_nu], T @ omega[free_om] / T.sum(axis=1), np.asarray(L).reshape(-1),
+        return np.concatenate([T_tau @ tau / T_tau.sum(axis=1), nu[free_nu],
+                               T_omega @ omega[free_om] / T_omega.sum(axis=1), np.asarray(L).reshape(-1),
                                np.asarray(V).reshape(-1)])
 
     last = dict()
@@ -1002,7 +1030,8 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
         except Exception as e:
             raise RuntimeError(f'Estimation of the {stage} failed while evaluating the objective '
                                f'({type(e).__name__}: {e})') from e
-        grad = np.concatenate([g_tau, g_nu[free_nu], T @ g_omega[free_om], g_L.reshape(-1), g_V.reshape(-1)])
+        grad = np.concatenate([T_tau @ g_tau, g_nu[free_nu], T_omega @ g_omega[free_om],
+                               g_L.reshape(-1), g_V.reshape(-1)])
         last.update(x=np.array(x), grad=grad, value=float(value))
         return value, grad
 
@@ -1028,10 +1057,10 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
         # A Newton step for omega from zero, the expected Hessian of the deviance being twice
         # the Fisher information.
         _, (_, g_omega, _, _, _) = problem.value_and_grad(Sigma0, omega0, L_zero, nu0, V0)
-        info = T @ problem.information_diagonal(Sigma0, omega0, L_zero, nu0, V0)[1][free_om]
+        info = T_omega @ problem.information_diagonal(Sigma0, omega0, L_zero, nu0, V0)[1][free_om]
         with np.errstate(divide='ignore', invalid='ignore'):
-            step = np.where(info > 0, -(T @ g_omega[free_om]) / (2 * info), 0.0)
-        omega0[free_om] = np.clip(step, 0.0, scale_tau) @ T
+            step = np.where(info > 0, -(T_omega @ g_omega[free_om]) / (2 * info), 0.0)
+        omega0[free_om] = np.clip(step, 0.0, scale_tau) @ T_omega
     L0 = L_zero
     if k:
         # dev(t L) = dev(0) + t^2 tr(L^T A L) + O(t^4) with A = d dev / d Psi: the best directions
@@ -1051,12 +1080,12 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
         if best is not None:
             L0 = best[1]
     x0 = pack(Sigma0, omega0, L0, nu0, V0)
-    scale = np.concatenate([np.repeat(scale_tau, m), np.repeat(max(fix_val, tiny), len(free_nu)),
+    scale = np.concatenate([np.repeat(scale_tau, n_tau), np.repeat(max(fix_val, tiny), len(free_nu)),
                             np.repeat(scale_tau, n_om), np.repeat(scale_tau ** 0.5, f * k),
                             np.repeat(max(float(np.mean(nu0[problem.gii])), tiny) ** 0.5, s * kv)])
     # The standard error of a variance is about (2 I_ii)^-1/2, I the Fisher information.
     info_tau, info_om = problem.information_diagonal(*assemble(x0))
-    info = np.concatenate([info_tau, np.zeros(len(free_nu)), T @ info_om[free_om]])
+    info = np.concatenate([T_tau @ info_tau, np.zeros(len(free_nu)), T_omega @ info_om[free_om]])
     known = info > 0
     scale[:n_var][known] = (2 * info[known]) ** -0.5
     fun_scale = 1.0 / max(abs(dev0), 1.0)
@@ -1078,12 +1107,9 @@ def estimate_motif_covariance(problem: MotifCovarianceProblem, rank: int, Sigma0
     dev_fisher = None
     if fisher_steps and not kv:
         n_fs = offsets[4] if offsets[4] <= FISHER_MAX_PARAMETERS else n_var
-        jac = None
-        if len(T) < len(free_om):
-            jac = np.zeros((offsets[4] + len(free_om) - n_om, offsets[4]))
-            jac[:offsets[2], :offsets[2]] = np.eye(offsets[2])
-            jac[offsets[2]:offsets[2] + len(free_om), offsets[2]:offsets[3]] = T.T
-            jac[offsets[2] + len(free_om):, offsets[3]:] = np.eye(f * k)
+        jac = tied_parameter_jacobian(problem, rank=k)
+        if jac.shape[0] == jac.shape[1]:
+            jac = None
         x0, n_fs, n_fe = fisher_scoring(problem, x0, n_fs, assemble, vg, fix_ind, stationarity,
                                         max_steps=fisher_steps, verbose=verbose and not silent, tag=tag,
                                         n_bounded=n_var, jac=jac)

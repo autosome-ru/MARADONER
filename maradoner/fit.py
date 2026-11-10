@@ -284,6 +284,9 @@ class MotifVarianceEstimates:
     family_free: np.ndarray = None
     family_lrt: np.ndarray = None
     family_tie: list = None
+    # With tied motif variances, fim is in the reduced parameterization and this matrix
+    # expands it to (tau, free nu, free omega); None for an ordinary fit.
+    parameter_jac: np.ndarray = None
 
 @dataclass(frozen=True)
 class MotifMeanEstimates:
@@ -1071,13 +1074,15 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                              verbose=False, motif_names=None,
                              group_names=None, families: np.ndarray = None,
                              family_names: list = None,
-                             motif_lowrank: int = 0, family_tie: list = None) -> MotifVarianceEstimates:
+                             motif_lowrank: int = 0, family_tie: list = None,
+                             motif_tie: list = None) -> MotifVarianceEstimates:
     """REML estimates of the variances of motif activities tau (`motif`) and of their
     group-wise multipliers nu (`group`). motif_names / group_names are used only to
     name motifs and groups in warnings. With families (m x f, zeros and ones), motif_lowrank
     or both, the covariance between motifs gets the structure of lowrank_sigma, estimated
     after (and starting from) the model with independent motifs. family_tie gives the label of
-    the shared variance of every family (None for a separate variance)."""
+    the shared variance of every family, and motif_tie the label of the shared variance of
+    every motif (None for a separate variance)."""
     multiplier = NU_REFERENCE_FRACTION
     D = np.asarray(error_variance.variance, dtype=np.float64)
     j = int(np.argsort(D)[len(D) // 2])
@@ -1272,6 +1277,30 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                          family_lowrank=est['L'] if est['L'].shape[1] else None,
                          family_free=None if families is None else problem.omega_free,
                          family_lrt=family_lrt, family_tie=family_tie)
+    tied_jac = None
+    if motif_tie is not None:
+        problem = _ls.MotifCovarianceProblem(Z, B_decomposition, D_product_inv, data.group_inds_inv,
+                                             data.group_inds, F=families, omega_tie=family_tie,
+                                             tau_tie=motif_tie)
+        T = problem.tau_map
+        Sigma = (T @ Sigma / T.sum(axis=1)) @ T
+        V_start = None if V_act is None or not np.asarray(V_act).shape[1] else np.asarray(V_act)
+        est = _ls.estimate_motif_covariance(problem, int(motif_lowrank or 0), Sigma0=Sigma, nu0=G,
+                                            V0=V_start, fix_ind=j, fix_val=fix, verbose=verbose,
+                                            stage='tied variances of motif activities',
+                                            tag='tied motif variances')
+        Sigma, G, loglik = est['tau'], est['nu'], est['dev']
+        V_fit = est['V']
+        V_act = V_fit if V_fit.shape[1] else None
+        fim = problem.fim(Sigma, est['omega'], est['L'], G, V_fit, fix_ind=j)
+        tied_jac = _ls.tied_parameter_jacobian(problem)
+        fim = tied_jac.T @ fim @ tied_jac
+        if structure is not None:
+            _, family_lrt = problem.lrt(Sigma, est['omega'], est['L'], G, V_fit)
+            structure.update(family_variance=None if families is None else est['omega'],
+                             family_lowrank=est['L'] if est['L'].shape[1] else None,
+                             family_lrt=family_lrt)
+        lrt = None
     singular, n_bad = _fim_is_singular(fim, verbose=verbose)
     if singular:
         # The information matrix is rank deficient. Spell out why rather than leaving the
@@ -1295,9 +1324,10 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
              f'{len(np.asarray(fim))} directions are not identified. {cause} Treat the '
              'standard errors of the variance parameters and the tests based on them with '
              'caution.')
-    if structure is None:
+    if structure is None and tied_jac is None:
         lrt = loglik_motifs_lrt(Sigma, G_root, Z, BTB, D_product_inv)
-    lrt[Sigma <= ZERO_REL_TOL * np.max(Sigma)] = 0.0
+    if lrt is not None:
+        lrt[Sigma <= ZERO_REL_TOL * np.max(Sigma)] = 0.0
     Sigma = np.maximum(Sigma, ZERO_REL_VALUE * np.max(Sigma))
     G = np.maximum(G, ZERO_REL_VALUE * fix)
     return MotifVarianceEstimates(motif=np.array(Sigma), group=np.array(G), fim=np.array(fim),
@@ -1305,7 +1335,7 @@ def estimate_motif_variance(data: TransformedData, B_decomposition: LowrankDecom
                                   loglik=loglik,
                                   lowrank=(np.asarray(V_act) if V_act is not None
                                            and np.asarray(V_act).shape[1] else None),
-                                  lrt=lrt, **(structure or dict()))
+                                  lrt=lrt, parameter_jac=tied_jac, **(structure or dict()))
 
 
 def estimate_motif_variance_identity(data: TransformedData, B_decomposition: LowrankDecomposition,
@@ -2403,7 +2433,7 @@ def fit(project: str, clustering: ClusteringMode,
         context_r: int = 0, drist: bool = False, error_lowrank: int = 0,
         activity_lowrank: int = 0, motif_families: str = None, motif_lowrank: int = 0,
         motif_mean_prior: str = 'none', covariate_prior: str = 'none', verbose=True,
-        dump=True) -> FitResult:
+        motif_variance_ties: list = None, dump=True) -> FitResult:
     if x64:
         jax.config.update("jax_enable_x64", True)
     if (error_lowrank or 0) < 0 or (activity_lowrank or 0) < 0 or (motif_lowrank or 0) < 0:
@@ -2413,6 +2443,17 @@ def fit(project: str, clustering: ClusteringMode,
     validate_project(data, rank=False)
     check_design_rank(data.X, data.covariate_names)
     warn_constant_loadings(data.B, data.motif_names, verbose=verbose)
+    if motif_variance_ties is not None:
+        if clustering != ClusteringMode.none:
+            raise InputError('Motif variance ties cannot be combined with clustering.')
+        if len(motif_variance_ties) != len(data.motif_names):
+            raise InputError(f'Motif variance ties have {len(motif_variance_ties)} entries for '
+                             f'{len(data.motif_names)} motifs.')
+        if not motif_variance:
+            warn('Motif variance ties require per-motif variances and are ignored.')
+            motif_variance_ties = None
+        elif not any(label is not None for label in motif_variance_ties):
+            motif_variance_ties = None
     families = family_names = family_tie = None
     if motif_families is not None or motif_lowrank:
         if clustering != ClusteringMode.none:
@@ -2588,7 +2629,7 @@ def fit(project: str, clustering: ClusteringMode,
                                                       activity_lowrank=activity_lowrank,
                                                       families=families, family_names=family_names,
                                                       family_tie=family_tie, motif_lowrank=motif_lowrank,
-                                                      verbose=verbose)
+                                                      motif_tie=motif_variance_ties, verbose=verbose)
         else:
             if activity_lowrank and activity_lowrank > 0:
                 warn('--activity-lowrank requires per-motif variances; '
@@ -2647,7 +2688,7 @@ def fit(project: str, clustering: ClusteringMode,
                     loading_context=loading_context, drist=drist, loading_multipliers=loading_multipliers)    
     if dump:
         dump_stage(res, project, 'fit', fmt)
-        _remove_outdated_stages(project, ('predict', 'fov', 'promoter_mean', 'promvar'), fmt,
+        _remove_outdated_stages(project, ('predict', 'fov', 'promoter_mean', 'promvar', 'cap'), fmt,
                                 verbose=verbose)
     return res
 
@@ -2795,7 +2836,7 @@ def predict(project: str, filter_motifs: bool, filter_order: int,
                                         filter_order=filter_order)
     if dump:
         dump_stage(activities, project, 'predict', fmt)
-        _remove_outdated_stages(project, ('fov', 'promoter_mean', 'promvar'), fmt, verbose=verbose)
+        _remove_outdated_stages(project, ('fov', 'promoter_mean', 'promvar', 'cap'), fmt, verbose=verbose)
     return activities
 
 @dataclass(frozen=True)

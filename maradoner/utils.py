@@ -52,7 +52,7 @@ def get_init_file(path: str):
 
 # Commands that produce each of the project's intermediate files.
 _STAGE_COMMANDS = {'init': 'create', 'fit': 'fit', 'predict': 'predict', 'fov': 'gof',
-                   'promoter_mean': 'estimate-promoter-mean', 'old.fit': 'mara fit',
+                   'promoter_mean': 'estimate-promoter-mean', 'line_gain': 'line-gain', 'old.fit': 'mara fit',
                    'old.predict': 'mara predict', 'old.fov': 'mara gof'}
 
 def _load_pickle(filename: str, fmt: str, stage: str, project_name: str):

@@ -125,6 +125,13 @@ def estimate_prior(mu, C, terms: list) -> tuple:
         low = list(starts)
         low[i] = bounds[i][0]
         trials.append(low)
+    # The best point of a coarse grid over the bounds starts one more search: from the starts
+    # above, where the deviance can be flat, the optimiser may stop at a bound far from the minimum.
+    if len(terms) <= 2:
+        axes = [np.linspace(lo, hi, 11) for lo, hi in bounds]
+        grid = np.array(np.meshgrid(*axes, indexing='ij')).reshape(len(terms), -1).T
+        devs = [sum(_reml(x, terms, C_, mu_)[0] for mu_, C_ in pairs) for x in grid]
+        trials.append(list(grid[int(np.argmin(devs))]))
     best = None
     for x0 in trials:
         res = minimize(lambda x: sum(_reml(x, terms, C_, mu_)[0] for mu_, C_ in pairs), np.array(x0),
